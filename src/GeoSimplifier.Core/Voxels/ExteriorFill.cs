@@ -1,3 +1,5 @@
+using System.Collections.Generic;
+
 namespace GeoSimplifier.Core.Voxels
 {
     public static class ExteriorFill
@@ -9,8 +11,7 @@ namespace GeoSimplifier.Core.Voxels
         public static VoxelGrid SolidFromShell(VoxelGrid shell)
         {
             var outside = shell.CloneEmpty();
-            var stack = new int[shell.Length];
-            int top = 0;
+            var stack = new Stack<int>();
 
             void Seed(int i, int j, int k)
             {
@@ -18,7 +19,7 @@ namespace GeoSimplifier.Core.Voxels
                 if (!shell[idx] && !outside[idx])
                 {
                     outside[idx] = true;
-                    stack[top++] = idx;
+                    stack.Push(idx);
                 }
             }
 
@@ -31,9 +32,9 @@ namespace GeoSimplifier.Core.Voxels
                     Seed(i, j, k);
             }
 
-            while (top > 0)
+            while (stack.Count > 0)
             {
-                int idx = stack[--top];
+                int idx = stack.Pop();
                 int i = idx % nx;
                 int j = idx / nx % ny;
                 int k = idx / (nx * ny);

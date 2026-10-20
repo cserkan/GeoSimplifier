@@ -14,10 +14,16 @@ namespace GeoSimplifier.Core.ShrinkWrap
         /// </summary>
         public int GapClosingVoxels { get; set; } = 2;
 
+        /// <summary>
+        /// Widest hole or gap to close, in model units. Overrides <see cref="GapClosingVoxels"/> when set;
+        /// 0 keeps every hole open.
+        /// </summary>
+        public double? GapClosingWidth { get; set; }
+
         /// <summary>Fill edge/vertex-only contacts so the result is a valid manifold solid.</summary>
         public bool FixNonManifold { get; set; } = true;
 
         /// <summary>Safety limit on grid size (one byte per cell).</summary>
-        public long MaxCells { get; set; } = 64L * 1024 * 1024;
+        public long MaxCells { get; set; } = 256L * 1024 * 1024;
     }
 }

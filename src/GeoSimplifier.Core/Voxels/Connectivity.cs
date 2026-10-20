@@ -1,3 +1,5 @@
+using System.Collections.Generic;
+
 namespace GeoSimplifier.Core.Voxels
 {
     public static class Connectivity
@@ -6,7 +8,7 @@ namespace GeoSimplifier.Core.Voxels
         public static int CountComponents(VoxelGrid g)
         {
             var seen = new bool[g.Length];
-            var stack = new int[g.Length];
+            var stack = new Stack<int>();
             int count = 0;
             int nx = g.Nx, ny = g.Ny, nz = g.Nz;
 
@@ -15,19 +17,18 @@ namespace GeoSimplifier.Core.Voxels
                 if (!g[start] || seen[start])
                     continue;
                 count++;
-                int top = 0;
-                stack[top++] = start;
+                stack.Push(start);
                 seen[start] = true;
-                while (top > 0)
+                while (stack.Count > 0)
                 {
-                    int idx = stack[--top];
+                    int idx = stack.Pop();
                     int i = idx % nx, j = idx / nx % ny, k = idx / (nx * ny);
                     void Visit(int n)
                     {
                         if (g[n] && !seen[n])
                         {
                             seen[n] = true;
-                            stack[top++] = n;
+                            stack.Push(n);
                         }
                     }
                     if (i > 0) Visit(idx - 1);

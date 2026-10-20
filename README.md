@@ -5,27 +5,30 @@ iç detaylardan, boşluklardan ve küçük açıklıklardan arındırılmış **
 
 ## Nasıl çalışır
 
-1. **Geometri toplama**: Parçadaki ya da montajdaki tüm görünür katı gövdeler üçgenlere ayrılır
-   (`IFace2.GetTessTriangles`); montaj bileşenleri `IComponent2.Transform2` ile montaj koordinatlarına taşınır.
-2. **Voksel yüzey**: Üçgenler, en uzun kenar boyunca `Çözünürlük` kadar hücreden oluşan bir ızgaraya dökülür.
-3. **Boşluk kapama**: Yüzey `Boşluk kapama` yarıçapı kadar genişletilir, böylece dar açıklıklar ve
-   birbirine yakın gövdeler arasındaki aralıklar kapanır.
-4. **Dış dolgu**: Izgaranın kenarından içeri flood fill yapılır; dışarıdan ulaşılamayan her şey (iç boşluklar dahil) katıdır.
-5. **Geri daraltma**: Katı aynı yarıçapla daraltılır (morfolojik kapama). Orijinal yüzey hücreleri her zaman korunur,
-   yani sonuç modeli her zaman içine alır.
-6. **Manifold düzeltme**: Yalnızca kenar ya da köşeden değen hücreler doldurulur, böylece geçerli bir katı oluşur.
-7. **Gövde oluşturma**: Hücreler birleştirilmiş kutulara indirilir, `IModeler` ile birleştirilip
-   (`IBody2.Operations2`) yeni bir parçaya `CreateFeatureFromBody3` ile eklenir.
+**Shrink Wrap** komutu (CommandManager'daki **GeoSimplifier** sekmesi veya Araçlar menüsü) sol tarafta bir
+PropertyManager sayfası açar. Yeşil tik ile çalışır ve sonucu yeni bir parçaya tek gövde olarak ekler.
 
-Sonuç, orijinal yüzeyin üzerinde ya da en fazla yaklaşık bir voksel dışındadır. Çözünürlük arttıkça sargı sıkılaşır,
-gövde oluşturma süresi uzar.
+| Ayar | Anlamı |
+| --- | --- |
+| Orijinal yüzeyleri koru (hassas) | Açıkken dış yüzeyler birebir korunur; voksel yalnızca iç boşlukları, kapatılan delikleri ve gövdeler arası boşlukları doldurur. Hızlıdır. Kapalıyken tüm gövde vokselden (basamaklı) oluşturulur. |
+| Delikleri ve boşlukları kapat | Açıkken verilen genişlikten dar delikler, kanallar ve gövdeler arası boşluklar kapatılır. |
+| Çözünürlük | En uzun kenardaki voksel sayısı (16-2048). Kapatılan deliklerin tıpasının ve voksel modunda tüm yüzeyin hassasiyetini belirler. |
+
+Adımlar:
+
+1. **Geometri toplama**: Tüm görünür katı gövdeler üçgenlere ayrılır; montaj bileşenleri montaj koordinatlarına taşınır.
+2. **Voksel yüzey**: Üçgenler bir voksel ızgarasına dökülür.
+3. **Boşluk kapama**: Yüzey, kapatılacak genişliğin yarısı kadar genişletilir, dışarıdan flood fill yapılır ve aynı miktar geri daraltılır (morfolojik kapama). Dışarıdan ulaşılamayan her şey katıdır.
+4. **Gövde oluşturma**:
+   - *Hassas mod*: Orijinal gövdelerin kopyaları, dış yüzeye değmeyen dolgu hücreleriyle birleştirilir. Kapatılan deliklerin ağzında en fazla 1-2 voksel derinliğinde çukur kalabilir.
+   - *Voksel modu*: Katı hücreler kutulara birleştirilir ve kutular hiyerarşik olarak (böl ve birleştir) tek gövdeye çevrilir.
 
 ## Proje yapısı
 
 | Klasör | İçerik |
 | --- | --- |
 | `src/GeoSimplifier.Core` | SOLIDWORKS'ten bağımsız shrink wrap algoritması (netstandard2.0) |
-| `src/GeoSimplifier.SolidWorks` | SOLIDWORKS eklentisi: kayıt, komut, görev paneli, gövde oluşturma (.NET Framework 4.8) |
+| `src/GeoSimplifier.SolidWorks` | SOLIDWORKS eklentisi: kayıt, komut, PropertyManager sayfası, gövde oluşturma (.NET Framework 4.8) |
 | `tests/GeoSimplifier.Core.Tests` | Çekirdek algoritma testleri (her platformda çalışır) |
 
 ## Derleme ve kurulum (Windows)
@@ -36,7 +39,7 @@ gövde oluşturma süresi uzar.
 2. `dotnet build GeoSimplifier.sln`
 3. Yönetici olarak açılmış komut isteminde: `scripts\register.cmd`
 4. SOLIDWORKS'te **Araçlar > Eklentiler** altında **GeoSimplifier**'ı etkinleştirin.
-5. Bir parça ya da montaj açın, görev panelindeki **GeoSimplifier** sekmesinden veya **Shrink Wrap** komutundan çalıştırın.
+5. Bir parça ya da montaj açın, CommandManager'daki **GeoSimplifier** sekmesinden **Shrink Wrap** komutunu çalıştırın.
 
 Kaldırmak için: `scripts\unregister.cmd`
 

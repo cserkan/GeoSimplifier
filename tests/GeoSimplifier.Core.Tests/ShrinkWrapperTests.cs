@@ -77,6 +77,13 @@ namespace GeoSimplifier.Core.Tests
             Assert.True(ManifoldFixer.IsManifold(g));
         }
 
+        [Fact]
+        public void Gap_width_is_converted_to_a_closing_radius()
+        {
+            Assert.Equal(3, ShrinkWrapper.ResolveGapVoxels(0.5, new ShrinkWrapOptions { GapClosingWidth = 2.6 }));
+            Assert.Equal(0, ShrinkWrapper.ResolveGapVoxels(0.5, new ShrinkWrapOptions { GapClosingWidth = 0, GapClosingVoxels = 4 }));
+        }
+
         private static void AssertCenterFilled(VoxelGrid g, Vec3 p)
         {
             var c = p - g.Origin;

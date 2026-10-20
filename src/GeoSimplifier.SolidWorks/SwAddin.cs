@@ -27,8 +27,7 @@ namespace GeoSimplifier.SolidWorks
         private ISldWorks _swApp;
         private ICommandManager _commandManager;
         private int _cookie;
-        private ITaskpaneView _taskpaneView;
-        private ShrinkWrapTaskPane _taskPane;
+        private ShrinkWrapService _service;
 
         public bool ConnectToSW(object ThisSW, int Cookie)
         {
@@ -37,21 +36,18 @@ namespace GeoSimplifier.SolidWorks
             _swApp.SetAddinCallbackInfo2(0, this, _cookie);
             _commandManager = _swApp.GetCommandManager(_cookie);
 
+            _service = new ShrinkWrapService(_swApp);
             AddCommands();
-            CreateTaskPane();
             return true;
         }
 
         public bool DisconnectFromSW()
         {
+            RemoveCommandTabs();
             _commandManager?.RemoveCommandGroup(MainCommandGroupId);
-            _taskpaneView?.DeleteView();
-            _taskPane?.Dispose();
 
-            ReleaseCom(_taskpaneView);
             ReleaseCom(_commandManager);
             ReleaseCom(_swApp);
-            _taskpaneView = null;
             _commandManager = null;
             _swApp = null;
 
@@ -60,35 +56,64 @@ namespace GeoSimplifier.SolidWorks
             return true;
         }
 
+        private static readonly int[] DocTypes = { (int)swDocumentTypes_e.swDocPART, (int)swDocumentTypes_e.swDocASSEMBLY };
+
         private void AddCommands()
         {
             int errors = 0;
             ICommandGroup group = _commandManager.CreateCommandGroup2(
                 MainCommandGroupId, Title, Description, Description, -1, true, ref errors);
 
+            var icons = IconFactory.CreateIconStrips();
+            group.IconList = icons;
+            group.MainIconList = icons;
+
             int menuToolbar = (int)(swCommandItemType_e.swMenuItem | swCommandItemType_e.swToolbarItem);
-            group.AddCommandItem2("Shrink Wrap", -1, "Wrap the active model into one simplified solid",
+            int index = group.AddCommandItem2("Shrink Wrap", -1, "Modeli dışarıdan sararak tek, basitleştirilmiş bir gövde oluşturur",
                 "Shrink Wrap", 0, nameof(OnShrinkWrap), nameof(OnShrinkWrapEnable), ShrinkWrapCommandId, menuToolbar);
 
             group.HasToolbar = true;
             group.HasMenu = true;
             group.Activate();
+
+            // A "GeoSimplifier" tab in the CommandManager ribbon for parts and assemblies.
+            int commandId = group.get_CommandID(index);
+            foreach (int docType in DocTypes)
+            {
+                var existing = _commandManager.GetCommandTab(docType, Title);
+                if (existing != null)
+                    _commandManager.RemoveCommandTab(existing);
+                var tab = _commandManager.AddCommandTab(docType, Title);
+                var box = tab.AddCommandTabBox();
+                box.AddCommands(new[] { commandId }, new[] { (int)swCommandTabButtonTextDisplay_e.swCommandTabButton_TextBelow });
+            }
         }
 
-        private void CreateTaskPane()
+        private void RemoveCommandTabs()
         {
-            _taskpaneView = _swApp.CreateTaskpaneView2("", Title);
-            _taskPane = new ShrinkWrapTaskPane(new ShrinkWrapService(_swApp));
-            _taskPane.CreateControl();
-            _taskpaneView.DisplayWindowFromHandlex64(_taskPane.Handle.ToInt64());
+            if (_commandManager == null)
+                return;
+            foreach (int docType in DocTypes)
+            {
+                var tab = _commandManager.GetCommandTab(docType, Title);
+                if (tab != null)
+                    _commandManager.RemoveCommandTab(tab);
+            }
         }
 
         // Command callbacks: SOLIDWORKS resolves these by name, so they must stay public.
 
         public void OnShrinkWrap()
         {
-            _taskpaneView?.ShowView();
-            _taskPane?.RunFromCommand();
+            try
+            {
+                new ShrinkWrapPage(_swApp, _service).Show();
+            }
+            catch (Exception ex)
+            {
+                _swApp.SendMsgToUser2("Shrink wrap açılamadı: " + ex.Message,
+                    (int)swMessageBoxIcon_e.swMbStop, (int)swMessageBoxBtn_e.swMbOk);
+            }
         }
 
         /// <returns>1 = enabled, 0 = disabled.</returns>
