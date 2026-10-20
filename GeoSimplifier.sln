@@ -1,0 +1,43 @@
+﻿
+Microsoft Visual Studio Solution File, Format Version 12.00
+# Visual Studio Version 17
+VisualStudioVersion = 17.0.31903.59
+MinimumVisualStudioVersion = 10.0.40219.1
+Project("{2150E333-8FDC-42A3-9474-1A3956D46DE8}") = "src", "src", "{224D43F6-A40D-4E45-BAD7-E0270DBA16C4}"
+EndProject
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "GeoSimplifier.Core", "src\GeoSimplifier.Core\GeoSimplifier.Core.csproj", "{F25B0913-0EF1-498F-9A3C-5052D2D51BDB}"
+EndProject
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "GeoSimplifier.SolidWorks", "src\GeoSimplifier.SolidWorks\GeoSimplifier.SolidWorks.csproj", "{3FFD90D3-FCB8-40CE-B84D-F15187E1432B}"
+EndProject
+Project("{2150E333-8FDC-42A3-9474-1A3956D46DE8}") = "tests", "tests", "{C9257C5F-BB34-4556-8799-59FBEF701BD0}"
+EndProject
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "GeoSimplifier.Core.Tests", "tests\GeoSimplifier.Core.Tests\GeoSimplifier.Core.Tests.csproj", "{2DD0E5B2-3ED0-40E1-A35E-C16CCE16B4CC}"
+EndProject
+Global
+	GlobalSection(SolutionConfigurationPlatforms) = preSolution
+		Debug|Any CPU = Debug|Any CPU
+		Release|Any CPU = Release|Any CPU
+	EndGlobalSection
+	GlobalSection(SolutionProperties) = preSolution
+		HideSolutionNode = FALSE
+	EndGlobalSection
+	GlobalSection(ProjectConfigurationPlatforms) = postSolution
+		{F25B0913-0EF1-498F-9A3C-5052D2D51BDB}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{F25B0913-0EF1-498F-9A3C-5052D2D51BDB}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{F25B0913-0EF1-498F-9A3C-5052D2D51BDB}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{F25B0913-0EF1-498F-9A3C-5052D2D51BDB}.Release|Any CPU.Build.0 = Release|Any CPU
+		{3FFD90D3-FCB8-40CE-B84D-F15187E1432B}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{3FFD90D3-FCB8-40CE-B84D-F15187E1432B}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{3FFD90D3-FCB8-40CE-B84D-F15187E1432B}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{3FFD90D3-FCB8-40CE-B84D-F15187E1432B}.Release|Any CPU.Build.0 = Release|Any CPU
+		{2DD0E5B2-3ED0-40E1-A35E-C16CCE16B4CC}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{2DD0E5B2-3ED0-40E1-A35E-C16CCE16B4CC}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{2DD0E5B2-3ED0-40E1-A35E-C16CCE16B4CC}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{2DD0E5B2-3ED0-40E1-A35E-C16CCE16B4CC}.Release|Any CPU.Build.0 = Release|Any CPU
+	EndGlobalSection
+	GlobalSection(NestedProjects) = preSolution
+		{F25B0913-0EF1-498F-9A3C-5052D2D51BDB} = {224D43F6-A40D-4E45-BAD7-E0270DBA16C4}
+		{3FFD90D3-FCB8-40CE-B84D-F15187E1432B} = {224D43F6-A40D-4E45-BAD7-E0270DBA16C4}
+		{2DD0E5B2-3ED0-40E1-A35E-C16CCE16B4CC} = {C9257C5F-BB34-4556-8799-59FBEF701BD0}
+	EndGlobalSection
+EndGlobal
