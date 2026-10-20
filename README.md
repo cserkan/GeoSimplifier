@@ -40,6 +40,13 @@ gövde oluşturma süresi uzar.
 
 Kaldırmak için: `scripts\unregister.cmd`
 
+### Sorun giderme
+
+- **`RegAsm : error RA0000 ... bulunamıyor`**: Ya eklenti henüz derlenmemiştir (önce `dotnet build src\GeoSimplifier.SolidWorks`)
+  ya da SOLIDWORKS API DLL'leri bulunamamıştır. `bin\Debug\net48` klasöründe `GeoSimplifier.SolidWorks.dll`,
+  `GeoSimplifier.Core.dll` ve `SolidWorks.Interop.*.dll` dosyalarının olduğunu kontrol edin.
+- **Derlemede `SolidWorks.Interop... bulunamadı` uyarısı**: `-p:SolidWorksApiDir=...` ile SOLIDWORKS'ün `api\redist` klasörünü verin.
+
 ## Testler
 
 ```
