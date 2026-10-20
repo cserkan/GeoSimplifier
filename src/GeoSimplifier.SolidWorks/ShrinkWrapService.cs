@@ -31,7 +31,8 @@ namespace GeoSimplifier.SolidWorks
             var result = ShrinkWrapper.Run(mesh, options);
 
             status($"Building solid from {result.Boxes.Count:N0} boxes...");
-            var bodies = new BodyBuilder(_swApp).Build(result, (done, total) =>
+            var builder = new BodyBuilder(_swApp);
+            var bodies = builder.Build(result, (done, total) =>
             {
                 if (done % 100 == 0) status($"Building solid: {done:N0}/{total:N0} boxes");
             });
@@ -49,8 +50,11 @@ namespace GeoSimplifier.SolidWorks
             var g = result.Solid;
             string summary =
                 $"Done in {watch.Elapsed.TotalSeconds:F1} s. Voxel {result.VoxelSize * 1000:G4} mm, " +
-                $"grid {g.Nx}x{g.Ny}x{g.Nz}, {result.Boxes.Count:N0} boxes, {created} body(ies).";
-            if (bodies.Count > 1)
+                $"grid {g.Nx}x{g.Ny}x{g.Nz}, {result.Boxes.Count:N0} boxes, " +
+                $"{bodies.Count} lump(s), {created} body(ies) created, {builder.FailedUnions} failed union(s).";
+            if (created < bodies.Count)
+                summary += " WARNING: some lumps could not be added to the part; the result is incomplete.";
+            if (result.BodyCount > 1)
                 summary += " The model has parts farther apart than the gap closing distance; increase gap closing to get one body.";
             return summary;
         }

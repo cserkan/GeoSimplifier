@@ -19,23 +19,32 @@ namespace GeoSimplifier.SolidWorks.Geometry
             _boxes = new BoxFactory(_modeler, (IMathUtility)swApp.GetMathUtility());
         }
 
+        /// <summary>Number of boolean unions SOLIDWORKS rejected during the last <see cref="Build"/>.</summary>
+        public int FailedUnions { get; private set; }
+
         /// <summary>Unions all boxes. Returns one body per disconnected lump (normally exactly one).</summary>
         public List<IBody2> Build(ShrinkWrapResult result, Action<int, int> progress = null)
         {
             var lumps = new List<IBody2>();
             var lumpBoxes = new List<Aabb>();
-            double tol = result.VoxelSize * 1e-3;
+            // Boxes are grown slightly so neighbours overlap instead of sharing coincident faces or edges.
+            // Coincident-face and edge-only contacts make the kernel's booleans fail or produce
+            // non-manifold intermediates, which silently dropped boxes (holes left open in the result).
+            double overlap = result.VoxelSize * 0.01;
+            var grow = new Vec3(overlap, overlap, overlap);
             int done = 0;
+            FailedUnions = 0;
 
             foreach (var vb in result.Boxes)
             {
-                var box = vb.ToWorld(result.Solid);
+                var cells = vb.ToWorld(result.Solid);
+                var box = new Aabb(cells.Min - grow, cells.Max + grow);
                 IBody2 body = _boxes.Create(box);
 
-                // Union with every existing lump this box touches.
+                // Union with every existing lump this box overlaps.
                 for (int n = lumps.Count - 1; n >= 0; n--)
                 {
-                    if (!Touches(lumpBoxes[n], box, tol))
+                    if (!Overlaps(lumpBoxes[n], box))
                         continue;
                     var merged = Union(lumps[n], body);
                     if (merged == null)
@@ -49,25 +58,54 @@ namespace GeoSimplifier.SolidWorks.Geometry
                 lumpBoxes.Add(box);
                 progress?.Invoke(++done, result.Boxes.Count);
             }
+
+            MergeRemainingLumps(lumps, lumpBoxes);
             return lumps;
         }
 
-        /// <returns>The single merged body, or null when the bodies do not actually share a face.</returns>
-        private static IBody2 Union(IBody2 a, IBody2 b)
+        /// <summary>Second chance for lumps that stayed apart because a union failed earlier.</summary>
+        private void MergeRemainingLumps(List<IBody2> lumps, List<Aabb> lumpBoxes)
+        {
+            bool changed = true;
+            while (changed && lumps.Count > 1)
+            {
+                changed = false;
+                for (int a = 0; a < lumps.Count && !changed; a++)
+                for (int b = a + 1; b < lumps.Count && !changed; b++)
+                {
+                    if (!Overlaps(lumpBoxes[a], lumpBoxes[b]))
+                        continue;
+                    var merged = Union(lumps[a], lumps[b]);
+                    if (merged == null)
+                        continue;
+                    lumps[a] = merged;
+                    lumpBoxes[a] = lumpBoxes[a].Union(lumpBoxes[b]);
+                    lumps.RemoveAt(b);
+                    lumpBoxes.RemoveAt(b);
+                    changed = true;
+                }
+            }
+        }
+
+        /// <returns>The single merged body, or null when the bodies stay separate or the union fails.</returns>
+        private IBody2 Union(IBody2 a, IBody2 b)
         {
             // Boolean operations may modify their inputs, so operate on copies and keep the originals intact.
             var target = (IBody2)a.Copy();
             var tool = (IBody2)b.Copy();
             var output = (object[])target.Operations2((int)swBodyOperationType_e.SWBODYADD, tool, out int error);
-            if (output == null || output.Length != 1)
+            if (output == null || error != 0)
+            {
+                FailedUnions++;
                 return null;
-            return (IBody2)output[0];
+            }
+            return output.Length == 1 ? (IBody2)output[0] : null;
         }
 
-        private static bool Touches(Aabb a, Aabb b, double tol) =>
-            a.Min.X <= b.Max.X + tol && b.Min.X <= a.Max.X + tol &&
-            a.Min.Y <= b.Max.Y + tol && b.Min.Y <= a.Max.Y + tol &&
-            a.Min.Z <= b.Max.Z + tol && b.Min.Z <= a.Max.Z + tol;
+        private static bool Overlaps(Aabb a, Aabb b) =>
+            a.Min.X < b.Max.X && b.Min.X < a.Max.X &&
+            a.Min.Y < b.Max.Y && b.Min.Y < a.Max.Y &&
+            a.Min.Z < b.Max.Z && b.Min.Z < a.Max.Z;
     }
 
     /// <summary>
