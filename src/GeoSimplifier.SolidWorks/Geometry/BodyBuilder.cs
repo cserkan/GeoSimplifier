@@ -1,7 +1,6 @@
 using System;
 using System.Collections.Generic;
 using GeoSimplifier.Core.Geometry;
-using GeoSimplifier.Core.Voxels;
 using SolidWorks.Interop.sldworks;
 using SolidWorks.Interop.swconst;
 
@@ -22,26 +21,24 @@ namespace GeoSimplifier.SolidWorks.Geometry
         public int FailedUnions { get; private set; }
 
         /// <summary>
-        /// Unions the voxel boxes, then the optional seed bodies (copies of the original bodies when their
+        /// Unions world-space boxes, then the optional seed bodies (copies of the original bodies when their
         /// faces are kept exactly). Returns one body per disconnected lump (normally exactly one).
         /// </summary>
-        public List<IBody2> Build(IList<VoxelBox> boxes, VoxelGrid grid, IEnumerable<IBody2> seeds = null,
+        /// <param name="overlap">
+        /// How much to grow every box. Neighbouring boxes must overlap rather than share coincident faces or
+        /// edges: those make the kernel's booleans fail or produce non-manifold intermediates, which silently
+        /// dropped boxes (holes left open in the result).
+        /// </param>
+        public List<IBody2> Build(IList<Aabb> boxes, double overlap, double tolerance, IEnumerable<IBody2> seeds = null,
             Action<int, int> progress = null)
         {
             FailedUnions = 0;
-            // Boxes are grown slightly so neighbours overlap instead of sharing coincident faces or edges.
-            // Coincident-face and edge-only contacts make the kernel's booleans fail or produce
-            // non-manifold intermediates, which silently dropped boxes (holes left open in the result).
-            double overlap = grid.VoxelSize * 0.01;
-            _tolerance = overlap;
+            _tolerance = tolerance;
             var grow = new Vec3(overlap, overlap, overlap);
 
             var items = new List<Aabb>(boxes.Count);
-            foreach (var vb in boxes)
-            {
-                var cells = vb.ToWorld(grid);
-                items.Add(new Aabb(cells.Min - grow, cells.Max + grow));
-            }
+            foreach (var box in boxes)
+                items.Add(new Aabb(box.Min - grow, box.Max + grow));
 
             int created = 0;
             var lumps = items.Count > 0

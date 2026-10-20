@@ -10,18 +10,22 @@ PropertyManager sayfası açar. Yeşil tik ile çalışır ve sonucu yeni bir pa
 
 | Ayar | Anlamı |
 | --- | --- |
-| Orijinal yüzeyleri koru (hassas) | Açıkken dış yüzeyler birebir korunur; voksel yalnızca iç boşlukları, kapatılan delikleri ve gövdeler arası boşlukları doldurur. Hızlıdır. Kapalıyken tüm gövde vokselden (basamaklı) oluşturulur. |
-| Delikleri ve boşlukları kapat | Açıkken verilen genişlikten dar delikler, kanallar ve gövdeler arası boşluklar kapatılır. |
-| Çözünürlük | En uzun kenardaki voksel sayısı (16-2048). Kapatılan deliklerin tıpasının ve voksel modunda tüm yüzeyin hassasiyetini belirler. |
+| Orijinal yüzeyleri koru (hassas) | Açıkken dış yüzeyler birebir korunur; yalnızca kapatılan delikler ve gövdeler arası boşluklar eklenir. Kapalıyken tüm gövde vokselden (basamaklı) oluşturulur. |
+| Delikleri ve boşlukları kapat | Açıkken en dar yeri verilen genişlikten küçük delikler, kanallar ve gövdeler arası boşluklar tamamen kapatılır. |
+| Çözünürlük | En uzun kenardaki voksel sayısı (16-2048). Delik tespitinin ve voksel modunda tüm yüzeyin hassasiyetini belirler. |
 
 Adımlar:
 
 1. **Geometri toplama**: Tüm görünür katı gövdeler üçgenlere ayrılır; montaj bileşenleri montaj koordinatlarına taşınır.
-2. **Voksel yüzey**: Üçgenler bir voksel ızgarasına dökülür.
-3. **Boşluk kapama**: Yüzey, kapatılacak genişliğin yarısı kadar genişletilir, dışarıdan flood fill yapılır ve aynı miktar geri daraltılır (morfolojik kapama). Dışarıdan ulaşılamayan her şey katıdır.
-4. **Gövde oluşturma**:
-   - *Hassas mod*: Orijinal gövdelerin kopyaları, dış yüzeye değmeyen dolgu hücreleriyle birleştirilir. Kapatılan deliklerin ağzında en fazla 1-2 voksel derinliğinde çukur kalabilir.
-   - *Voksel modu*: Katı hücreler kutulara birleştirilir ve kutular hiyerarşik olarak (böl ve birleştir) tek gövdeye çevrilir.
+2. **Voksel yüzey ve dış dolgu**: Üçgenler bir voksel ızgarasına dökülür, dışarıdan flood fill yapılır; iç boşluklar kendiliğinden dolar.
+3. **Delik kapatma**: Her eksene dik dilimlerde malzemeyle çevrili boş bölgeler bulunur, komşu dilimlerdekiler aynı deliğe bağlanır.
+   En dar kesiti (boğazı) verilen genişlikten küçük olan delik, havşası ve yuvası dahil **tamamen** kapatılır.
+   Tıpa, delik ağzındaki yüzeylerin gerçek yüksekliğinde biter, yani yüzeyle aynı hizadadır.
+4. **Gövdeler arası boşluk**: Model birden fazla ayrı parçadan oluşuyorsa, verilen genişlikten yakın parçalar morfolojik kapama ile birleştirilir.
+   Tek gövdeli parçalarda bu adım atlanır, çünkü iç köşeleri de doldururdu.
+5. **Gövde oluşturma**:
+   - *Hassas mod*: Orijinal gövdelerin kopyaları yalnızca tıpa ve köprü kutularıyla birleştirilir; dış yüzeyler birebir kalır ve az sayıda boolean işlemi gerekir.
+   - *Voksel modu*: Katı hücreler kutulara birleştirilir ve kutular hiyerarşik olarak (böl ve birleştir) tek gövdeye çevrilir. Eğri yüzeyler basamaklı olur.
 
 ## Proje yapısı
 

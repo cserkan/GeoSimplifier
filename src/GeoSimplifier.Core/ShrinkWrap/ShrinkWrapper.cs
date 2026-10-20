@@ -1,13 +1,14 @@
 using System;
+using System.Collections.Generic;
 using GeoSimplifier.Core.Geometry;
 using GeoSimplifier.Core.Voxels;
 
 namespace GeoSimplifier.Core.ShrinkWrap
 {
     /// <summary>
-    /// Voxel shrink wrap: voxelize the surface, close small gaps, flood-fill the outside and keep
-    /// everything the outside cannot reach. Internal cavities, holes and small gaps disappear and the
-    /// result is a single closed envelope that lies on or slightly outside the original surface.
+    /// Voxel shrink wrap: voxelize the surface, flood-fill the outside and keep everything the outside cannot
+    /// reach (so internal cavities disappear), plug holes up to the requested width flush with their faces, and
+    /// bridge gaps between separate bodies.
     /// </summary>
     public static class ShrinkWrapper
     {
@@ -18,48 +19,115 @@ namespace GeoSimplifier.Core.ShrinkWrap
 
             double voxelSize = ResolveVoxelSize(mesh.Bounds, options);
             int gap = ResolveGapVoxels(voxelSize, options);
+            double maxWidth = options.GapClosingWidth ?? 2 * gap * voxelSize;
 
             // Padding keeps the flood fill seeded from outside even after dilation.
             var shell = Voxelizer.VoxelizeSurface(mesh, voxelSize, gap + 2, options.MaxCells);
-            var closedShell = Morphology.Dilate(shell, gap);
-            var solid = ExteriorFill.SolidFromShell(closedShell);
-            solid = Morphology.Erode(solid, gap);
+            var material = ExteriorFill.SolidFromShell(shell);
 
-            // Erosion must not cut into the original surface: keep every surface voxel.
-            for (int n = 0; n < solid.Length; n++)
-                if (shell[n]) solid[n] = true;
+            // Holes, slots and pockets narrower than the limit are filled completely.
+            var plugs = HoleFiller.Find(material, mesh, maxWidth);
+            var solid = material.Clone();
+            foreach (var plug in plugs)
+                foreach (int cell in plug.Cells)
+                    solid[cell] = true;
 
-            var fill = BuildFill(mesh, solid);
+            // Separate bodies closer than the limit are bridged by a morphological closing. Only then: on a
+            // single body the closing would also round off every concave edge.
+            VoxelGrid bridge = null;
+            if (gap > 0 && Connectivity.CountComponents(solid) > 1)
+            {
+                var closed = Morphology.Erode(ExteriorFill.SolidFromShell(Morphology.Dilate(solid, gap)), gap);
+                bridge = solid.CloneEmpty();
+                for (int n = 0; n < solid.Length; n++)
+                {
+                    if (closed[n] && !solid[n])
+                    {
+                        bridge[n] = true;
+                        solid[n] = true;
+                    }
+                }
+            }
+
+            var exactFill = new List<Aabb>();
+            foreach (var plug in plugs)
+                exactFill.AddRange(PlugBoxes(plug, solid));
+            if (bridge != null)
+                exactFill.AddRange(BridgeBoxes(bridge, solid));
 
             int added = options.FixNonManifold ? ManifoldFixer.Fix(solid) : 0;
             var boxes = BoxMerger.Merge(solid);
             return new ShrinkWrapResult(solid, boxes, added, Connectivity.CountComponents(solid))
             {
-                Fill = fill,
-                FillBoxes = BoxMerger.Merge(fill),
+                Holes = plugs,
+                ExactFillBoxes = exactFill,
             };
         }
 
         /// <summary>
-        /// Cells to add to the original bodies so they become the wrapped solid while keeping the original
-        /// exterior faces exact: closed holes, gaps and internal cavities, but nothing near the outside skin.
+        /// Boxes that plug a hole when unioned with the original bodies: grown one cell sideways so they overlap
+        /// the hole walls, and cut along the hole axis to end flush with the faces around the hole mouths.
         /// </summary>
-        private static VoxelGrid BuildFill(TriangleMesh mesh, VoxelGrid solid)
+        private static IEnumerable<Aabb> PlugBoxes(HolePlug plug, VoxelGrid like)
         {
-            // A cell none of whose 26 neighbours is outside cannot cross the original exterior surface:
-            // a cell that does always has an outside neighbour in the direction of the surface normal.
-            var interior = Morphology.Erode(solid, 1);
-            var inside = InsideClassifier.Classify(mesh, solid);
-            var core = interior.Clone();
-            for (int n = 0; n < core.Length; n++)
-                if (inside[n]) core[n] = false;
+            var sub = SubGrid(plug.Cells, like, out int i0, out int j0, out int k0);
+            double s = like.VoxelSize;
+            int axis = plug.Axis;
+            foreach (var b in BoxMerger.Merge(sub))
+            {
+                var min = like.CellMin(b.I0 + i0, b.J0 + j0, b.K0 + k0);
+                var max = like.CellMin(b.I1 + i0, b.J1 + j0, b.K1 + k0);
+                var lo = new double[3];
+                var hi = new double[3];
+                for (int a = 0; a < 3; a++)
+                {
+                    // Stacked boxes overlap slightly along the axis too, but never past the mouth faces.
+                    lo[a] = a == axis ? Math.Max(min[a] - 0.01 * s, plug.Lo) : min[a] - s;
+                    hi[a] = a == axis ? Math.Min(max[a] + 0.01 * s, plug.Hi) : max[a] + s;
+                }
+                if (hi[axis] > lo[axis])
+                    yield return new Aabb(new Vec3(lo[0], lo[1], lo[2]), new Vec3(hi[0], hi[1], hi[2]));
+            }
+        }
 
-            // Grow one cell into the material so plugs overlap the walls they close instead of leaving a
-            // sliver gap, but stay within the interior.
+        /// <summary>
+        /// Bridge cells that cannot cross the original exterior: a cell none of whose 26 neighbours is outside
+        /// never does. Grown one cell so the bridge overlaps the bodies it connects.
+        /// </summary>
+        private static IEnumerable<Aabb> BridgeBoxes(VoxelGrid bridge, VoxelGrid solid)
+        {
+            var interior = Morphology.Erode(solid, 1);
+            var core = bridge.Clone();
+            for (int n = 0; n < core.Length; n++)
+                if (!interior[n]) core[n] = false;
             var fill = Morphology.Dilate(core, 1);
             for (int n = 0; n < fill.Length; n++)
                 if (!interior[n]) fill[n] = false;
-            return fill;
+            double e = 0.01 * fill.VoxelSize;
+            var grow = new Vec3(e, e, e);
+            foreach (var b in BoxMerger.Merge(fill))
+            {
+                var w = b.ToWorld(fill);
+                yield return new Aabb(w.Min - grow, w.Max + grow);
+            }
+        }
+
+        private static VoxelGrid SubGrid(List<int> cells, VoxelGrid like, out int i0, out int j0, out int k0)
+        {
+            int nx = like.Nx, ny = like.Ny;
+            int imin = int.MaxValue, jmin = int.MaxValue, kmin = int.MaxValue, imax = 0, jmax = 0, kmax = 0;
+            foreach (int c in cells)
+            {
+                int i = c % nx, j = c / nx % ny, k = c / (nx * ny);
+                imin = Math.Min(imin, i); imax = Math.Max(imax, i);
+                jmin = Math.Min(jmin, j); jmax = Math.Max(jmax, j);
+                kmin = Math.Min(kmin, k); kmax = Math.Max(kmax, k);
+            }
+            var sub = new VoxelGrid(imax - imin + 1, jmax - jmin + 1, kmax - kmin + 1, like.CellMin(imin, jmin, kmin), like.VoxelSize);
+            foreach (int c in cells)
+                sub[c % nx - imin, c / nx % ny - jmin, c / (nx * ny) - kmin] = true;
+            i0 = imin; j0 = jmin; k0 = kmin;
+            return sub;
         }
 
         /// <summary>Closing radius in voxels; a closing of radius r bridges openings up to about 2r voxels wide.</summary>
