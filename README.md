@@ -7,7 +7,7 @@ kendi B-rep geometrisi üzerinde yapılır, bu yüzden kalan yüzeyler orijinal 
 ## Nasıl çalışır
 
 **Shrink Wrap** komutu (CommandManager'daki **GeoSimplifier** sekmesi veya Araçlar menüsü) sol tarafta bir
-PropertyManager sayfası açar. Sayfa açıkken sonuç hesaplanır: sarmanın ekleyeceği malzeme (tıpalar, köprüler, doldurulan boşluklar) modelin üzerinde turuncu gösterilir ve özet sayfanın üstünde yazar. Ayar değiştikçe önizleme yenilenir. Yeşil tik sonucu yeni bir parçaya ekler.
+PropertyManager sayfası açar. Sayfa açıkken sonuç hesaplanır: zarf modelin üzerinde yarı saydam mavi, sarmanın ekleyeceği malzeme (tıpalar, köprüler, doldurulan boşluklar) turuncu gösterilir ve özet sayfanın üstünde yazar. Ayar değiştikçe önizleme yenilenir. Yeşil tik sonucu yeni bir parçaya ekler.
 
 | Ayar | Anlamı |
 | --- | --- |

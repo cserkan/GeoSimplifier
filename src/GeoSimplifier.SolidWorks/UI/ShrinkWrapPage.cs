@@ -37,8 +37,12 @@ namespace GeoSimplifier.SolidWorks.UI
         private WrapResult _preview;
         private string _previewKey;
 
-        // Preview colour (COLORREF 0x00BBGGRR): orange, so plugs and bridges stand out on grey parts.
-        private const int PreviewColor = 0x0080FF;
+        private readonly System.Collections.Generic.List<IBody2> _shown = new System.Collections.Generic.List<IBody2>();
+
+        // Preview colours (COLORREF 0x00BBGGRR): a translucent blue envelope like NX's wrap preview, and the
+        // material the wrap adds (plugs, bridges, filled cavities) in solid orange.
+        private const int EnvelopeColor = 0xD77800;
+        private const int AddedColor = 0x0080FF;
 
         public ShrinkWrapPage(ISldWorks swApp, ShrinkWrapService service)
         {
@@ -111,11 +115,13 @@ namespace GeoSimplifier.SolidWorks.UI
             {
                 _preview = _service.Compute(_source, options);
                 bool shown = true;
+                foreach (var body in _preview.Bodies)
+                    shown &= DisplayBody((IBody2)body.Copy(), EnvelopeColor, new[] { 0.0, 0.47, 0.84 }, transparency: 0.65);
                 foreach (var body in _preview.Added)
-                    shown &= body.Display3(_source, PreviewColor, (int)swTempBodySelectOptions_e.swTempBodySelectOptionNone) == 0;
+                    shown &= DisplayBody(body, AddedColor, new[] { 1.0, 0.5, 0.0 }, transparency: 0);
                 string text = _preview.Summary() + (_preview.Added.Count == 0
-                    ? " Eklenen malzeme yok."
-                    : " Eklenecek malzeme turuncu gösteriliyor.");
+                    ? " Zarf mavi gösteriliyor, eklenen malzeme yok."
+                    : " Zarf mavi, eklenecek malzeme turuncu gösteriliyor.");
                 if (!shown)
                     text += " (Önizleme bu belgede çizilemedi.)";
                 SetMessage(text);
@@ -127,15 +133,22 @@ namespace GeoSimplifier.SolidWorks.UI
             }
         }
 
+        private bool DisplayBody(IBody2 body, int color, double[] rgb, double transparency)
+        {
+            // Colour, ambient, diffuse, specular, shininess, transparency, emission.
+            body.MaterialPropertyValues2 = new[] { rgb[0], rgb[1], rgb[2], 1, 1, 0.3, 0.3, transparency, 0 };
+            _shown.Add(body);
+            return body.Display3(_source, color, (int)swTempBodySelectOptions_e.swTempBodySelectOptionNone) == 0;
+        }
+
         private void HidePreview()
         {
-            if (_preview == null)
-                return;
-            foreach (var body in _preview.Added)
+            foreach (var body in _shown)
             {
                 try { body.Hide(_source); }
                 catch (COMException) { }
             }
+            _shown.Clear();
             _source?.GraphicsRedraw2();
         }
 
