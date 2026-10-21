@@ -1,6 +1,6 @@
 using System;
 using System.Runtime.InteropServices;
-using GeoSimplifier.Core.ShrinkWrap;
+using GeoSimplifier.Core.Wrap;
 using SolidWorks.Interop.sldworks;
 using SolidWorks.Interop.swconst;
 using SolidWorks.Interop.swpublished;
@@ -15,26 +15,22 @@ namespace GeoSimplifier.SolidWorks.UI
     public sealed class ShrinkWrapPage : IPropertyManagerPage2Handler9
     {
         private const int GroupId = 1;
-        private const int KeepFacesId = 2;
         private const int CloseHolesId = 3;
         private const int GapLabelId = 4;
         private const int GapWidthId = 5;
-        private const int ResolutionLabelId = 6;
-        private const int ResolutionId = 7;
+        private const int FillCavitiesId = 6;
 
         // Remembered between runs within a SOLIDWORKS session.
-        private static bool _keepFaces = true;
         private static bool _closeHoles = true;
-        private static double _gapWidth = 0.02; // meters
-        private static int _resolution = 256;
+        private static double _gapWidth = 0.01; // meters
+        private static bool _fillCavities = true;
 
         private readonly ISldWorks _swApp;
         private readonly ShrinkWrapService _service;
         private IPropertyManagerPage2 _page;
-        private IPropertyManagerPageCheckbox _keepFacesBox;
         private IPropertyManagerPageCheckbox _closeHolesBox;
         private IPropertyManagerPageNumberbox _gapWidthBox;
-        private IPropertyManagerPageNumberbox _resolutionBox;
+        private IPropertyManagerPageCheckbox _fillCavitiesBox;
         private bool _ok;
 
         public ShrinkWrapPage(ISldWorks swApp, ShrinkWrapService service)
@@ -55,28 +51,21 @@ namespace GeoSimplifier.SolidWorks.UI
             var group = (IPropertyManagerPageGroup)_page.AddGroupBox(GroupId, "Ayarlar",
                 (int)(swAddGroupBoxOptions_e.swGroupBoxOptions_Visible | swAddGroupBoxOptions_e.swGroupBoxOptions_Expanded));
 
-            _keepFacesBox = (IPropertyManagerPageCheckbox)AddControl(group, KeepFacesId, swPropertyManagerPageControlType_e.swControlType_Checkbox,
-                "Orijinal yüzeyleri koru (hassas)",
-                "Dış yüzeyler birebir korunur; voksel yalnızca iç boşlukları ve kapatılan delikleri doldurur. Kapalıysa tüm gövde vokselden oluşturulur.");
-            _keepFacesBox.Checked = _keepFaces;
-
             _closeHolesBox = (IPropertyManagerPageCheckbox)AddControl(group, CloseHolesId, swPropertyManagerPageControlType_e.swControlType_Checkbox,
                 "Delikleri ve boşlukları kapat",
-                "Aşağıdaki genişlikten dar delikler, kanallar ve gövdeler arası boşluklar kapatılır.");
+                "Ağzı aşağıdaki genişlikten dar delikler, kanallar ve cepler yüzeyle aynı hizada kapatılır; daha yakın parçalar birleştirilir.");
             _closeHolesBox.Checked = _closeHoles;
 
-            AddControl(group, GapLabelId, swPropertyManagerPageControlType_e.swControlType_Label, "En büyük delik / boşluk genişliği", null);
+            AddControl(group, GapLabelId, swPropertyManagerPageControlType_e.swControlType_Label, "Kapatılacak en büyük açıklık", null);
             _gapWidthBox = (IPropertyManagerPageNumberbox)AddControl(group, GapWidthId, swPropertyManagerPageControlType_e.swControlType_Numberbox,
-                "En büyük delik / boşluk genişliği", "Bu genişliğe kadar olan açıklıklar kapatılır.");
+                "Kapatılacak en büyük açıklık",
+                "Sarma bu genişlikten dar açıklıkların içine girmez. Daha geniş açıklıklar olduğu gibi kalır.");
             _gapWidthBox.SetRange2((int)swNumberboxUnitType_e.swNumberBox_Length, 0.0001, 10, true, 0.001, 0.01, 0.0001);
             _gapWidthBox.Value = _gapWidth;
 
-            AddControl(group, ResolutionLabelId, swPropertyManagerPageControlType_e.swControlType_Label,
-                "Çözünürlük (en uzun kenardaki voksel sayısı)", null);
-            _resolutionBox = (IPropertyManagerPageNumberbox)AddControl(group, ResolutionId, swPropertyManagerPageControlType_e.swControlType_Numberbox,
-                "Çözünürlük", "Yüksek değer daha hassas sonuç verir; süre ve bellek artar.");
-            _resolutionBox.SetRange2((int)swNumberboxUnitType_e.swNumberBox_UnitlessInteger, 16, 2048, true, 16, 128, 1);
-            _resolutionBox.Value = _resolution;
+            _fillCavitiesBox = (IPropertyManagerPageCheckbox)AddControl(group, FillCavitiesId, swPropertyManagerPageControlType_e.swControlType_Checkbox,
+                "İç boşlukları doldur", "Dışarıdan görünmeyen kapalı iç boşluklar dolu hale getirilir.");
+            _fillCavitiesBox.Checked = _fillCavities;
 
             UpdateEnabled();
             _page.Show2(0);
@@ -98,10 +87,9 @@ namespace GeoSimplifier.SolidWorks.UI
             _ok = Reason == (int)swPropertyManagerPageCloseReasons_e.swPropertyManagerPageClose_Okay;
             if (!_ok)
                 return;
-            _keepFaces = _keepFacesBox.Checked;
             _closeHoles = _closeHolesBox.Checked;
             _gapWidth = _gapWidthBox.Value;
-            _resolution = (int)Math.Round(_resolutionBox.Value);
+            _fillCavities = _fillCavitiesBox.Checked;
         }
 
         public void AfterClose()
@@ -111,14 +99,14 @@ namespace GeoSimplifier.SolidWorks.UI
 
             var options = new ShrinkWrapOptions
             {
-                Resolution = _resolution,
-                GapClosingWidth = _closeHoles ? _gapWidth : 0,
+                GapWidth = _closeHoles ? _gapWidth : 0,
+                FillCavities = _fillCavities,
             };
             string message;
             int icon;
             try
             {
-                message = _service.Run(options, _keepFaces);
+                message = _service.Run(options);
                 icon = (int)swMessageBoxIcon_e.swMbInformation;
             }
             catch (Exception ex)

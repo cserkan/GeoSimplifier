@@ -26,6 +26,14 @@ namespace GeoSimplifier.Core.Geometry
         public static Vec3 Cross(Vec3 a, Vec3 b) =>
             new Vec3(a.Y * b.Z - a.Z * b.Y, a.Z * b.X - a.X * b.Z, a.X * b.Y - a.Y * b.X);
 
+        public double Length => Math.Sqrt(X * X + Y * Y + Z * Z);
+
+        public Vec3 Normalized()
+        {
+            double l = Length;
+            return l > 0 ? this * (1 / l) : this;
+        }
+
         public static Vec3 Min(Vec3 a, Vec3 b) => new Vec3(Math.Min(a.X, b.X), Math.Min(a.Y, b.Y), Math.Min(a.Z, b.Z));
         public static Vec3 Max(Vec3 a, Vec3 b) => new Vec3(Math.Max(a.X, b.X), Math.Max(a.Y, b.Y), Math.Max(a.Z, b.Z));
 

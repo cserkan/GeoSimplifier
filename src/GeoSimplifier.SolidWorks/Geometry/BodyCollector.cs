@@ -1,0 +1,55 @@
+using System;
+using System.Collections.Generic;
+using SolidWorks.Interop.sldworks;
+using SolidWorks.Interop.swconst;
+
+namespace GeoSimplifier.SolidWorks.Geometry
+{
+    /// <summary>Collects temporary copies of the visible solid bodies of a part or assembly, in model coordinates.</summary>
+    public static class BodyCollector
+    {
+        public static List<IBody2> CopyBodies(IModelDoc2 doc)
+        {
+            var copies = new List<IBody2>();
+            switch ((swDocumentTypes_e)doc.GetType())
+            {
+                case swDocumentTypes_e.swDocPART:
+                    var bodies = (object[])((IPartDoc)doc).GetBodies2((int)swBodyType_e.swSolidBody, true);
+                    if (bodies != null)
+                        foreach (IBody2 body in bodies)
+                            copies.Add((IBody2)body.Copy());
+                    break;
+
+                case swDocumentTypes_e.swDocASSEMBLY:
+                    var components = (object[])((IAssemblyDoc)doc).GetComponents(false);
+                    if (components == null)
+                        break;
+                    foreach (IComponent2 comp in components)
+                    {
+                        if (comp.IsSuppressed() || comp.Visible == (int)swComponentVisibilityState_e.swComponentHidden)
+                            continue;
+                        // Leaf components only; sub-assemblies are covered by their children.
+                        var children = (object[])comp.GetChildren();
+                        if (children != null && children.Length > 0)
+                            continue;
+                        var compBodies = (object[])comp.GetBodies3((int)swBodyType_e.swSolidBody, out _);
+                        if (compBodies == null)
+                            continue;
+                        var transform = comp.Transform2;
+                        foreach (IBody2 body in compBodies)
+                        {
+                            var copy = (IBody2)body.Copy();
+                            if (transform != null)
+                                copy.ApplyTransform(transform);
+                            copies.Add(copy);
+                        }
+                    }
+                    break;
+
+                default:
+                    throw new InvalidOperationException("Shrink wrap yalnızca parça ve montajlarda çalışır.");
+            }
+            return copies;
+        }
+    }
+}

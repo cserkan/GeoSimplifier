@@ -1,39 +1,43 @@
 # GeoSimplifier
 
-SOLIDWORKS içinde çalışan bir **shrink wrap** eklentisi. Aktif parçayı ya da montajı dışarıdan sarar ve
-iç detaylardan, boşluklardan ve küçük açıklıklardan arındırılmış **tek bir katı gövde** olarak yeni bir parçaya koyar.
+SOLIDWORKS içinde çalışan bir **shrink wrap** eklentisi. Aktif parçayı ya da montajı dışarıdan sarar, içini doldurur ve
+**tek bir katı gövde** olarak yeni bir parçaya koyar. Voksel ya da mesh kullanılmaz: tüm işlemler SOLIDWORKS'ün
+kendi B-rep geometrisi üzerinde yapılır, bu yüzden kalan yüzeyler orijinal yüzeylerin birebir aynısıdır.
 
 ## Nasıl çalışır
 
 **Shrink Wrap** komutu (CommandManager'daki **GeoSimplifier** sekmesi veya Araçlar menüsü) sol tarafta bir
-PropertyManager sayfası açar. Yeşil tik ile çalışır ve sonucu yeni bir parçaya tek gövde olarak ekler.
+PropertyManager sayfası açar. Yeşil tik ile çalışır ve sonucu yeni bir parçaya ekler.
 
 | Ayar | Anlamı |
 | --- | --- |
-| Orijinal yüzeyleri koru (hassas) | Açıkken dış yüzeyler birebir korunur; yalnızca kapatılan delikler ve gövdeler arası boşluklar eklenir. Kapalıyken tüm gövde vokselden (basamaklı) oluşturulur. |
-| Delikleri ve boşlukları kapat | Açıkken en dar yeri verilen genişlikten küçük delikler, kanallar ve gövdeler arası boşluklar tamamen kapatılır. |
-| Çözünürlük | En uzun kenardaki voksel sayısı (16-2048). Delik tespitinin ve voksel modunda tüm yüzeyin hassasiyetini belirler. |
+| Delikleri ve boşlukları kapat | Açıkken aşağıdaki genişlik kullanılır; kapalıyken yalnızca birleştirme ve iç dolgu yapılır. |
+| Kapatılacak en büyük açıklık | Sarma bu genişlikten dar açıklıkların içine girmez: ağzı bu genişlikten dar delikler, kanallar ve cepler yüzeyle aynı hizada kapatılır, birbirine bu mesafeden yakın parçalar birleştirilir. Daha geniş açıklıklar olduğu gibi kalır. |
+| İç boşlukları doldur | Dışarıdan görünmeyen kapalı iç boşluklar doldurulur. |
 
 Adımlar:
 
-1. **Geometri toplama**: Tüm görünür katı gövdeler üçgenlere ayrılır; montaj bileşenleri montaj koordinatlarına taşınır.
-2. **Voksel yüzey ve dış dolgu**: Üçgenler bir voksel ızgarasına dökülür, dışarıdan flood fill yapılır; iç boşluklar kendiliğinden dolar.
-3. **Delik kapatma**: Her eksene dik dilimlerde malzemeyle çevrili boş bölgeler bulunur, komşu dilimlerdekiler aynı deliğe bağlanır.
-   En dar kesiti (boğazı) verilen genişlikten küçük olan delik, havşası ve yuvası dahil **tamamen** kapatılır.
-   Tıpa, delik ağzındaki yüzeylerin gerçek yüksekliğinde biter, yani yüzeyle aynı hizadadır.
-4. **Gövdeler arası boşluk**: Model birden fazla ayrı parçadan oluşuyorsa, verilen genişlikten yakın parçalar morfolojik kapama ile birleştirilir.
-   Tek gövdeli parçalarda bu adım atlanır, çünkü iç köşeleri de doldururdu.
-5. **Gövde oluşturma**:
-   - *Hassas mod*: Orijinal gövdelerin kopyaları yalnızca tıpa ve köprü kutularıyla birleştirilir; dış yüzeyler birebir kalır ve az sayıda boolean işlemi gerekir.
-   - *Voksel modu*: Katı hücreler kutulara birleştirilir ve kutular hiyerarşik olarak (böl ve birleştir) tek gövdeye çevrilir. Eğri yüzeyler basamaklı olur.
+1. **Gövdeleri toplama**: Tüm görünür katı gövdelerin kopyaları alınır; montaj bileşenleri montaj koordinatlarına taşınır.
+2. **Birleştirme**: Birbirine değen ya da iç içe geçen gövdeler boolean birleştirme ile tek gövde olur.
+3. **Parçalar arası boşluklar**: Ayrı kalan gövdeler açıklık genişliğinin yarısı kadar dışa ofsetlenir, birleştirilir ve
+   geri ofsetlenir. Bu sonuçtan yalnızca iki ya da daha fazla gövdeye değen köprüler alınır; böylece gövdelerin kendi
+   iç köşeleri yuvarlanmaz.
+4. **Delik kapatma**: Bir yüzün iç döngüsüyle sınırlanan bağlı yüzler bir delik, kanal ya da cep olarak bulunur
+   (havşa ve yuva dahil). En dar ağzı verilen genişlikten küçük olan ve malzemenin içine doğru giden açıklıkların yüzleri
+   silinir ve çevredeki yüzler büyütülerek kapatılır (Yüzü Sil > Sil ve Yama gibi). Kabartmalara dokunulmaz.
+5. **İç dolgu**: Gövde, etrafındaki bir kutudan çıkarılır; kutunun kenarına değmeyen her parça bir iç boşluktur ve gövdeye eklenir.
+
+Sınırlamalar: Yalnızca düzlemsel yüzlerdeki delikler ölçülür (örneğin bir milin silindirik yüzündeki radyal delik kapatılmaz).
+Parçalar arası köprüleme SOLIDWORKS'ün ofset işlemine dayanır; çok karmaşık montajlarda ofset başarısız olursa
+gövdeler ayrı bırakılır ve sonuç mesajında belirtilir.
 
 ## Proje yapısı
 
 | Klasör | İçerik |
 | --- | --- |
-| `src/GeoSimplifier.Core` | SOLIDWORKS'ten bağımsız shrink wrap algoritması (netstandard2.0) |
+| `src/GeoSimplifier.Core` | SOLIDWORKS'ten bağımsız geometri yardımcıları ve ayarlar (netstandard2.0) |
 | `src/GeoSimplifier.SolidWorks` | SOLIDWORKS eklentisi: kayıt, komut, PropertyManager sayfası, gövde oluşturma (.NET Framework 4.8) |
-| `tests/GeoSimplifier.Core.Tests` | Çekirdek algoritma testleri (her platformda çalışır) |
+| `tests/GeoSimplifier.Core.Tests` | Geometri yardımcılarının testleri (her platformda çalışır) |
 
 ## Derleme ve kurulum (Windows)
 
