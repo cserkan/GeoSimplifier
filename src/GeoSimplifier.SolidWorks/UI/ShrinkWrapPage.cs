@@ -9,7 +9,8 @@ namespace GeoSimplifier.SolidWorks.UI
 {
     /// <summary>
     /// The Shrink Wrap PropertyManager page (left panel, green check / red cross), like a native feature.
-    /// The wrap runs after the page closes with OK, as SOLIDWORKS recommends for model changes.
+    /// While the page is open the material the wrap adds is shown on the model as a coloured preview and the
+    /// page shows the result summary; OK puts the result into a new part.
     /// </summary>
     [ComVisible(true)]
     public sealed class ShrinkWrapPage : IPropertyManagerPage2Handler9
@@ -32,6 +33,12 @@ namespace GeoSimplifier.SolidWorks.UI
         private IPropertyManagerPageNumberbox _gapWidthBox;
         private IPropertyManagerPageCheckbox _fillCavitiesBox;
         private bool _ok;
+        private IModelDoc2 _source;
+        private WrapResult _preview;
+        private string _previewKey;
+
+        // Preview colour (COLORREF 0x00BBGGRR): orange, so plugs and bridges stand out on grey parts.
+        private const int PreviewColor = 0x0080FF;
 
         public ShrinkWrapPage(ISldWorks swApp, ShrinkWrapService service)
         {
@@ -42,6 +49,7 @@ namespace GeoSimplifier.SolidWorks.UI
         public void Show()
         {
             int errors = 0;
+            _source = _swApp.IActiveDoc2;
             int options = (int)(swPropertyManagerPageOptions_e.swPropertyManagerOptions_OkayButton |
                                 swPropertyManagerPageOptions_e.swPropertyManagerOptions_CancelButton);
             _page = (IPropertyManagerPage2)_swApp.CreatePropertyManagerPage("Shrink Wrap", options, this, ref errors);
@@ -82,14 +90,77 @@ namespace GeoSimplifier.SolidWorks.UI
             ((IPropertyManagerPageControl)_gapWidthBox).Enabled = _closeHolesBox.Checked;
         }
 
+        private ShrinkWrapOptions CurrentOptions() => new ShrinkWrapOptions
+        {
+            GapWidth = _closeHolesBox.Checked ? _gapWidthBox.Value : 0,
+            FillCavities = _fillCavitiesBox.Checked,
+        };
+
+        private static string Key(ShrinkWrapOptions o) => $"{o.GapWidth:R}|{o.FillCavities}";
+
+        /// <summary>Recomputes the wrap for the current settings and shows what it adds.</summary>
+        private void UpdatePreview()
+        {
+            var options = CurrentOptions();
+            string key = Key(options);
+            if (key == _previewKey)
+                return;
+            HidePreview();
+            _previewKey = key;
+            try
+            {
+                _preview = _service.Compute(_source, options);
+                bool shown = true;
+                foreach (var body in _preview.Added)
+                    shown &= body.Display3(_source, PreviewColor, (int)swTempBodySelectOptions_e.swTempBodySelectOptionNone) == 0;
+                string text = _preview.Summary() + (_preview.Added.Count == 0
+                    ? " Eklenen malzeme yok."
+                    : " Eklenecek malzeme turuncu gösteriliyor.");
+                if (!shown)
+                    text += " (Önizleme bu belgede çizilemedi.)";
+                SetMessage(text);
+            }
+            catch (Exception ex)
+            {
+                _preview = null;
+                SetMessage("Önizleme hesaplanamadı: " + ex.Message);
+            }
+        }
+
+        private void HidePreview()
+        {
+            if (_preview == null)
+                return;
+            foreach (var body in _preview.Added)
+            {
+                try { body.Hide(_source); }
+                catch (COMException) { }
+            }
+            _source?.GraphicsRedraw2();
+        }
+
+        private void SetMessage(string text)
+        {
+            _page?.SetMessage3(text, (int)swPropertyManagerPageMessageVisibility.swMessageBoxVisible,
+                (int)swPropertyManagerPageMessageExpanded.swMessageBoxExpand, "Önizleme");
+        }
+
+        public void AfterActivation() => UpdatePreview();
+
+        public void OnNumberboxChanged(int Id, double Value) => UpdatePreview();
+
         public void OnClose(int Reason)
         {
+            HidePreview();
             _ok = Reason == (int)swPropertyManagerPageCloseReasons_e.swPropertyManagerPageClose_Okay;
             if (!_ok)
                 return;
             _closeHoles = _closeHolesBox.Checked;
             _gapWidth = _gapWidthBox.Value;
             _fillCavities = _fillCavitiesBox.Checked;
+            // The preview is the result unless it is stale or failed.
+            if (Key(CurrentOptions()) != _previewKey)
+                _preview = null;
         }
 
         public void AfterClose()
@@ -97,16 +168,12 @@ namespace GeoSimplifier.SolidWorks.UI
             if (!_ok)
                 return;
 
-            var options = new ShrinkWrapOptions
-            {
-                GapWidth = _closeHoles ? _gapWidth : 0,
-                FillCavities = _fillCavities,
-            };
             string message;
             int icon;
             try
             {
-                message = _service.Run(options);
+                var result = _preview ?? _service.Compute(_source, CurrentOptionsFromSettings());
+                message = _service.Commit(result);
                 icon = (int)swMessageBoxIcon_e.swMbInformation;
             }
             catch (Exception ex)
@@ -117,14 +184,20 @@ namespace GeoSimplifier.SolidWorks.UI
             _swApp.SendMsgToUser2(message, icon, (int)swMessageBoxBtn_e.swMbOk);
         }
 
+        private static ShrinkWrapOptions CurrentOptionsFromSettings() => new ShrinkWrapOptions
+        {
+            GapWidth = _closeHoles ? _gapWidth : 0,
+            FillCavities = _fillCavities,
+        };
+
         public void OnCheckboxCheck(int Id, bool Checked)
         {
             if (Id == CloseHolesId)
                 UpdateEnabled();
+            UpdatePreview();
         }
 
         // Unused PropertyManager callbacks.
-        public void AfterActivation() { }
         public bool OnHelp() => false;
         public bool OnPreviousPage() => false;
         public bool OnNextPage() => false;
@@ -138,7 +211,6 @@ namespace GeoSimplifier.SolidWorks.UI
         public void OnOptionCheck(int Id) { }
         public void OnButtonPress(int Id) { }
         public void OnTextboxChanged(int Id, string Text) { }
-        public void OnNumberboxChanged(int Id, double Value) { }
         public void OnNumberBoxTrackingCompleted(int Id, double Value) { }
         public void OnComboboxEditChanged(int Id, string Text) { }
         public void OnComboboxSelectionChanged(int Id, int Item) { }

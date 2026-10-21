@@ -77,6 +77,26 @@ namespace GeoSimplifier.SolidWorks.Geometry
             return output ?? new object[0];
         }
 
+        /// <summary>Pieces of <paramref name="result"/> that are not in any of <paramref name="original"/>.</summary>
+        public List<IBody2> Difference(IEnumerable<IBody2> result, IEnumerable<IBody2> original)
+        {
+            var pieces = new List<IBody2>(result);
+            foreach (var o in original)
+            {
+                var ob = Bounds(o);
+                var next = new List<IBody2>();
+                foreach (var p in pieces)
+                {
+                    if (!Overlaps(Bounds(p), ob, 0)) { next.Add(p); continue; }
+                    var cut = Subtract(p, o);
+                    if (cut == null) continue;
+                    foreach (IBody2 c in cut) next.Add(c);
+                }
+                pieces = next;
+            }
+            return pieces;
+        }
+
         /// <summary>
         /// Fills closed internal cavities exactly: subtract the body from a box around it; every piece of the
         /// remainder except the one touching the box is a cavity, and is added back.

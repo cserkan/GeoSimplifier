@@ -8,9 +8,37 @@ using SolidWorks.Interop.swconst;
 
 namespace GeoSimplifier.SolidWorks
 {
+    /// <summary>The computed wrap: temporary bodies, what was added to the original, and statistics.</summary>
+    public sealed class WrapResult
+    {
+        public List<IBody2> Bodies = new List<IBody2>();
+
+        /// <summary>Material the wrap adds to the original bodies (plugs, bridges, filled cavities), for the preview.</summary>
+        public List<IBody2> Added = new List<IBody2>();
+
+        public int SourceBodies;
+        public int HolesClosed;
+        public int HolesFailed;
+        public int FailedBooleans;
+        public double Seconds;
+        public List<string> Notes = new List<string>();
+
+        public string Summary()
+        {
+            string text = $"{SourceBodies} gövde → {Bodies.Count} gövde, {HolesClosed} delik kapatıldı" +
+                          (HolesFailed > 0 ? $", {HolesFailed} delik kapatılamadı" : "") + $" ({Seconds:F1} sn).";
+            var notes = new List<string>(Notes);
+            if (Bodies.Count > 1)
+                notes.Add("Birbirinden uzak parçalar var; tek gövde için kapatma genişliğini artırın.");
+            if (FailedBooleans > 0)
+                notes.Add($"{FailedBooleans} boolean işlemi başarısız oldu.");
+            return notes.Count == 0 ? text : text + " " + string.Join(" ", notes);
+        }
+    }
+
     /// <summary>
-    /// Exact shrink wrap of the active part or assembly into a new part: union all bodies, bridge nearby
-    /// bodies, close holes flush and fill internal cavities. Faces that stay visible are the original ones.
+    /// Exact shrink wrap of a part or assembly: union all bodies, bridge nearby bodies, close holes flush and
+    /// fill internal cavities. Faces that stay visible are the original ones.
     /// </summary>
     public sealed class ShrinkWrapService
     {
@@ -21,11 +49,13 @@ namespace GeoSimplifier.SolidWorks
             _swApp = swApp;
         }
 
-        public string Run(ShrinkWrapOptions options)
+        /// <summary>Computes the wrap as temporary bodies without changing any document.</summary>
+        public WrapResult Compute(IModelDoc2 source, ShrinkWrapOptions options)
         {
-            var source = _swApp.IActiveDoc2 ?? throw new InvalidOperationException("Açık bir parça ya da montaj yok.");
+            if (source == null)
+                throw new InvalidOperationException("Açık bir parça ya da montaj yok.");
             var watch = Stopwatch.StartNew();
-            var notes = new List<string>();
+            var result = new WrapResult();
 
             _swApp.GetUserProgressBar(out UserProgressBar progress);
             progress.Start(0, 100, "Shrink wrap: gövdeler toplanıyor");
@@ -34,13 +64,15 @@ namespace GeoSimplifier.SolidWorks
                 var bodies = BodyCollector.CopyBodies(source);
                 if (bodies.Count == 0)
                     throw new InvalidOperationException("Görünür katı gövde bulunamadı.");
+                result.SourceBodies = bodies.Count;
 
                 var ops = new BodyOps(_swApp);
                 double tolerance = 1e-6;
 
                 progress.UpdateTitle($"Shrink wrap: {bodies.Count} gövde birleştiriliyor");
                 progress.UpdateProgress(10);
-                var lumps = ops.UnionAll(bodies, tolerance);
+                var original = ops.UnionAll(bodies, tolerance);
+                var lumps = new List<IBody2>(original);
 
                 if (options.GapWidth > 0 && lumps.Count > 1)
                 {
@@ -50,7 +82,7 @@ namespace GeoSimplifier.SolidWorks
                     if (bridged != null)
                         lumps = bridged;
                     else
-                        notes.Add("Parçalar arası boşluklar köprülenemedi (SOLIDWORKS ofset oluşturamadı).");
+                        result.Notes.Add("Parçalar arası boşluklar köprülenemedi (SOLIDWORKS ofset oluşturamadı).");
                 }
 
                 var closer = new HoleCloser();
@@ -65,38 +97,43 @@ namespace GeoSimplifier.SolidWorks
                 if (options.FillCavities)
                 {
                     progress.UpdateTitle("Shrink wrap: iç boşluklar dolduruluyor");
-                    progress.UpdateProgress(75);
+                    progress.UpdateProgress(70);
                     for (int i = 0; i < lumps.Count; i++)
                         lumps[i] = ops.FillCavities(lumps[i]);
                 }
 
-                progress.UpdateTitle("Shrink wrap: parça oluşturuluyor");
-                progress.UpdateProgress(90);
-                var part = NewPart();
-                int created = 0;
-                int featureOptions = (int)(swCreateFeatureBodyOpts_e.swCreateFeatureBodyCheck | swCreateFeatureBodyOpts_e.swCreateFeatureBodySimplify);
-                foreach (var body in lumps)
-                {
-                    if (part.CreateFeatureFromBody3(body, false, featureOptions) != null)
-                        created++;
-                }
-                ((IModelDoc2)part).ViewZoomtofit2();
+                progress.UpdateTitle("Shrink wrap: önizleme hazırlanıyor");
+                progress.UpdateProgress(85);
+                result.Added = ops.Difference(lumps, original);
 
-                string summary =
-                    $"Tamamlandı: {watch.Elapsed.TotalSeconds:F1} sn. {bodies.Count} gövde → {created} gövde. " +
-                    $"{closer.Closed} delik kapatıldı" + (closer.Failed > 0 ? $", {closer.Failed} delik kapatılamadı" : "") + ".";
-                if (created < lumps.Count)
-                    notes.Add("Bazı gövdeler parçaya eklenemedi, sonuç eksik olabilir.");
-                if (lumps.Count > 1)
-                    notes.Add("Birbirinden uzak parçalar var; tek gövde için kapatma genişliğini artırın.");
-                if (ops.FailedBooleans > 0)
-                    notes.Add($"{ops.FailedBooleans} boolean işlemi başarısız oldu.");
-                return notes.Count == 0 ? summary : summary + " " + string.Join(" ", notes);
+                result.Bodies = lumps;
+                result.HolesClosed = closer.Closed;
+                result.HolesFailed = closer.Failed;
+                result.FailedBooleans = ops.FailedBooleans;
+                result.Seconds = watch.Elapsed.TotalSeconds;
+                return result;
             }
             finally
             {
                 progress.End();
             }
+        }
+
+        /// <summary>Puts the computed bodies into a new part and returns the summary text.</summary>
+        public string Commit(WrapResult result)
+        {
+            var part = NewPart();
+            int created = 0;
+            int featureOptions = (int)(swCreateFeatureBodyOpts_e.swCreateFeatureBodyCheck | swCreateFeatureBodyOpts_e.swCreateFeatureBodySimplify);
+            foreach (var body in result.Bodies)
+            {
+                if (part.CreateFeatureFromBody3((IBody2)body.Copy(), false, featureOptions) != null)
+                    created++;
+            }
+            ((IModelDoc2)part).ViewZoomtofit2();
+            if (created < result.Bodies.Count)
+                result.Notes.Add("Bazı gövdeler parçaya eklenemedi, sonuç eksik olabilir.");
+            return "Tamamlandı: " + result.Summary();
         }
 
         private IPartDoc NewPart()
