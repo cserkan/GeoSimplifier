@@ -153,6 +153,11 @@ namespace GeoSimplifier.SolidWorks.UI
             try
             {
                 _preview = _service.Compute(_source, options);
+                // The computation leaves many temporary bodies behind; free their COM objects now, on SOLIDWORKS'
+                // thread and before anything is drawn, rather than whenever the finalizer gets to them.
+                GC.Collect();
+                GC.WaitForPendingFinalizers();
+                GC.Collect();
                 _display = _display ?? new TempBodyPreview(_source);
                 bool shown = true;
                 foreach (var body in _preview.Envelope)
@@ -162,7 +167,7 @@ namespace GeoSimplifier.SolidWorks.UI
                 _source.GraphicsRedraw2();
                 string text = _preview.Summary();
                 if (!_display.Supported)
-                    text += " Montajlarda önizleme çizilmiyor; sonuç Tamam ile yeni parça olarak oluşturulur.";
+                    text += " Bu belgede önizleme çizilemiyor; sonuç Tamam ile yeni parça olarak oluşturulur.";
                 else if (!shown)
                     text += " (Önizleme bu belgede çizilemedi.)";
                 else
@@ -204,7 +209,7 @@ namespace GeoSimplifier.SolidWorks.UI
         /// reports typing (OnNumberboxChanged + OnNumberBoxTrackingCompleted), waits for each preview, then
         /// closes the page with OK or Cancel. Runs from a timer so everything happens in SOLIDWORKS' message loop.
         /// </summary>
-        public void Simulate(double[] limits, bool ok)
+        public void Simulate(double[] limits, bool ok, bool forceGc = true)
         {
             int step = 0;
             var timer = new Timer { Interval = 3000 };
@@ -213,11 +218,16 @@ namespace GeoSimplifier.SolidWorks.UI
                 if (step < limits.Length)
                 {
                     double v = limits[step++];
-                    // Forces the finalizer to run now, so a crash caused by releasing objects shows up quickly.
-                    GC.Collect();
-                    GC.WaitForPendingFinalizers();
                     PageLog.Write($"Simülasyon: {v * 1000:F0} mm");
+                    // Forces the finalizer to run now, so a crash caused by releasing objects shows up quickly.
+                    if (forceGc)
+                    {
+                        GC.Collect();
+                        GC.WaitForPendingFinalizers();
+                        PageLog.Write("Simülasyon: çöp toplandı");
+                    }
                     _gapWidthBox.Value = v;
+                    PageLog.Write("Simülasyon: değer yazıldı");
                     OnNumberboxChanged(GapWidthId, v);
                     OnNumberBoxTrackingCompleted(GapWidthId, v);
                     return;

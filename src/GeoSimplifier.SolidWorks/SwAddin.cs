@@ -145,13 +145,16 @@ namespace GeoSimplifier.SolidWorks
         /// </summary>
         public string TestPage(string limitsMm, bool ok)
         {
+            // A leading "nogc:" runs the steps without forcing garbage collections.
+            bool forceGc = !limitsMm.StartsWith("nogc:");
+            limitsMm = limitsMm.Replace("nogc:", "");
             var limits = Array.ConvertAll(limitsMm.Split(';'),
                 v => double.Parse(v, System.Globalization.CultureInfo.InvariantCulture) / 1000);
             _mainThread.BeginInvoke(new Action(() =>
             {
                 _page = new ShrinkWrapPage(_swApp, _service);
                 _page.Show();
-                _page.Simulate(limits, ok);
+                _page.Simulate(limits, ok, forceGc);
             }));
             return "başladı";
         }
