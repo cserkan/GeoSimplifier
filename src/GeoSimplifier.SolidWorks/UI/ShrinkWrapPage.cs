@@ -218,10 +218,11 @@ namespace GeoSimplifier.SolidWorks.UI
                         : " Zarf mavi, eklenecek malzeme turuncu gösteriliyor.";
                 if (_display.Supported && _preview.Removed.Count > 0)
                     text += " Düzlenen kabartmalar kırmızı.";
-                if (_preview.Log.Count > 0)
-                    text += "\n\nAyrıntı: " + string.Join(" ", _preview.Log);
-                SetMessage(text);
-                PageLog.Write($"Önizleme (çizildi {shown}): " + _preview.Summary());
+                // The page shows no summary (users found it too long); it and the hole details go to the log.
+                HideMessage();
+                PageLog.Write($"Önizleme (çizildi {shown}): " + text);
+                foreach (var line in _preview.Log)
+                    PageLog.Write("  " + line);
             }
             catch (Exception ex)
             {
@@ -238,6 +239,12 @@ namespace GeoSimplifier.SolidWorks.UI
             PageLog.Write("Önizleme gizleniyor");
             _display.Clear();
             PageLog.Write("Önizleme gizlendi");
+        }
+
+        private void HideMessage()
+        {
+            _page?.SetMessage3("", (int)swPropertyManagerPageMessageVisibility.swNoMessageBox,
+                (int)swPropertyManagerPageMessageExpanded.swMessageBoxMaintainExpandState, "");
         }
 
         private void SetMessage(string text)
