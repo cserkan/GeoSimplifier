@@ -146,7 +146,11 @@ namespace GeoSimplifier.SolidWorks
         public string TestPage(string limitsMm, bool ok) => TestPageExcluding(limitsMm, ok, "");
 
         /// <summary>As <see cref="TestPage"/>, with the components named in <paramref name="excludeNames"/> (';'-separated Name2) excluded.</summary>
-        public string TestPageExcluding(string limitsMm, bool ok, string excludeNames)
+        public string TestPageExcluding(string limitsMm, bool ok, string excludeNames) =>
+            TestPageOutput(limitsMm, ok, excludeNames, "");
+
+        /// <summary>As <see cref="TestPageExcluding"/>; a non-empty <paramref name="configurationName"/> chooses "Konfigürasyon oluştur".</summary>
+        public string TestPageOutput(string limitsMm, bool ok, string excludeNames, string configurationName)
         {
             // A leading "nogc:" runs the steps without forcing garbage collections.
             bool forceGc = !limitsMm.StartsWith("nogc:");
@@ -159,6 +163,8 @@ namespace GeoSimplifier.SolidWorks
                 _page.Show();
                 if (!string.IsNullOrEmpty(excludeNames))
                     _page.ExcludeForTest(excludeNames.Split(';'));
+                if (!string.IsNullOrEmpty(configurationName))
+                    _page.OutputForTest(configurationName);
                 _page.Simulate(limits, ok, forceGc);
             }));
             return "başladı";

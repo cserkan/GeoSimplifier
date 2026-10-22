@@ -39,8 +39,10 @@ namespace GeoSimplifier.Probe
                 var addin = swApp.GetAddInObject("GeoSimplifier.SwAddin");
                 if (addin == null) { Console.Error.WriteLine("Eklenti bulunamadı."); return 1; }
                 int ex = Array.IndexOf(args, "--exclude");
-                var callArgs = new object[] { args[test + 1], Array.IndexOf(args, "--ok") >= 0, ex >= 0 ? args[ex + 1] : "" };
-                Console.WriteLine(addin.GetType().InvokeMember("TestPageExcluding", System.Reflection.BindingFlags.InvokeMethod, null, addin, callArgs));
+                // --config Simple chooses "Konfigürasyon oluştur" with that name.
+                int cfg = Array.IndexOf(args, "--config");
+                var callArgs = new object[] { args[test + 1], Array.IndexOf(args, "--ok") >= 0, ex >= 0 ? args[ex + 1] : "", cfg >= 0 ? args[cfg + 1] : "" };
+                Console.WriteLine(addin.GetType().InvokeMember("TestPageOutput", System.Reflection.BindingFlags.InvokeMethod, null, addin, callArgs));
                 return 0;
             }
             if (Array.IndexOf(args, "--docs") >= 0)
@@ -49,9 +51,12 @@ namespace GeoSimplifier.Probe
                 foreach (IModelDoc2 d in (object[])swApp.GetDocuments() ?? new object[0])
                 {
                     Console.WriteLine($"{d.GetTitle()} ({d.GetPathName()})");
+                    Console.WriteLine($"    konfigürasyonlar: {string.Join(", ", (string[])d.GetConfigurationNames() ?? new string[0])}; etkin: {((IConfiguration)d.GetActiveConfiguration())?.Name}");
                     if (d is IPartDoc pd)
                         foreach (IBody2 b in (object[])pd.GetBodies2(0, true) ?? new object[0])
                             Console.WriteLine($"    gövde: {((object[])b.GetFaces()).Length} yüz, hacim {((double[])b.GetMassProperties(1))[3] * 1e9:F0} mm³");
+                    if (d is IPartDoc sd)
+                        Console.WriteLine($"    yüzey gövdesi: {((object[])sd.GetBodies2(1, true))?.Length ?? 0}, özellik: {d.GetFeatureCount()}");
                 }
                 return 0;
             }
@@ -78,26 +83,22 @@ namespace GeoSimplifier.Probe
                 {
                     // --make sheets: six separate square wall surfaces of a 100 mm box, each 2 mm short of the edges.
                     var modeler = (IModeler)swApp.GetModeler();
-                    double L = 100, g = 2, t = 0.1;
+                    double L = 0.1, h = 0.048; // half size of a wall: 50 mm less the 2 mm gap
                     var walls = new[]
                     {
-                        (Mm(g, g, -t, L - g, L - g, 0), 2, -1), (Mm(g, g, L, L - g, L - g, L + t), 2, 1),
-                        (Mm(g, -t, g, L - g, 0, L - g), 1, -1), (Mm(g, L, g, L - g, L + t, L - g), 1, 1),
-                        (Mm(-t, g, g, 0, L - g, L - g), 0, -1), (Mm(L, g, g, L + t, L - g, L - g), 0, 1),
+                        (new[] { L / 2, L / 2, 0.0 }, new[] { 0.0, 0, 1 }, new[] { 1.0, 0, 0 }),
+                        (new[] { L / 2, L / 2, L }, new[] { 0.0, 0, 1 }, new[] { 1.0, 0, 0 }),
+                        (new[] { L / 2, 0.0, L / 2 }, new[] { 0.0, 1, 0 }, new[] { 1.0, 0, 0 }),
+                        (new[] { L / 2, L, L / 2 }, new[] { 0.0, 1, 0 }, new[] { 1.0, 0, 0 }),
+                        (new[] { 0.0, L / 2, L / 2 }, new[] { 1.0, 0, 0 }, new[] { 0.0, 1, 0 }),
+                        (new[] { L, L / 2, L / 2 }, new[] { 1.0, 0, 0 }, new[] { 0.0, 1, 0 }),
                     };
-                    foreach (var (box, axis, side) in walls)
+                    foreach (var (root, normal, refDir) in walls)
                     {
-                        var slab = ops.Box(box);
-                        // The face of the thin slab on the box's side becomes the wall surface.
-                        foreach (IFace2 f in (object[])slab.GetFaces())
-                        {
-                            var n = (double[])f.Normal;
-                            if (Math.Abs(n[axis] + side) < 1e-6)
-                            {
-                                parts.Add(modeler.CreateSheetFromFaces(new object[] { f }));
-                                break;
-                            }
-                        }
+                        var plane = (Surface)modeler.CreatePlanarSurface2(root, normal, refDir);
+                        var sheet = (IBody2)modeler.CreateSheetFromSurface(plane, new[] { -h, h, -h, h });
+                        Console.WriteLine($"  yüzey: {(sheet == null ? "oluşturulamadı" : "tamam")}");
+                        if (sheet != null) parts.Add(sheet);
                     }
                 }
                 else
@@ -109,8 +110,16 @@ namespace GeoSimplifier.Probe
                 string template = swApp.GetUserPreferenceStringValue((int)global::SolidWorks.Interop.swconst.swUserPreferenceStringValue_e.swDefaultTemplatePart);
                 var part = (IPartDoc)swApp.NewDocument(template, 0, 0, 0);
                 foreach (var body in parts)
-                    part.CreateFeatureFromBody3(body, false, 0);
+                    if (part.CreateFeatureFromBody3(body, false, 0) == null)
+                        Console.WriteLine("  özellik oluşturulamadı");
                 ((IModelDoc2)part).ViewZoomtofit2();
+                int saveAt = Array.IndexOf(args, "--save");
+                if (saveAt >= 0 && saveAt + 1 < args.Length)
+                {
+                    int e = 0, w = 0;
+                    bool saved = ((IModelDoc2)part).Extension.SaveAs3(args[saveAt + 1], 0, 1, null, null, ref e, ref w);
+                    Console.WriteLine($"Kaydedildi: {saved} ({args[saveAt + 1]})");
+                }
                 Console.WriteLine($"Test parçası: {args[make + 1]}, {parts.Count} gövde, {((IModelDoc2)part).GetTitle()}");
                 return 0;
             }
@@ -195,6 +204,41 @@ namespace GeoSimplifier.Probe
                                           $"kutu {Box(box)}, komşular {string.Join(" ", neighbours)}");
                     }
                 }
+                return 0;
+            }
+            if (Array.IndexOf(args, "--configs") >= 0 && doc is IPartDoc)
+            {
+                // For each configuration of a part: how many features are suppressed, and the last feature's state.
+                string active = ((IConfiguration)doc.GetActiveConfiguration()).Name;
+                foreach (string name in (string[])doc.GetConfigurationNames())
+                {
+                    doc.ShowConfiguration2(name);
+                    int suppressed = 0;
+                    IFeature lastFeature = null;
+                    for (var f = (IFeature)doc.FirstFeature(); f != null; f = (IFeature)f.GetNextFeature())
+                    {
+                        if (f.IsSuppressed()) suppressed++;
+                        lastFeature = f;
+                    }
+                    var solid = (object[])((IPartDoc)doc).GetBodies2(0, true);
+                    Console.WriteLine($"{name}: {suppressed} bastırılmış özellik, son özellik {lastFeature?.Name}{(lastFeature?.IsSuppressed() == true ? " (bastırılmış)" : "")}, " +
+                                      $"görünen gövde {solid?.Length ?? 0}" + (solid != null && solid.Length > 0 ? $" ({((object[])((IBody2)solid[0]).GetFaces()).Length} yüz)" : ""));
+                }
+                doc.ShowConfiguration2(active);
+                return 0;
+            }
+            if (Array.IndexOf(args, "--configs") >= 0 && doc is IAssemblyDoc ca)
+            {
+                // For each configuration: the top-level components and whether they are suppressed (switches configurations).
+                string active = ((IConfiguration)doc.GetActiveConfiguration()).Name;
+                foreach (string name in (string[])doc.GetConfigurationNames())
+                {
+                    doc.ShowConfiguration2(name);
+                    var states = ((object[])ca.GetComponents(true) ?? new object[0]).Cast<IComponent2>()
+                        .Select(c => $"{c.Name2}{(c.IsSuppressed() ? " (bastırılmış)" : "")}{(c.IsFixed() ? " (sabit)" : "")}");
+                    Console.WriteLine($"{name}: {string.Join(", ", states)}");
+                }
+                doc.ShowConfiguration2(active);
                 return 0;
             }
             if (doc is IAssemblyDoc asm)

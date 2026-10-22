@@ -212,7 +212,8 @@ namespace GeoSimplifier.SolidWorks
                 }
 
 
-                if (options.FillCavities && !options.Preview)
+                // The quick preview skips this, except for surface models: there the filled inside is the result.
+                if (options.FillCavities && (!options.Preview || result.Sheets > 0))
                 {
                     progress.UpdateTitle("Shrink wrap: iç boşluklar dolduruluyor");
                     progress.UpdateProgress(70);
@@ -266,8 +267,18 @@ namespace GeoSimplifier.SolidWorks
         }
 
         /// <summary>Puts the computed bodies into a new part and returns the summary text.</summary>
-        public string Commit(WrapResult result)
+        public string Commit(WrapResult result) => Commit(result, null, null);
+
+        /// <summary>
+        /// With <paramref name="configurationName"/>, puts the result into a new configuration of
+        /// <paramref name="source"/> (see <see cref="ConfigurationOutput"/>) instead of a new part.
+        /// </summary>
+        public string Commit(WrapResult result, IModelDoc2 source, string configurationName)
         {
+            if (source != null && configurationName != null)
+                return "Tamamlandı: " + result.Summary() + " " +
+                       new ConfigurationOutput(_swApp).Create(source, result.Bodies, configurationName, NewPart);
+
             var part = NewPart();
             int created = 0;
             int featureOptions = (int)(swCreateFeatureBodyOpts_e.swCreateFeatureBodyCheck | swCreateFeatureBodyOpts_e.swCreateFeatureBodySimplify);

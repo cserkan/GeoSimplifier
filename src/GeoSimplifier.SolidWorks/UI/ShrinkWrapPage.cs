@@ -26,6 +26,11 @@ namespace GeoSimplifier.SolidWorks.UI
         private const int EmbossHeightId = 10;
         private const int ExcludeGroupId = 7;
         private const int ExcludeId = 8;
+        private const int OutputGroupId = 11;
+        private const int NewPartId = 12;
+        private const int NewConfigId = 13;
+        private const int ConfigNameLabelId = 14;
+        private const int ConfigNameId = 15;
 
         // Selection mark of the exclusion box, so its items are told apart from other selections.
         private const int ExcludeMark = 2;
@@ -35,6 +40,8 @@ namespace GeoSimplifier.SolidWorks.UI
         private static double _gapWidth = 0.01; // meters
         private static bool _fillCavities = true;
         private static double _embossHeight = 0; // meters; 0 keeps embossed details
+        private static bool _newConfiguration;
+        private static string _configurationName = "Simple";
 
         private readonly ISldWorks _swApp;
         private readonly ShrinkWrapService _service;
@@ -53,6 +60,11 @@ namespace GeoSimplifier.SolidWorks.UI
         private IPropertyManagerPageGroup _excludeGroup;
         private IPropertyManagerPageSelectionbox _excludeBox;
         private Exclusions _exclusions = new Exclusions();
+        private IPropertyManagerPageGroup _outputGroup;
+        private IPropertyManagerPageOption _newPartOption;
+        private IPropertyManagerPageOption _newConfigOption;
+        private IPropertyManagerPageLabel _configNameLabel;
+        private IPropertyManagerPageTextbox _configNameBox;
         private bool _ok;
         private IModelDoc2 _source;
         private WrapResult _preview;
@@ -123,6 +135,24 @@ namespace GeoSimplifier.SolidWorks.UI
             _excludeBox.Mark = ExcludeMark;
             _excludeBox.SetSelectionFilters(new[] { (int)swSelectType_e.swSelCOMPONENTS, (int)swSelectType_e.swSelSOLIDBODIES });
 
+            // Where OK puts the result: a new part, or a new configuration of this document.
+            _outputGroup = (IPropertyManagerPageGroup)_page.AddGroupBox(OutputGroupId, "Sonuç",
+                (int)(swAddGroupBoxOptions_e.swGroupBoxOptions_Visible | swAddGroupBoxOptions_e.swGroupBoxOptions_Expanded));
+            _newPartOption = (IPropertyManagerPageOption)AddControl(_outputGroup, NewPartId, swPropertyManagerPageControlType_e.swControlType_Option,
+                "Yeni parça", "Sarma yeni, kaydedilmemiş bir parça olarak açılır.");
+            _newConfigOption = (IPropertyManagerPageOption)AddControl(_outputGroup, NewConfigId, swPropertyManagerPageControlType_e.swControlType_Option,
+                "Konfigürasyon oluştur",
+                "Montajda: sarma montajın yanına parça olarak kaydedilir, yeni konfigürasyonda diğer bileşenler bastırılıp sarma orijine sabitlenir. " +
+                "Parçada: yeni konfigürasyonda parçanın özellikleri bastırılır ve sarma eklenir. Mevcut konfigürasyonlar değişmez.");
+            _configNameLabel = (IPropertyManagerPageLabel)AddControl(_outputGroup, ConfigNameLabelId, swPropertyManagerPageControlType_e.swControlType_Label,
+                "Konfigürasyon adı", null);
+            _configNameBox = (IPropertyManagerPageTextbox)AddControl(_outputGroup, ConfigNameId, swPropertyManagerPageControlType_e.swControlType_Textbox,
+                "Konfigürasyon adı", "Bu ad varsa sonuna numara eklenir.");
+            _configNameBox.Text = _configurationName;
+            (_newConfiguration ? _newConfigOption : _newPartOption).Checked = true;
+            _outputNewConfig = _newConfiguration;
+            _outputName = _configurationName;
+
             UpdateEnabled();
             _page.Show2(0);
         }
@@ -133,9 +163,14 @@ namespace GeoSimplifier.SolidWorks.UI
                 (int)(swAddControlOptions_e.swControlOptions_Visible | swAddControlOptions_e.swControlOptions_Enabled), tip ?? "");
         }
 
+        private bool _outputNewConfig;
+        private string _outputName;
+
         private void UpdateEnabled()
         {
             ((IPropertyManagerPageControl)_gapWidthBox).Enabled = _closeHolesBox.Checked;
+            if (_configNameBox != null)
+                ((IPropertyManagerPageControl)_configNameBox).Enabled = _outputNewConfig;
         }
 
         // The number box's Value still holds the old number while OnNumberboxChanged runs, so the new one is kept here.
@@ -348,6 +383,8 @@ namespace GeoSimplifier.SolidWorks.UI
             if (!_ok)
                 return;
             _closeHoles = _closeHolesBox.Checked;
+            _newConfiguration = _outputNewConfig;
+            _configurationName = string.IsNullOrWhiteSpace(_outputName) ? "Simple" : _outputName.Trim();
             _gapWidth = _gapValue;
             _fillCavities = _fillCavitiesBox.Checked;
             _embossHeight = _embossValue;
@@ -368,7 +405,9 @@ namespace GeoSimplifier.SolidWorks.UI
             try
             {
                 var result = _preview ?? _service.Compute(_source, CurrentOptionsFromSettings(), _exclusions);
-                message = _service.Commit(result);
+                message = _outputNewConfig
+                    ? _service.Commit(result, _source, string.IsNullOrWhiteSpace(_outputName) ? "Simple" : _outputName.Trim())
+                    : _service.Commit(result);
                 PageLog.Write("Tamam: " + message);
                 icon = (int)swMessageBoxIcon_e.swMbInformation;
             }
@@ -406,9 +445,31 @@ namespace GeoSimplifier.SolidWorks.UI
         public bool OnTabClicked(int Id) => true;
         public void OnGroupExpand(int Id, bool Expanded) { }
         public void OnGroupCheck(int Id, bool Checked) { }
-        public void OnOptionCheck(int Id) { }
+        public void OnOptionCheck(int Id)
+        {
+            if (Id != NewPartId && Id != NewConfigId)
+                return;
+            _outputNewConfig = Id == NewConfigId;
+            UpdateEnabled();
+        }
         public void OnButtonPress(int Id) { }
-        public void OnTextboxChanged(int Id, string Text) => PageLog.Write($"OnTextboxChanged {Id}: {Text}");
+        public void OnTextboxChanged(int Id, string Text)
+        {
+            PageLog.Write($"OnTextboxChanged {Id}: {Text}");
+            if (Id == ConfigNameId)
+                _outputName = Text;
+        }
+
+        /// <summary>Test hook: chooses "Konfigürasyon oluştur" with the given name (null keeps "Yeni parça").</summary>
+        public void OutputForTest(string configurationName)
+        {
+            if (configurationName == null)
+                return;
+            _newConfigOption.Checked = true;
+            _configNameBox.Text = configurationName;
+            OnOptionCheck(NewConfigId);
+            _outputName = configurationName;
+        }
         public void OnComboboxEditChanged(int Id, string Text) { }
         public void OnComboboxSelectionChanged(int Id, int Item) { }
         public void OnListboxSelectionChanged(int Id, int Item) { }
