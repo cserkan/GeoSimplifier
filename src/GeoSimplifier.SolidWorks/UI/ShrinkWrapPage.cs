@@ -192,7 +192,10 @@ namespace GeoSimplifier.SolidWorks.UI
             PageLog.Write($"Önizleme hesaplanıyor: sınır {options.GapWidth * 1000:F2} mm");
             try
             {
+                var watch = System.Diagnostics.Stopwatch.StartNew();
+                options.Preview = true;
                 _preview = _service.Compute(_source, options, _exclusions);
+                double computed = watch.Elapsed.TotalSeconds;
                 // The computation leaves many temporary bodies behind; free their COM objects now, on SOLIDWORKS'
                 // thread and before anything is drawn, rather than whenever the finalizer gets to them.
                 GC.Collect();
@@ -220,7 +223,7 @@ namespace GeoSimplifier.SolidWorks.UI
                     text += " Düzlenen kabartmalar kırmızı.";
                 // The page shows no summary (users found it too long); it and the hole details go to the log.
                 HideMessage();
-                PageLog.Write($"Önizleme (çizildi {shown}): " + text);
+                PageLog.Write($"Önizleme (çizildi {shown}, hesap {computed:F2} sn, toplam {watch.Elapsed.TotalSeconds:F2} sn): " + text);
                 foreach (var line in _preview.Log)
                     PageLog.Write("  " + line);
             }
@@ -348,9 +351,8 @@ namespace GeoSimplifier.SolidWorks.UI
             _gapWidth = _gapValue;
             _fillCavities = _fillCavitiesBox.Checked;
             _embossHeight = _embossValue;
-            // The preview is the result unless it is stale or failed.
-            if (Key(CurrentOptions()) != _previewKey)
-                _preview = null;
+            // The preview is only a quick, rough result; OK computes the real one.
+            _preview = null;
         }
 
         public void AfterClose()

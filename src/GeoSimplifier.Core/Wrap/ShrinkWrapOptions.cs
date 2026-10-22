@@ -18,5 +18,11 @@ namespace GeoSimplifier.Core.Wrap
 
         /// <summary>Fill closed internal cavities so the result is solid inside.</summary>
         public bool FillCavities { get; set; } = true;
+
+        /// <summary>
+        /// A quick, rough result for the preview: plugs are found but not united with the bodies, the union of the
+        /// bodies is reused between previews and cavities are not filled. The real result is computed on OK.
+        /// </summary>
+        public bool Preview { get; set; }
     }
 }

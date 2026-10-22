@@ -50,6 +50,12 @@ namespace GeoSimplifier.SolidWorks
         /// <summary>Hole detection details, shown in the preview box for debugging.</summary>
         public List<string> Log = new List<string>();
 
+        /// <summary>A quick preview result (<see cref="ShrinkWrapOptions.Preview"/>): not to be committed.</summary>
+        public bool IsPreview;
+
+        /// <summary>Seconds spent in each step, for finding what makes the preview slow.</summary>
+        public string Timings = "";
+
         public string Summary()
         {
             string text = $"{SourceBodies} gövde" + (ExcludedBodies > 0 ? $" (+{ExcludedBodies} hariç tutulan)" : "") +
@@ -80,6 +86,10 @@ namespace GeoSimplifier.SolidWorks
     {
         private readonly ISldWorks _swApp;
 
+        // The union of the source bodies does not depend on the settings, so previews reuse it.
+        private string _unionKey;
+        private List<IBody2> _union;
+
         public ShrinkWrapService(ISldWorks swApp)
         {
             _swApp = swApp;
@@ -98,6 +108,14 @@ namespace GeoSimplifier.SolidWorks
                 throw new InvalidOperationException("Açık bir parça ya da montaj yok.");
             var watch = Stopwatch.StartNew();
             var result = new WrapResult();
+            var laps = new List<string>();
+            double last = 0;
+            void Lap(string step)
+            {
+                double now = watch.Elapsed.TotalSeconds;
+                laps.Add($"{step} {now - last:F2}");
+                last = now;
+            }
 
             _swApp.GetUserProgressBar(out UserProgressBar progress);
             progress.Start(0, 100, "Shrink wrap: gövdeler toplanıyor");
@@ -121,15 +139,60 @@ namespace GeoSimplifier.SolidWorks
                         : result.FailedSheets > 0
                             ? "Katı gövde yok; yüzeyler kalınlaştırılamadı."
                             : "Görünür katı veya yüzey gövdesi bulunamadı.");
+                Lap("toplama");
                 result.SourceBodies = bodies.Count;
                 result.ExcludedBodies = excluded.Count;
 
                 double tolerance = 1e-6;
 
+                // Holes are closed in each body before the bodies are united: a plug is cut from and united with
+                // that one small body instead of the whole assembly, which made this step the slowest by far.
+                var closer = new HoleCloser(ops) { PlugsOnly = options.Preview };
+                result.IsPreview = options.Preview;
+                if (options.MaxEmbossHeight > 0)
+                {
+                    progress.UpdateTitle("Shrink wrap: kabartmalar düzleniyor");
+                    progress.UpdateProgress(5);
+                    for (int i = 0; i < bodies.Count; i++)
+                    {
+                        int before = closer.BossesRemoved;
+                        var flat = closer.RemoveBosses(bodies[i], options.MaxEmbossHeight);
+                        if (closer.BossesRemoved > before)
+                            result.Removed.AddRange(ops.Difference(new[] { bodies[i] }, new[] { flat }));
+                        bodies[i] = flat;
+                    }
+                    Lap("kabartma");
+                }
+                if (options.GapWidth > 0)
+                {
+                    progress.UpdateTitle("Shrink wrap: delikler kapatılıyor");
+                    progress.UpdateProgress(10);
+                    for (int i = 0; i < bodies.Count; i++)
+                        bodies[i] = closer.CloseHoles(bodies[i], options.GapWidth);
+                    Lap("delik");
+                }
+                var plugs = closer.Plugs;
+
                 progress.UpdateTitle($"Shrink wrap: {bodies.Count} gövde birleştiriliyor");
-                progress.UpdateProgress(10);
-                var original = ops.UnionAll(bodies, tolerance);
+                progress.UpdateProgress(30);
+                // A preview leaves the bodies unplugged (only flattened), so their union can be reused.
+                string unionKey = options.Preview
+                    ? $"{source.GetPathName()}|{source.GetTitle()}|{exclusions?.Key}|{bodies.Count}|{options.MaxEmbossHeight:R}"
+                    : null;
+                List<IBody2> original;
+                if (unionKey != null && unionKey == _unionKey)
+                    original = _union;
+                else
+                {
+                    original = ops.UnionAll(bodies, tolerance);
+                    if (unionKey != null)
+                    {
+                        _unionKey = unionKey;
+                        _union = original;
+                    }
+                }
                 var lumps = new List<IBody2>(original);
+                Lap("birleştirme");
 
                 if (options.GapWidth > 0 && lumps.Count > 1)
                 {
@@ -145,37 +208,25 @@ namespace GeoSimplifier.SolidWorks
                         lumps = ops.BridgeByBoxes(lumps, options.GapWidth, tolerance, out int count);
                         result.Bridges = count;
                     }
+                    Lap("köprü");
                 }
 
-                var closer = new HoleCloser(ops);
-                if (options.MaxEmbossHeight > 0)
-                {
-                    progress.UpdateTitle("Shrink wrap: kabartmalar düzleniyor");
-                    progress.UpdateProgress(45);
-                    for (int i = 0; i < lumps.Count; i++)
-                        lumps[i] = closer.RemoveBosses(lumps[i], options.MaxEmbossHeight);
-                }
-                if (options.GapWidth > 0)
-                {
-                    progress.UpdateTitle("Shrink wrap: delikler kapatılıyor");
-                    progress.UpdateProgress(50);
-                    for (int i = 0; i < lumps.Count; i++)
-                        lumps[i] = closer.CloseHoles(lumps[i], options.GapWidth);
-                }
 
-                if (options.FillCavities)
+                if (options.FillCavities && !options.Preview)
                 {
                     progress.UpdateTitle("Shrink wrap: iç boşluklar dolduruluyor");
                     progress.UpdateProgress(70);
                     for (int i = 0; i < lumps.Count; i++)
                         lumps[i] = ops.FillCavities(lumps[i]);
+                    Lap("iç boşluk");
                 }
 
                 progress.UpdateTitle("Shrink wrap: önizleme hazırlanıyor");
                 progress.UpdateProgress(85);
-                result.Added = ops.Difference(lumps, original);
-                if (closer.BossesRemoved > 0)
-                    result.Removed = ops.Difference(original, lumps);
+                // Plugs were taken per body; bridges and filled cavities are what the lumps have beyond the union.
+                var changed = lumps.Where(l => !original.Any(o => ReferenceEquals(o, l))).ToList();
+                result.Added = plugs.Concat(changed.Count > 0 ? ops.Difference(changed, original) : new List<IBody2>()).ToList();
+                Lap("fark");
 
                 if (excluded.Count > 0)
                 {
@@ -185,6 +236,7 @@ namespace GeoSimplifier.SolidWorks
                     lumps = ops.UnionAll(lumps.Concat(excluded), tolerance);
                     if (lumps.Count > before)
                         result.Notes.Add("Bazı hariç tutulan gövdeler sarılan gövdeye değmediği için ayrı kaldı.");
+                    Lap("hariç");
                 }
 
                 result.Bodies = lumps;
@@ -193,8 +245,9 @@ namespace GeoSimplifier.SolidWorks
                 foreach (var lump in lumps)
                 {
                     double gap = Math.Max(5e-5, BodyOps.Bounds(lump).LongestSide * 0.0015);
-                    result.Envelope.Add(ops.Offset(lump, gap, outward: true) ?? (IBody2)lump.Copy());
+                    result.Envelope.Add(options.Preview ? lump : ops.Offset(lump, gap, outward: true) ?? (IBody2)lump.Copy());
                 }
+                Lap("zarf");
                 result.HolesClosed = closer.Closed;
                 result.HolesFailed = closer.Failed;
                 result.BossesRemoved = closer.BossesRemoved;
@@ -202,6 +255,8 @@ namespace GeoSimplifier.SolidWorks
                 result.Log = closer.Log;
                 result.FailedBooleans = ops.FailedBooleans;
                 result.Seconds = watch.Elapsed.TotalSeconds;
+                result.Timings = string.Join(", ", laps);
+                UI.PageLog.Write($"Süreler ({bodies.Count} gövde): {result.Timings}");
                 return result;
             }
             finally

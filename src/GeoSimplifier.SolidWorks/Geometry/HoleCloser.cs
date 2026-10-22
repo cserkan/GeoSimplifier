@@ -38,6 +38,15 @@ namespace GeoSimplifier.SolidWorks.Geometry
         /// <summary>Openings that were found but are wider than the limit (meters).</summary>
         public readonly List<double> TooWide = new List<double>();
 
+        /// <summary>The plugs that were (or, with <see cref="PlugsOnly"/>, would be) united with the bodies.</summary>
+        public readonly List<IBody2> Plugs = new List<IBody2>();
+
+        /// <summary>
+        /// For the quick preview: find the plugs but leave the bodies as they are, and use only the first mouth of a
+        /// hole (it reaches through the hole), so the expensive unions with the body are skipped.
+        /// </summary>
+        public bool PlugsOnly;
+
         private bool _logging;
 
         /// <summary>A hole: connected faces bounded only by inner loops of the faces around it.</summary>
@@ -78,7 +87,7 @@ namespace GeoSimplifier.SolidWorks.Geometry
             {
                 // A through hole has a mouth on each side; the first plug usually fills it and the others add nothing.
                 bool ok = true;
-                foreach (var mouth in hole.Mouths)
+                foreach (var mouth in PlugsOnly ? hole.Mouths.Take(1) : hole.Mouths)
                 {
                     var next = Fill(current, hole, mouth);
                     if (next == null) { ok = false; break; }
@@ -88,8 +97,9 @@ namespace GeoSimplifier.SolidWorks.Geometry
                 else Failed++;
             }
             // Holes whose mouth runs across several faces (e.g. on a bend radius) are found from their walls.
-            var walls = new WallHoleCloser(_ops, Log.Add);
+            var walls = new WallHoleCloser(_ops, Log.Add) { PlugsOnly = PlugsOnly };
             current = walls.Close(body, current, maxWidth, planarFaces);
+            Plugs.AddRange(walls.Plugs);
             Closed += walls.Closed;
             Failed += walls.Failed;
             TooWide.AddRange(walls.TooWide);
@@ -172,6 +182,9 @@ namespace GeoSimplifier.SolidWorks.Geometry
                 for (int a = 0; a < 3; a++)
                     inside &= pb.Min[a] >= hole.Bounds.Min[a] - tol && pb.Max[a] <= hole.Bounds.Max[a] + tol;
                 if (!inside)
+                    continue;
+                Plugs.Add(piece);
+                if (PlugsOnly)
                     continue;
                 result = _ops.Union(result, piece);
                 if (result == null)

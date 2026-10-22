@@ -33,6 +33,10 @@ namespace GeoSimplifier.SolidWorks.Geometry
         public int Failed { get; private set; }
         public readonly List<double> TooWide = new List<double>();
 
+        /// <summary>The plugs found; see <see cref="HoleCloser.PlugsOnly"/>.</summary>
+        public readonly List<IBody2> Plugs = new List<IBody2>();
+        public bool PlugsOnly;
+
         private sealed class Hole
         {
             public readonly List<IFace2> Faces = new List<IFace2>();
@@ -213,6 +217,9 @@ namespace GeoSimplifier.SolidWorks.Geometry
             }
             if (plug == null)
                 return Fail("delik boşluğu bulunamadı");
+            Plugs.Add(plug);
+            if (PlugsOnly)
+                return body;
             return _ops.Union(body, plug) ?? _ops.Union(plug, body) ?? Fail("tapa gövdeyle birleştirilemedi");
         }
 

@@ -74,6 +74,32 @@ namespace GeoSimplifier.Probe
                         plate = ops.Union(plate, ops.Box(letter)) ?? plate;
                     parts.Add(plate);
                 }
+                else if (args[make + 1] == "sheets")
+                {
+                    // --make sheets: six separate square wall surfaces of a 100 mm box, each 2 mm short of the edges.
+                    var modeler = (IModeler)swApp.GetModeler();
+                    double L = 100, g = 2, t = 0.1;
+                    var walls = new[]
+                    {
+                        (Mm(g, g, -t, L - g, L - g, 0), 2, -1), (Mm(g, g, L, L - g, L - g, L + t), 2, 1),
+                        (Mm(g, -t, g, L - g, 0, L - g), 1, -1), (Mm(g, L, g, L - g, L + t, L - g), 1, 1),
+                        (Mm(-t, g, g, 0, L - g, L - g), 0, -1), (Mm(L, g, g, L + t, L - g, L - g), 0, 1),
+                    };
+                    foreach (var (box, axis, side) in walls)
+                    {
+                        var slab = ops.Box(box);
+                        // The face of the thin slab on the box's side becomes the wall surface.
+                        foreach (IFace2 f in (object[])slab.GetFaces())
+                        {
+                            var n = (double[])f.Normal;
+                            if (Math.Abs(n[axis] + side) < 1e-6)
+                            {
+                                parts.Add(modeler.CreateSheetFromFaces(new object[] { f }));
+                                break;
+                            }
+                        }
+                    }
+                }
                 else
                 {
                     parts.Add(ops.Box(Mm(0, 0, 0, 50, 50, 20)));
