@@ -400,24 +400,21 @@ namespace GeoSimplifier.SolidWorks.UI
             if (!_ok)
                 return;
 
-            string message;
-            int icon;
             try
             {
                 var result = _preview ?? _service.Compute(_source, CurrentOptionsFromSettings(), _exclusions);
-                message = _outputNewConfig
+                string message = _outputNewConfig
                     ? _service.Commit(result, _source, string.IsNullOrWhiteSpace(_outputName) ? "Simple" : _outputName.Trim())
                     : _service.Commit(result);
+                // No message box on success: it only gets in the way. The summary goes to the log.
                 PageLog.Write("Tamam: " + message);
-                icon = (int)swMessageBoxIcon_e.swMbInformation;
             }
             catch (Exception ex)
             {
-                message = "Shrink wrap başarısız: " + ex.Message;
                 PageLog.Write("Tamam hatası: " + ex);
-                icon = (int)swMessageBoxIcon_e.swMbStop;
+                _swApp.SendMsgToUser2("Shrink wrap başarısız: " + ex.Message,
+                    (int)swMessageBoxIcon_e.swMbStop, (int)swMessageBoxBtn_e.swMbOk);
             }
-            _swApp.SendMsgToUser2(message, icon, (int)swMessageBoxBtn_e.swMbOk);
         }
 
         private static ShrinkWrapOptions CurrentOptionsFromSettings() => new ShrinkWrapOptions
