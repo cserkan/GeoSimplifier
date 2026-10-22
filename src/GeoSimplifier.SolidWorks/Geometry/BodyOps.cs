@@ -62,31 +62,111 @@ namespace GeoSimplifier.SolidWorks.Geometry
         }
 
         /// <summary>
-        /// Sews surface bodies together. Returns the solids that came out of closed sets of surfaces; the number
-        /// of surfaces that stayed open is returned in <paramref name="open"/>.
+        /// Turns open surface bodies into thin solids so the wrap goes over them like any other part; they are
+        /// not sewn. Surfaces SOLIDWORKS cannot thicken are counted in <paramref name="failed"/>.
         /// </summary>
-        public List<IBody2> SewSheets(List<IBody2> sheets, double tolerance, out int open)
+        public List<IBody2> ThickenSheets(List<IBody2> sheets, double thickness, out int failed)
         {
             var solids = new List<IBody2>();
-            open = 0;
-            if (sheets.Count == 0)
-                return solids;
-            int error = 0;
-            var results = (object[])_modeler.CreateBodiesFromSheets2(sheets.ToArray(),
-                (int)swSheetSewingOption_e.swSewToSolidOrSheets, tolerance, ref error);
-            if (results == null)
+            failed = 0;
+            foreach (var sheet in sheets)
             {
-                open = sheets.Count;
-                return solids;
-            }
-            foreach (IBody2 body in results)
-            {
-                if (body.GetType() == (int)swBodyType_e.swSolidBody)
-                    solids.Add(body);
+                var solid = _modeler.ThickenSheet((Body2)sheet, thickness, (int)swThickenDirection_e.swThickenDirection_Both);
+                if (solid != null)
+                    solids.Add(solid);
                 else
-                    open++;
+                    failed++;
             }
             return solids;
+        }
+
+        /// <summary>
+        /// Bridges lumps without offsets (MakeOffset fails on some installations), like a bag pulled over them:
+        /// for two lumps whose boxes are at most <paramref name="gapWidth"/> apart along some axis, the space between
+        /// them within the overlap of their outlines is filled, keeping only pieces that touch both lumps.
+        /// </summary>
+        public List<IBody2> BridgeByBoxes(List<IBody2> lumps, double gapWidth, double tolerance, out int bridges)
+        {
+            bridges = 0;
+            var current = new List<IBody2>(lumps);
+            for (int round = 0; round < 50 && current.Count > 1; round++)
+            {
+                bool merged = false;
+                for (int i = 0; i < current.Count && !merged; i++)
+                    for (int j = i + 1; j < current.Count && !merged; j++)
+                    {
+                        var bridge = BoxBridge(current[i], current[j], gapWidth, tolerance);
+                        if (bridge == null)
+                            continue;
+                        var joined = Union(Union(current[i], bridge) ?? current[i], current[j]);
+                        if (joined == null)
+                            continue;
+                        current[i] = joined;
+                        current.RemoveAt(j);
+                        bridges++;
+                        merged = true;
+                    }
+                if (!merged)
+                    break;
+            }
+            return current;
+        }
+
+        /// <summary>The material that joins <paramref name="a"/> and <paramref name="b"/>, or null when they are too far apart.</summary>
+        private IBody2 BoxBridge(IBody2 a, IBody2 b, double gapWidth, double tolerance)
+        {
+            Aabb ba = Bounds(a), bb = Bounds(b);
+            var min = new double[3];
+            var max = new double[3];
+            int separated = 0;
+            for (int k = 0; k < 3; k++)
+            {
+                double lo = Math.Max(ba.Min[k], bb.Min[k]), hi = Math.Min(ba.Max[k], bb.Max[k]);
+                if (lo > hi)
+                {
+                    // Apart along this axis: span both bodies so the faces that look at each other are reached.
+                    if (lo - hi > gapWidth)
+                        return null;
+                    separated++;
+                    min[k] = Math.Min(ba.Min[k], bb.Min[k]);
+                    max[k] = Math.Max(ba.Max[k], bb.Max[k]);
+                }
+                else
+                {
+                    if (hi - lo < tolerance)
+                        return null; // outlines only touch at an edge
+                    min[k] = lo;
+                    max[k] = hi;
+                }
+            }
+            // Boxes that overlap on every axis are interleaved bodies, not a gap a bag would span.
+            if (separated == 0)
+                return null;
+
+            var region = Box(new Aabb(new Vec3(min[0], min[1], min[2]), new Vec3(max[0], max[1], max[2])));
+            if (region == null)
+                return null;
+            var pieces = new List<IBody2> { region };
+            foreach (var body in new[] { a, b })
+            {
+                var next = new List<IBody2>();
+                foreach (var p in pieces)
+                {
+                    var cut = Subtract(p, body);
+                    if (cut == null) { next.Add(p); continue; }
+                    foreach (IBody2 q in cut) next.Add(q);
+                }
+                pieces = next;
+            }
+
+            IBody2 bridge = null;
+            foreach (var piece in pieces)
+            {
+                if (Union(piece, a) == null || Union(piece, b) == null)
+                    continue;
+                bridge = bridge == null ? piece : Union(bridge, piece) ?? bridge;
+            }
+            return bridge;
         }
 
         /// <summary>Unions every pair of bodies that touch or overlap. Returns one body per separate lump.</summary>

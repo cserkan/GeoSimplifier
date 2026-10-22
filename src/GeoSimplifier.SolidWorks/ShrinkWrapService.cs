@@ -31,9 +31,12 @@ namespace GeoSimplifier.SolidWorks
 
         public int SourceBodies;
 
-        /// <summary>Surface bodies sewn into solids and wrapped, and those left out because they stay open.</summary>
-        public int SewnSheets;
-        public int OpenSheets;
+        /// <summary>Surface bodies wrapped as thin solids, and those SOLIDWORKS could not thicken.</summary>
+        public int Sheets;
+        public int FailedSheets;
+
+        /// <summary>Gaps between separate parts spanned like a bag pulled over them.</summary>
+        public int Bridges;
         public int HolesClosed;
         public int HolesFailed;
         public int BossesRemoved;
@@ -52,12 +55,14 @@ namespace GeoSimplifier.SolidWorks
             string text = $"{SourceBodies} gövde" + (ExcludedBodies > 0 ? $" (+{ExcludedBodies} hariç tutulan)" : "") +
                           $" → {Bodies.Count} gövde, {HolesClosed} delik kapatıldı" +
                           (HolesFailed > 0 ? $", {HolesFailed} delik kapatılamadı" : "") +
-                          (BossesRemoved > 0 ? $", {BossesRemoved} kabartma düzlendi" : "") + $" ({Seconds:F1} sn).";
+                          (BossesRemoved > 0 ? $", {BossesRemoved} kabartma düzlendi" : "") +
+                          (Bridges > 0 ? $", {Bridges} boşluk köprülendi" : "") +
+                          (Sheets > 0 ? $", {Sheets} yüzey gövdesi sarıldı" : "") + $" ({Seconds:F1} sn).";
             var notes = new List<string>(Notes);
             if (Bodies.Count > 1)
                 notes.Add("Birbirinden uzak parçalar var; tek gövde için kapatma genişliğini artırın.");
-            if (OpenSheets > 0)
-                notes.Add($"{OpenSheets} açık yüzey gövdesi katıya dönüştürülemediği için sarmaya katılmadı.");
+            if (FailedSheets > 0)
+                notes.Add($"{FailedSheets} yüzey gövdesi kalınlaştırılamadığı için sarmaya katılmadı.");
             if (FailedBooleans > 0)
                 notes.Add($"{FailedBooleans} boolean işlemi başarısız oldu.");
             if (TooWide.Count > 0)
@@ -101,21 +106,21 @@ namespace GeoSimplifier.SolidWorks
                 var bodies = BodyCollector.CopyBodies(source, exclusions, out var excluded);
                 var ops = new BodyOps(_swApp);
 
-                // Surface bodies that close up a volume are sewn into solids and wrapped; open ones are left out.
+                // Surface bodies are wrapped as they are, as thin solids (0.1 mm); they are not sewn together.
                 var sheets = BodyCollector.CopySheets(source, exclusions);
                 if (sheets.Count > 0)
                 {
-                    var sewn = ops.SewSheets(sheets, 1e-5, out int open);
-                    bodies.AddRange(sewn);
-                    result.SewnSheets = sewn.Count;
-                    result.OpenSheets = open;
+                    var thick = ops.ThickenSheets(sheets, 1e-4, out int failed);
+                    bodies.AddRange(thick);
+                    result.Sheets = thick.Count;
+                    result.FailedSheets = failed;
                 }
                 if (bodies.Count == 0)
                     throw new InvalidOperationException(excluded.Count > 0
                         ? "Sarılacak gövde kalmadı; bütün gövdeler hariç tutulmuş."
-                        : result.OpenSheets > 0
-                            ? "Katı gövde yok; açık yüzeyler katıya dönüştürülemedi."
-                            : "Görünür katı gövde bulunamadı.");
+                        : result.FailedSheets > 0
+                            ? "Katı gövde yok; yüzeyler kalınlaştırılamadı."
+                            : "Görünür katı veya yüzey gövdesi bulunamadı.");
                 result.SourceBodies = bodies.Count;
                 result.ExcludedBodies = excluded.Count;
 
@@ -130,11 +135,16 @@ namespace GeoSimplifier.SolidWorks
                 {
                     progress.UpdateTitle("Shrink wrap: parçalar arası boşluklar köprüleniyor");
                     progress.UpdateProgress(30);
+                    // The offset closing follows the parts' shapes; where SOLIDWORKS cannot offset, the gaps are
+                    // spanned with boxes instead, like a bag pulled over the parts.
                     var bridged = ops.Bridge(lumps, options.GapWidth, tolerance);
                     if (bridged != null)
                         lumps = bridged;
                     else
-                        result.Notes.Add("Parçalar arası boşluklar köprülenemedi (SOLIDWORKS ofset oluşturamadı).");
+                    {
+                        lumps = ops.BridgeByBoxes(lumps, options.GapWidth, tolerance, out int count);
+                        result.Bridges = count;
+                    }
                 }
 
                 var closer = new HoleCloser(ops);
