@@ -159,6 +159,38 @@ namespace GeoSimplifier.SolidWorks
             return "başladı";
         }
 
+        /// <summary>
+        /// Test hook: on SOLIDWORKS' main thread, tries IBody2.MakeOffset and IBody2.DeleteFaces5 on a copy of the
+        /// first body of the active part (or of the first part component) and logs the results.
+        /// </summary>
+        public string TestLocalOps()
+        {
+            _mainThread.BeginInvoke(new Action(() =>
+            {
+                try
+                {
+                    var bodies = Geometry.BodyCollector.CopyBodies(_swApp.IActiveDoc2);
+                    foreach (var body in bodies)
+                    {
+                        var offset = body.Copy() is IBody2 c1 ? c1.MakeOffset(0.001, true) : null;
+                        PageLog.Write($"Yerel test: MakeOffset {(offset == null ? "null" : "çalıştı")}");
+                        var copy = (IBody2)body.Copy();
+                        var cylinders = new System.Collections.Generic.List<object>();
+                        foreach (IFace2 f in (object[])copy.GetFaces())
+                            if (((ISurface)f.GetSurface()).IsCylinder()) { cylinders.Add(f); break; }
+                        bool ok = copy.DeleteFaces5(cylinders.ToArray(), (int)swHealActionType_e.swHealAction_GrowParent,
+                            (int)swLoopProcessOption_e.swLoopProcess_Auto, true, out _, out bool valid);
+                        PageLog.Write($"Yerel test: DeleteFaces5({cylinders.Count} silindir) {ok}/{valid}, yüz {((object[])copy.GetFaces()).Length}");
+                    }
+                }
+                catch (Exception ex)
+                {
+                    PageLog.Write("Yerel test hatası: " + ex);
+                }
+            }));
+            return "başladı";
+        }
+
         private static void ReleaseCom(object o)
         {
             if (o != null && Marshal.IsComObject(o))

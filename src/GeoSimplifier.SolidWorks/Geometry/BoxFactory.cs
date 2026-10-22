@@ -58,6 +58,19 @@ namespace GeoSimplifier.SolidWorks.Geometry
             dims[_paramForAxis[2]] = height;
             var a = axis.Normalized();
             var r = baseCenter - a * (_minFactor[2] * height);
+            var body = (IBody2)_modeler.CreateBodyFromBox3(new[] { r.X, r.Y, r.Z, a.X, a.Y, a.Z, dims[0], dims[1], dims[2] });
+
+            // CreateBodyFromBox3 builds the box along +Z when asked for -Z (other directions are honoured), so the
+            // box is measured and, if it ended up elsewhere, built again shifted to where it belongs.
+            var bb = (double[])body?.GetBodyBox();
+            if (bb == null)
+                return body;
+            var actual = new Vec3((bb[0] + bb[3]) / 2, (bb[1] + bb[4]) / 2, (bb[2] + bb[5]) / 2);
+            var wanted = baseCenter + a * (height / 2);
+            var shift = wanted - actual;
+            if (Vec3.Dot(shift, a) * Vec3.Dot(shift, a) < 1e-12)
+                return body;
+            r = r + a * Vec3.Dot(shift, a);
             return (IBody2)_modeler.CreateBodyFromBox3(new[] { r.X, r.Y, r.Z, a.X, a.Y, a.Z, dims[0], dims[1], dims[2] });
         }
 

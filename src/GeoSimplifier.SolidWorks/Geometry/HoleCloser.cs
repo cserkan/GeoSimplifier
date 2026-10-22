@@ -58,12 +58,16 @@ namespace GeoSimplifier.SolidWorks.Geometry
 
         private const int MaxHoleFaces = 400;
 
+        // Faces of every opening the inner-loop search looked at, closed or not; the wall search skips them.
+        private HashSet<int> _seen = new HashSet<int>();
+
         /// <summary>Closes every hole whose narrowest mouth is at most <paramref name="maxWidth"/> wide.</summary>
         public IBody2 CloseHoles(IBody2 body, double maxWidth)
         {
             _logging = true;
             var holes = FindHoles(body, maxWidth, out _);
             _logging = false;
+            var planarFaces = new HashSet<int>(_seen);
 
             var current = body;
             foreach (var hole in holes)
@@ -79,6 +83,12 @@ namespace GeoSimplifier.SolidWorks.Geometry
                 if (ok) Closed++;
                 else Failed++;
             }
+            // Holes whose mouth runs across several faces (e.g. on a bend radius) are found from their walls.
+            var walls = new WallHoleCloser(_ops, Log.Add);
+            current = walls.Close(body, current, maxWidth, planarFaces);
+            Closed += walls.Closed;
+            Failed += walls.Failed;
+            TooWide.AddRange(walls.TooWide);
             return current;
         }
 
@@ -172,7 +182,7 @@ namespace GeoSimplifier.SolidWorks.Geometry
             }
 
             var holes = new List<Hole>();
-            var seen = new HashSet<int>();
+            var seen = _seen = new HashSet<int>();
             foreach (var (host, loopEdges) in innerLoops)
             {
                 var neighbours = loopEdges.Select(e => OtherFace(e, host)).Where(id => id > 0).Distinct().ToList();

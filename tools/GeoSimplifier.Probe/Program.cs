@@ -1,5 +1,6 @@
 ﻿using System;
 using System.Globalization;
+using System.Linq;
 using System.Runtime.InteropServices;
 using GeoSimplifier.Core.Wrap;
 using GeoSimplifier.SolidWorks;
@@ -22,6 +23,13 @@ namespace GeoSimplifier.Probe
                 swApp.CloseAllDocuments(true);
                 swApp.ExitApp();
                 Console.WriteLine("SOLIDWORKS kapatıldı.");
+                return 0;
+            }
+            if (Array.IndexOf(args, "--local-ops") >= 0)
+            {
+                // Runs SwAddin.TestLocalOps inside SOLIDWORKS; results go to %TEMP%\GeoSimplifier.log.
+                var addin = swApp.GetAddInObject("GeoSimplifier.SwAddin");
+                Console.WriteLine(addin.GetType().InvokeMember("TestLocalOps", System.Reflection.BindingFlags.InvokeMethod, null, addin, new object[0]));
                 return 0;
             }
             int test = Array.IndexOf(args, "--page-test");
@@ -73,6 +81,50 @@ namespace GeoSimplifier.Probe
                 Console.WriteLine($"orijinal xmax {((double[])src.GetBodyBox())[3] * 1000} mm");
                 return 0;
             }
+            if (Array.IndexOf(args, "--boxtest") >= 0)
+            {
+                // Where BoxOnAxis and SolidCylinder put their bodies, for a few axis directions.
+                var ops = new GeoSimplifier.SolidWorks.Geometry.BodyOps(swApp);
+                foreach (var axis in new[] { new GeoSimplifier.Core.Geometry.Vec3(0, 0, 1), new GeoSimplifier.Core.Geometry.Vec3(0, 0, -1),
+                                             new GeoSimplifier.Core.Geometry.Vec3(1, 0, 0), new GeoSimplifier.Core.Geometry.Vec3(-1, 0, 0) })
+                {
+                    var b = ops.BoxOnAxis(new GeoSimplifier.Core.Geometry.Vec3(0, 0, 0), axis, 0.002, 0.010);
+                    var c = ops.SolidCylinder(new GeoSimplifier.Core.Geometry.Vec3(0, 0, 0), axis, 0.001, 0.010);
+                    Console.WriteLine($"eksen {axis}: kutu {Box((double[])b.GetBodyBox())}, silindir {Box((double[])c.GetBodyBox())}");
+                }
+                return 0;
+            }
+            if (Array.IndexOf(args, "--cyl") >= 0)
+            {
+                // Lists small cylindrical faces of the united body with their neighbours, to see how holes are built.
+                var ops = new GeoSimplifier.SolidWorks.Geometry.BodyOps(swApp);
+                var lumps = ops.UnionAll(GeoSimplifier.SolidWorks.Geometry.BodyCollector.CopyBodies(doc), 1e-6);
+                foreach (var lump in lumps)
+                {
+                    var faces = ((object[])lump.GetFaces()).Cast<IFace2>().ToArray();
+                    for (int i = 0; i < faces.Length; i++) faces[i].SetFaceId(i + 1);
+                    foreach (var f in faces)
+                    {
+                        var surf = (ISurface)f.GetSurface();
+                        if (!surf.IsCylinder()) continue;
+                        var cp = (double[])surf.CylinderParams; // origin, axis, radius
+                        if (cp[6] > gapMm / 2000) continue;
+                        var neighbours = new System.Collections.Generic.SortedSet<string>();
+                        foreach (IEdge e in (object[])f.GetEdges())
+                            foreach (IFace2 g in (object[])e.GetTwoAdjacentFaces2())
+                                if (g != null && g.GetFaceId() != f.GetFaceId())
+                                {
+                                    var gs = (ISurface)g.GetSurface();
+                                    string kind = gs.IsPlane() ? "düzlem" : gs.IsCylinder() ? $"silindir r{((double[])gs.CylinderParams)[6] * 1000:F1}" : gs.IsCone() ? "koni" : "diğer";
+                                    neighbours.Add($"{g.GetFaceId()}:{kind}");
+                                }
+                        var box = (double[])f.GetBox();
+                        Console.WriteLine($"Yüz {f.GetFaceId()}: r {cp[6] * 1000:F2} mm, eksen ({cp[3]:F2},{cp[4]:F2},{cp[5]:F2}), ters {f.FaceInSurfaceSense()}, " +
+                                          $"kutu {Box(box)}, komşular {string.Join(" ", neighbours)}");
+                    }
+                }
+                return 0;
+            }
             if (doc is IAssemblyDoc asm)
             {
                 // What BodyCollector sees in an assembly: every component, its state and body boxes before and after Transform2.
@@ -93,6 +145,7 @@ namespace GeoSimplifier.Probe
                     }
                 }
             }
+            GeoSimplifier.SolidWorks.Geometry.WallHoleCloser.Verbose = Array.IndexOf(args, "--verbose") >= 0;
             var service = new ShrinkWrapService(swApp);
             var result = service.Compute(doc, new ShrinkWrapOptions { GapWidth = gapMm / 1000, FillCavities = true });
             Console.WriteLine(result.Summary());

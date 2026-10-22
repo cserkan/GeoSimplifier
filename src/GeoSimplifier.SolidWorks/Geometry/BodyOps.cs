@@ -10,16 +10,47 @@ namespace GeoSimplifier.SolidWorks.Geometry
     public sealed class BodyOps
     {
         private readonly BoxFactory _boxes;
+        private readonly IModeler _modeler;
+        private double? _cylinderBaseFactor;
         private bool? _outwardFlag;
 
         public BodyOps(ISldWorks swApp)
         {
-            _boxes = new BoxFactory((IModeler)swApp.GetModeler());
+            _modeler = (IModeler)swApp.GetModeler();
+            _boxes = new BoxFactory(_modeler);
         }
 
         /// <inheritdoc cref="BoxFactory.CreateOnAxis"/>
         public IBody2 BoxOnAxis(Vec3 baseCenter, Vec3 axis, double side, double height) =>
             _boxes.CreateOnAxis(baseCenter, axis, side, height);
+
+        public IBody2 Box(Aabb box) => _boxes.Create(box);
+
+        /// <summary>
+        /// A large box standing on <paramref name="point"/> and reaching <paramref name="size"/> along
+        /// <paramref name="inward"/>: locally, the half-space behind a plane through the point.
+        /// </summary>
+        public IBody2 HalfSpace(Vec3 point, Vec3 inward, double size) => _boxes.CreateOnAxis(point, inward, size, size);
+
+        /// <summary>A solid cylinder about the axis through <paramref name="center"/>, reaching length/2 to each side of it.</summary>
+        public IBody2 SolidCylinder(Vec3 center, Vec3 axis, double radius, double length)
+        {
+            var a = axis.Normalized();
+            if (_cylinderBaseFactor == null)
+            {
+                // Whether CreateBodyFromCyl's point is the base or the middle of the cylinder is measured once.
+                var test = (IBody2)_modeler.CreateBodyFromCyl(new[] { 0.0, 0, 0, 0, 0, 1, 1, 2 });
+                var bb = (double[])test?.GetBodyBox();
+                if (bb == null)
+                    return null;
+                _cylinderBaseFactor = bb[2] / 2; // 0 when the point is the base, -0.5 when it is the middle
+            }
+            var start = center - a * (length / 2) - a * (_cylinderBaseFactor.Value * length);
+            return (IBody2)_modeler.CreateBodyFromCyl(new[] { start.X, start.Y, start.Z, a.X, a.Y, a.Z, radius, length });
+        }
+
+        /// <summary>The common part of a and b; null when the operation fails, empty when they do not overlap.</summary>
+        public object[] Intersect(IBody2 a, IBody2 b) => Boolean(swBodyOperationType_e.SWBODYINTERSECT, a, b);
 
         /// <summary>Boolean operations SOLIDWORKS rejected.</summary>
         public int FailedBooleans { get; private set; }
