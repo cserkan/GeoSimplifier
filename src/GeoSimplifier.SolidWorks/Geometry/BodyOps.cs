@@ -192,7 +192,7 @@ namespace GeoSimplifier.SolidWorks.Geometry
         }
 
         /// <summary>Solid offset. Which value of MakeOffset's direction flag grows the body is detected once.</summary>
-        private IBody2 Offset(IBody2 body, double distance, bool outward)
+        public IBody2 Offset(IBody2 body, double distance, bool outward)
         {
             if (_outwardFlag == null)
             {

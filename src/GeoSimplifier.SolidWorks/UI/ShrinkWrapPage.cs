@@ -74,6 +74,7 @@ namespace GeoSimplifier.SolidWorks.UI
                 "Sarma bu genişlikten dar açıklıkların içine girmez. Daha geniş açıklıklar olduğu gibi kalır.");
             _gapWidthBox.SetRange2((int)swNumberboxUnitType_e.swNumberBox_Length, 0.0001, 10, true, 0.001, 0.01, 0.0001);
             _gapWidthBox.Value = _gapWidth;
+            _gapValue = _gapWidth;
 
             _fillCavitiesBox = (IPropertyManagerPageCheckbox)AddControl(group, FillCavitiesId, swPropertyManagerPageControlType_e.swControlType_Checkbox,
                 "İç boşlukları doldur", "Dışarıdan görünmeyen kapalı iç boşluklar dolu hale getirilir.");
@@ -94,9 +95,12 @@ namespace GeoSimplifier.SolidWorks.UI
             ((IPropertyManagerPageControl)_gapWidthBox).Enabled = _closeHolesBox.Checked;
         }
 
+        // The number box's Value still holds the old number while OnNumberboxChanged runs, so the new one is kept here.
+        private double _gapValue;
+
         private ShrinkWrapOptions CurrentOptions() => new ShrinkWrapOptions
         {
-            GapWidth = _closeHolesBox.Checked ? _gapWidthBox.Value : 0,
+            GapWidth = _closeHolesBox.Checked ? _gapValue : 0,
             FillCavities = _fillCavitiesBox.Checked,
         };
 
@@ -115,8 +119,8 @@ namespace GeoSimplifier.SolidWorks.UI
             {
                 _preview = _service.Compute(_source, options);
                 bool shown = true;
-                foreach (var body in _preview.Bodies)
-                    shown &= DisplayBody((IBody2)body.Copy(), EnvelopeColor, new[] { 0.0, 0.47, 0.84 }, transparency: 0.65);
+                foreach (var body in _preview.Envelope)
+                    shown &= DisplayBody(body, EnvelopeColor, new[] { 0.0, 0.47, 0.84 }, transparency: 0.65);
                 foreach (var body in _preview.Added)
                     shown &= DisplayBody(body, AddedColor, new[] { 1.0, 0.5, 0.0 }, transparency: 0);
                 string text = _preview.Summary() + (_preview.Added.Count == 0
@@ -162,7 +166,12 @@ namespace GeoSimplifier.SolidWorks.UI
 
         public void AfterActivation() => UpdatePreview();
 
-        public void OnNumberboxChanged(int Id, double Value) => UpdatePreview();
+        public void OnNumberboxChanged(int Id, double Value)
+        {
+            if (Id == GapWidthId)
+                _gapValue = Value;
+            UpdatePreview();
+        }
 
         public void OnClose(int Reason)
         {
@@ -171,7 +180,7 @@ namespace GeoSimplifier.SolidWorks.UI
             if (!_ok)
                 return;
             _closeHoles = _closeHolesBox.Checked;
-            _gapWidth = _gapWidthBox.Value;
+            _gapWidth = _gapValue;
             _fillCavities = _fillCavitiesBox.Checked;
             // The preview is the result unless it is stale or failed.
             if (Key(CurrentOptions()) != _previewKey)

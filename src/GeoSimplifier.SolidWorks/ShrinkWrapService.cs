@@ -17,6 +17,12 @@ namespace GeoSimplifier.SolidWorks
         /// <summary>Material the wrap adds to the original bodies (plugs, bridges, filled cavities), for the preview.</summary>
         public List<IBody2> Added = new List<IBody2>();
 
+        /// <summary>
+        /// The result grown by a hair, for the translucent preview: drawn exactly on the original faces it would
+        /// fight with them for the same pixels and show streaks.
+        /// </summary>
+        public List<IBody2> Envelope = new List<IBody2>();
+
         public int SourceBodies;
         public int HolesClosed;
         public int HolesFailed;
@@ -117,6 +123,11 @@ namespace GeoSimplifier.SolidWorks
                 result.Added = ops.Difference(lumps, original);
 
                 result.Bodies = lumps;
+                foreach (var lump in lumps)
+                {
+                    double gap = Math.Max(5e-5, BodyOps.Bounds(lump).LongestSide * 0.0015);
+                    result.Envelope.Add(ops.Offset(lump, gap, outward: true) ?? (IBody2)lump.Copy());
+                }
                 result.HolesClosed = closer.Closed;
                 result.HolesFailed = closer.Failed;
                 result.TooWide = closer.TooWide;
