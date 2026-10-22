@@ -17,6 +17,10 @@ namespace GeoSimplifier.SolidWorks.Geometry
             _boxes = new BoxFactory((IModeler)swApp.GetModeler());
         }
 
+        /// <inheritdoc cref="BoxFactory.CreateOnAxis"/>
+        public IBody2 BoxOnAxis(Vec3 baseCenter, Vec3 axis, double side, double height) =>
+            _boxes.CreateOnAxis(baseCenter, axis, side, height);
+
         /// <summary>Boolean operations SOLIDWORKS rejected.</summary>
         public int FailedBooleans { get; private set; }
 

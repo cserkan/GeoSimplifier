@@ -30,6 +30,11 @@ namespace GeoSimplifier.Probe
             foreach (var line in result.Log)
                 Console.WriteLine("  " + line);
             Console.WriteLine($"Eklenen gövde: {result.Added.Count}");
+            foreach (var body in result.Bodies)
+            {
+                var mass = (double[])body.GetMassProperties(1);
+                Console.WriteLine($"Sonuç gövdesi: {((object[])body.GetFaces()).Length} yüz, hacim {mass?[3] * 1e9:F0} mm³");
+            }
             if (commit)
                 Console.WriteLine(service.Commit(result));
             return 0;

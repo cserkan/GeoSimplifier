@@ -94,7 +94,7 @@ namespace GeoSimplifier.SolidWorks
                         result.Notes.Add("Parçalar arası boşluklar köprülenemedi (SOLIDWORKS ofset oluşturamadı).");
                 }
 
-                var closer = new HoleCloser();
+                var closer = new HoleCloser(ops);
                 if (options.GapWidth > 0)
                 {
                     progress.UpdateTitle("Shrink wrap: delikler kapatılıyor");

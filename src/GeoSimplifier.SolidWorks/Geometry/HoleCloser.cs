@@ -1,4 +1,4 @@
-using System;
+﻿using System;
 using System.Collections.Generic;
 using System.Linq;
 using GeoSimplifier.Core.Geometry;
@@ -8,11 +8,24 @@ using SolidWorks.Interop.swconst;
 namespace GeoSimplifier.SolidWorks.Geometry
 {
     /// <summary>
-    /// Closes holes, slots and pockets exactly by deleting their faces and letting the surrounding faces grow
-    /// over the opening (like Delete Face > Delete and Patch), so the patch is flush with the surface.
+    /// Closes holes, slots and pockets exactly with plugs: a box standing on each planar mouth of a hole and
+    /// reaching down to the bottom of the hole, minus the body, is the empty space of the hole. That space is
+    /// united with the body, so the plug's faces are the hole walls and the mouth plane (flush).
     /// </summary>
+    /// <remarks>
+    /// IBody2.DeleteFaces5 (Delete Face > Delete and Patch) would be the natural tool, but it returns false
+    /// for every face even on a plain plate with through holes, and building the mouth as a trimmed planar
+    /// sheet (ISurface.CreateTrimmedSheet4) crashes SOLIDWORKS, so only boxes and booleans are used.
+    /// </remarks>
     public sealed class HoleCloser
     {
+        private readonly BodyOps _ops;
+
+        public HoleCloser(BodyOps ops)
+        {
+            _ops = ops;
+        }
+
         public int Closed { get; private set; }
         public int Failed { get; private set; }
 
@@ -30,7 +43,17 @@ namespace GeoSimplifier.SolidWorks.Geometry
             public readonly List<int> FaceIds = new List<int>();
             public double Throat = double.PositiveInfinity;
             public bool Depression = true;
-            public string Key = "";
+            public Aabb Bounds = Aabb.Empty;
+            public readonly List<Mouth> Mouths = new List<Mouth>();
+        }
+
+        /// <summary>A boundary loop of a hole on a planar face: where a plug box stands and how big it must be.</summary>
+        private sealed class Mouth
+        {
+            public Vec3 Normal;     // outward normal of the face holding the loop
+            public Vec3 Centroid;
+            public double Depth;    // how far the hole goes below the loop plane
+            public double Radius;   // how far the hole reaches sideways from the centroid
         }
 
         private const int MaxHoleFaces = 400;
@@ -38,58 +61,60 @@ namespace GeoSimplifier.SolidWorks.Geometry
         /// <summary>Closes every hole whose narrowest mouth is at most <paramref name="maxWidth"/> wide.</summary>
         public IBody2 CloseHoles(IBody2 body, double maxWidth)
         {
-            var failedKeys = new HashSet<string>();
-            var current = body;
-
-            // First try all holes in one operation; if SOLIDWORKS refuses, close them one at a time.
-            var work = (IBody2)current.Copy();
             _logging = true;
-            var holes = FindHoles(work, maxWidth, out var faces);
+            var holes = FindHoles(body, maxWidth, out _);
             _logging = false;
-            if (holes.Count == 0)
-                return current;
-            if (Delete(work, holes.SelectMany(h => h.FaceIds).Select(id => faces[id])))
-            {
-                Closed += holes.Count;
-                return work;
-            }
 
-            for (int guard = 0; guard < 1000; guard++)
+            var current = body;
+            foreach (var hole in holes)
             {
-                work = (IBody2)current.Copy();
-                holes = FindHoles(work, maxWidth, out faces).Where(h => !failedKeys.Contains(h.Key)).ToList();
-                if (holes.Count == 0)
-                    break;
-                var hole = holes[0];
-                if (Delete(work, hole.FaceIds.Select(id => faces[id])))
+                // A through hole has a mouth on each side; the first plug usually fills it and the others add nothing.
+                bool ok = true;
+                foreach (var mouth in hole.Mouths)
                 {
-                    current = work;
-                    Closed++;
+                    var next = Fill(current, hole, mouth);
+                    if (next == null) { ok = false; break; }
+                    current = next;
                 }
-                else
-                {
-                    failedKeys.Add(hole.Key);
-                    Failed++;
-                }
+                if (ok) Closed++;
+                else Failed++;
             }
             return current;
         }
 
-        /// <summary>
-        /// Deletes the faces and heals the opening: first by growing the surrounding faces over it (flush),
-        /// then with a cap. The caller passes a working copy and throws it away when this returns false.
-        /// </summary>
-        private static bool Delete(IBody2 body, IEnumerable<IFace2> faces)
+        /// <summary>Unites the empty space of the hole under <paramref name="mouth"/> with the body; null on failure.</summary>
+        private IBody2 Fill(IBody2 body, Hole hole, Mouth mouth)
         {
-            var list = faces.Cast<object>().ToArray();
-            foreach (var heal in new[] { swHealActionType_e.swHealAction_GrowParent, swHealActionType_e.swHealAction_Cap })
+            double side = 2 * mouth.Radius * 1.05 + 1e-5;
+            var box = _ops.BoxOnAxis(mouth.Centroid, mouth.Normal * -1, side, mouth.Depth);
+            if (box == null)
+                return Fail("kutu oluşturulamadı");
+            var pieces = _ops.Subtract(box, body);
+            if (pieces == null)
+                return Fail("kutudan gövde çıkarılamadı");
+
+            // Keep the space inside the hole; pieces past the edge of the part or in other openings stay out.
+            double tol = hole.Bounds.LongestSide * 0.05 + 1e-6;
+            var result = body;
+            foreach (IBody2 piece in pieces)
             {
-                bool ok = body.DeleteFaces5(list, (int)heal, (int)swLoopProcessOption_e.swLoopProcess_Auto,
-                    true, out _, out bool valid);
-                if (ok)
-                    return valid;
+                var pb = BodyOps.Bounds(piece);
+                bool inside = true;
+                for (int a = 0; a < 3; a++)
+                    inside &= pb.Min[a] >= hole.Bounds.Min[a] - tol && pb.Max[a] <= hole.Bounds.Max[a] + tol;
+                if (!inside)
+                    continue;
+                result = _ops.Union(result, piece);
+                if (result == null)
+                    return Fail("tapa gövdeyle birleştirilemedi");
             }
-            return false;
+            return result;
+        }
+
+        private IBody2 Fail(string reason)
+        {
+            Log.Add("Tapa: " + reason + ".");
+            return null;
         }
 
         private List<Hole> FindHoles(IBody2 body, double maxWidth, out Dictionary<int, IFace2> faces)
@@ -150,12 +175,16 @@ namespace GeoSimplifier.SolidWorks.Geometry
             var seen = new HashSet<int>();
             foreach (var (host, loopEdges) in innerLoops)
             {
-                var seeds = loopEdges.Select(e => OtherFace(e, host)).Where(id => id > 0 && !seen.Contains(id)).Distinct().ToList();
-                if (seeds.Count == 0)
+                var neighbours = loopEdges.Select(e => OtherFace(e, host)).Where(id => id > 0).Distinct().ToList();
+                if (neighbours.Count == 0)
                 {
                     if (_logging) Log.Add($"Yüz {host}: iç döngünün komşu yüzü bulunamadı.");
                     continue;
                 }
+                // The other mouth of a through hole that was already found from its first mouth.
+                var seeds = neighbours.Where(id => !seen.Contains(id)).ToList();
+                if (seeds.Count == 0)
+                    continue;
 
                 // Flood the hole faces; stop at faces that hold the hole edges on an inner loop (the faces around it).
                 var hole = new Hole();
@@ -214,6 +243,7 @@ namespace GeoSimplifier.SolidWorks.Geometry
             Dictionary<int, IFace2> faces, Dictionary<int, List<IEdge>> faceEdges)
         {
             var holePoints = hole.FaceIds.SelectMany(f => faceEdges[f]).SelectMany(e => Sample(e)).ToList();
+            hole.Bounds = Aabb.FromPoints(holePoints.ToArray());
             var boundaryEdges = new HashSet<(int, int)>(boundary);
             bool measured = false;
             foreach (var (face, edges) in innerLoops)
@@ -227,13 +257,11 @@ namespace GeoSimplifier.SolidWorks.Geometry
                 var n = (double[])host.Normal;
                 var normal = new Vec3(n[0], n[1], n[2]).Normalized();
                 var loop = edges.SelectMany(e => Sample(e)).ToList();
-                double width = LoopMetrics.MinWidth(loop, normal);
-                if (width < hole.Throat)
-                {
-                    hole.Throat = width;
-                    var c = LoopMetrics.Centroid(loop);
-                    hole.Key = $"{c.X:F6};{c.Y:F6};{c.Z:F6}";
-                }
+                hole.Throat = Math.Min(hole.Throat, LoopMetrics.MinWidth(loop, normal));
+                var c = LoopMetrics.Centroid(loop);
+                double depth = holePoints.Max(p => -Vec3.Dot(p - c, normal));
+                double radius = holePoints.Max(p => { var d = p - c; return (d - normal * Vec3.Dot(d, normal)).Length; });
+                hole.Mouths.Add(new Mouth { Normal = normal, Centroid = c, Depth = depth, Radius = radius });
                 if (!measured)
                     hole.Depression = LoopMetrics.IsDepression(loop, normal, holePoints);
                 measured = true;

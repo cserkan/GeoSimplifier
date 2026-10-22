@@ -43,6 +43,24 @@ namespace GeoSimplifier.SolidWorks.Geometry
             return body;
         }
 
+        /// <summary>
+        /// A box with a square <paramref name="side"/> x <paramref name="side"/> base centered on
+        /// <paramref name="baseCenter"/>, reaching <paramref name="height"/> along <paramref name="axis"/>. How the
+        /// square is turned about the axis is up to SOLIDWORKS. Null if the calibrated box is not centered sideways.
+        /// </summary>
+        public IBody2 CreateOnAxis(Vec3 baseCenter, Vec3 axis, double side, double height)
+        {
+            if (Math.Abs(_minFactor[0] + 0.5) > 1e-6 || Math.Abs(_minFactor[1] + 0.5) > 1e-6)
+                return null;
+            var dims = new double[3];
+            dims[_paramForAxis[0]] = side;
+            dims[_paramForAxis[1]] = side;
+            dims[_paramForAxis[2]] = height;
+            var a = axis.Normalized();
+            var r = baseCenter - a * (_minFactor[2] * height);
+            return (IBody2)_modeler.CreateBodyFromBox3(new[] { r.X, r.Y, r.Z, a.X, a.Y, a.Z, dims[0], dims[1], dims[2] });
+        }
+
         private void Calibrate()
         {
             double[] p = { 1.0, 2.0, 3.0 };
