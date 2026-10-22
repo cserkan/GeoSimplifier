@@ -124,6 +124,8 @@ namespace GeoSimplifier.SolidWorks.UI
                     : " Zarf mavi, eklenecek malzeme turuncu gösteriliyor.");
                 if (!shown)
                     text += " (Önizleme bu belgede çizilemedi.)";
+                if (_preview.Log.Count > 0)
+                    text += "\n\nAyrıntı: " + string.Join(" ", _preview.Log);
                 SetMessage(text);
             }
             catch (Exception ex)

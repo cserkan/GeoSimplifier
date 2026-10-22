@@ -1,6 +1,7 @@
 using System;
 using System.Collections.Generic;
 using System.Diagnostics;
+using System.Linq;
 using GeoSimplifier.Core.Wrap;
 using GeoSimplifier.SolidWorks.Geometry;
 using SolidWorks.Interop.sldworks;
@@ -23,6 +24,12 @@ namespace GeoSimplifier.SolidWorks
         public double Seconds;
         public List<string> Notes = new List<string>();
 
+        /// <summary>Openings left open because they are wider than the limit (meters).</summary>
+        public List<double> TooWide = new List<double>();
+
+        /// <summary>Hole detection details, shown in the preview box for debugging.</summary>
+        public List<string> Log = new List<string>();
+
         public string Summary()
         {
             string text = $"{SourceBodies} gövde → {Bodies.Count} gövde, {HolesClosed} delik kapatıldı" +
@@ -32,6 +39,8 @@ namespace GeoSimplifier.SolidWorks
                 notes.Add("Birbirinden uzak parçalar var; tek gövde için kapatma genişliğini artırın.");
             if (FailedBooleans > 0)
                 notes.Add($"{FailedBooleans} boolean işlemi başarısız oldu.");
+            if (TooWide.Count > 0)
+                notes.Add($"{TooWide.Count} açıklık sınırdan geniş olduğu için açık bırakıldı (en darı {TooWide.Min() * 1000:F1} mm).");
             return notes.Count == 0 ? text : text + " " + string.Join(" ", notes);
         }
     }
@@ -109,6 +118,8 @@ namespace GeoSimplifier.SolidWorks
                 result.Bodies = lumps;
                 result.HolesClosed = closer.Closed;
                 result.HolesFailed = closer.Failed;
+                result.TooWide = closer.TooWide;
+                result.Log = closer.Log;
                 result.FailedBooleans = ops.FailedBooleans;
                 result.Seconds = watch.Elapsed.TotalSeconds;
                 return result;

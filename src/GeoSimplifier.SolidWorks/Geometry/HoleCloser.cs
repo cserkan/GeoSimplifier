@@ -16,6 +16,14 @@ namespace GeoSimplifier.SolidWorks.Geometry
         public int Closed { get; private set; }
         public int Failed { get; private set; }
 
+        /// <summary>What hole detection saw on the first pass of each body, for the summary and for debugging.</summary>
+        public readonly List<string> Log = new List<string>();
+
+        /// <summary>Openings that were found but are wider than the limit (meters).</summary>
+        public readonly List<double> TooWide = new List<double>();
+
+        private bool _logging;
+
         /// <summary>A hole: connected faces bounded only by inner loops of the faces around it.</summary>
         private sealed class Hole
         {
@@ -35,7 +43,9 @@ namespace GeoSimplifier.SolidWorks.Geometry
 
             // First try all holes in one operation; if SOLIDWORKS refuses, close them one at a time.
             var work = (IBody2)current.Copy();
+            _logging = true;
             var holes = FindHoles(work, maxWidth, out var faces);
+            _logging = false;
             if (holes.Count == 0)
                 return current;
             if (Delete(work, holes.SelectMany(h => h.FaceIds).Select(id => faces[id])))
@@ -95,6 +105,12 @@ namespace GeoSimplifier.SolidWorks.Geometry
             var edgeArray = (object[])body.GetEdges() ?? new object[0];
             for (int i = 0; i < edgeArray.Length; i++)
                 ((IEdge)edgeArray[i]).SetId(i + 1);
+            if (_logging && faceArray.Length > 0 && edgeArray.Length > 0)
+            {
+                int fid = ((IFace2)faceArray[0]).GetFaceId(), eid = ((IEdge)edgeArray[0]).GetID();
+                if (fid != 1 || eid != 1)
+                    Log.Add($"Kimlikler ayarlanamadı (yüz {fid}, kenar {eid}).");
+            }
 
             // For every face: its edges, and which of them lie on its inner loops (loop index per edge).
             var faceEdges = new Dictionary<int, List<IEdge>>();
@@ -116,6 +132,8 @@ namespace GeoSimplifier.SolidWorks.Geometry
                 }
                 faceEdges[kv.Key] = edges;
             }
+            if (_logging)
+                Log.Add($"{faces.Count} yüz, {edgeArray.Length} kenar, {innerLoops.Count} iç döngü.");
 
             int OtherFace(IEdge e, int face)
             {
@@ -134,7 +152,10 @@ namespace GeoSimplifier.SolidWorks.Geometry
             {
                 var seeds = loopEdges.Select(e => OtherFace(e, host)).Where(id => id > 0 && !seen.Contains(id)).Distinct().ToList();
                 if (seeds.Count == 0)
+                {
+                    if (_logging) Log.Add($"Yüz {host}: iç döngünün komşu yüzü bulunamadı.");
                     continue;
+                }
 
                 // Flood the hole faces; stop at faces that hold the hole edges on an inner loop (the faces around it).
                 var hole = new Hole();
@@ -168,12 +189,22 @@ namespace GeoSimplifier.SolidWorks.Geometry
                 }
                 foreach (int f in inHole) seen.Add(f);
                 if (!bounded || boundary.Count == 0)
+                {
+                    if (_logging) Log.Add($"Yüz {host}: delik sınırlanamadı ({hole.FaceIds.Count} yüz).");
                     continue;
+                }
 
                 if (!Measure(hole, boundary, innerLoops, faces, faceEdges))
+                {
+                    if (_logging) Log.Add($"Yüz {host}: ağız düzlemsel değil, ölçülmedi.");
                     continue;
+                }
+                if (_logging)
+                    Log.Add($"Yüz {host}: {hole.FaceIds.Count} yüzlü {(hole.Depression ? "delik" : "çıkıntı")}, ağız {hole.Throat * 1000:F2} mm.");
                 if (hole.Depression && hole.Throat <= maxWidth)
                     holes.Add(hole);
+                else if (hole.Depression && _logging)
+                    TooWide.Add(hole.Throat);
             }
             return holes;
         }
