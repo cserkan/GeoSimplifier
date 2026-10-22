@@ -43,6 +43,51 @@ namespace GeoSimplifier.Probe
                 Console.WriteLine(addin.GetType().InvokeMember("TestPageExcluding", System.Reflection.BindingFlags.InvokeMethod, null, addin, callArgs));
                 return 0;
             }
+            if (Array.IndexOf(args, "--docs") >= 0)
+            {
+                // Lists open documents; for parts, every solid body's face count and volume.
+                foreach (IModelDoc2 d in (object[])swApp.GetDocuments() ?? new object[0])
+                {
+                    Console.WriteLine($"{d.GetTitle()} ({d.GetPathName()})");
+                    if (d is IPartDoc pd)
+                        foreach (IBody2 b in (object[])pd.GetBodies2(0, true) ?? new object[0])
+                            Console.WriteLine($"    gövde: {((object[])b.GetFaces()).Length} yüz, hacim {((double[])b.GetMassProperties(1))[3] * 1e9:F0} mm³");
+                }
+                return 0;
+            }
+            int make = Array.IndexOf(args, "--make");
+            if (make >= 0 && make + 1 < args.Length)
+            {
+                // Builds a test part from boxes in a new document:
+                //   --make emboss : a 100x60x5 mm plate with 1 mm high "letters" and a 10x10x5 mm boss on top (one body)
+                //   --make gaps   : three 50x50x20 mm blocks 5 mm and 20 mm apart (three bodies)
+                var ops = new GeoSimplifier.SolidWorks.Geometry.BodyOps(swApp);
+                GeoSimplifier.Core.Geometry.Aabb Mm(double x0, double y0, double z0, double x1, double y1, double z1) =>
+                    new GeoSimplifier.Core.Geometry.Aabb(new GeoSimplifier.Core.Geometry.Vec3(x0 / 1000, y0 / 1000, z0 / 1000),
+                                                         new GeoSimplifier.Core.Geometry.Vec3(x1 / 1000, y1 / 1000, z1 / 1000));
+                var parts = new System.Collections.Generic.List<IBody2>();
+                if (args[make + 1] == "emboss")
+                {
+                    var plate = ops.Box(Mm(0, 0, 0, 100, 60, 5));
+                    foreach (var letter in new[] { Mm(10, 10, 5, 12, 25, 6), Mm(12, 23, 5, 20, 25, 6), Mm(12, 16, 5, 18, 18, 6),
+                                                   Mm(25, 10, 5, 27, 25, 6), Mm(27, 10, 5, 35, 12, 6), Mm(60, 30, 5, 70, 40, 10) })
+                        plate = ops.Union(plate, ops.Box(letter)) ?? plate;
+                    parts.Add(plate);
+                }
+                else
+                {
+                    parts.Add(ops.Box(Mm(0, 0, 0, 50, 50, 20)));
+                    parts.Add(ops.Box(Mm(55, 0, 0, 105, 50, 20)));
+                    parts.Add(ops.Box(Mm(125, 0, 0, 175, 50, 20)));
+                }
+                string template = swApp.GetUserPreferenceStringValue((int)global::SolidWorks.Interop.swconst.swUserPreferenceStringValue_e.swDefaultTemplatePart);
+                var part = (IPartDoc)swApp.NewDocument(template, 0, 0, 0);
+                foreach (var body in parts)
+                    part.CreateFeatureFromBody3(body, false, 0);
+                ((IModelDoc2)part).ViewZoomtofit2();
+                Console.WriteLine($"Test parçası: {args[make + 1]}, {parts.Count} gövde, {((IModelDoc2)part).GetTitle()}");
+                return 0;
+            }
             int open = Array.IndexOf(args, "--open");
             if (open >= 0 && open + 1 < args.Length)
             {
