@@ -157,9 +157,11 @@ namespace GeoSimplifier.SolidWorks.UI
                 if (_preview.Log.Count > 0)
                     text += "\n\nAyrıntı: " + string.Join(" ", _preview.Log);
                 SetMessage(text);
+                PageLog.Write("Önizleme: " + _preview.Summary());
             }
             catch (Exception ex)
             {
+                PageLog.Write("Önizleme hatası: " + ex);
                 _preview = null;
                 SetMessage("Önizleme hesaplanamadı: " + ex.Message);
             }
@@ -247,11 +249,13 @@ namespace GeoSimplifier.SolidWorks.UI
             {
                 var result = _preview ?? _service.Compute(_source, CurrentOptionsFromSettings());
                 message = _service.Commit(result);
+                PageLog.Write("Tamam: " + message);
                 icon = (int)swMessageBoxIcon_e.swMbInformation;
             }
             catch (Exception ex)
             {
                 message = "Shrink wrap başarısız: " + ex.Message;
+                PageLog.Write("Tamam hatası: " + ex);
                 icon = (int)swMessageBoxIcon_e.swMbStop;
             }
             _swApp.SendMsgToUser2(message, icon, (int)swMessageBoxBtn_e.swMbOk);

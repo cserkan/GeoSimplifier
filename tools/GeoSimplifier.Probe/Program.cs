@@ -15,8 +15,8 @@ namespace GeoSimplifier.Probe
             double gapMm = args.Length > 0 ? double.Parse(args[0], CultureInfo.InvariantCulture) : 10;
             bool commit = Array.IndexOf(args, "--commit") >= 0;
 
-            var swApp = (ISldWorks)Marshal.GetActiveObject("SldWorks.Application");
-            var doc = (IModelDoc2)swApp.ActiveDoc;
+            var swApp = FindSolidWorksWithDocument();
+            var doc = (IModelDoc2)swApp?.ActiveDoc;
             if (doc == null)
             {
                 Console.Error.WriteLine("SOLIDWORKS'te açık belge yok.");
@@ -42,6 +42,26 @@ namespace GeoSimplifier.Probe
                 Console.WriteLine($"orijinal xmax {((double[])src.GetBodyBox())[3] * 1000} mm");
                 return 0;
             }
+            if (doc is IAssemblyDoc asm)
+            {
+                // What BodyCollector sees in an assembly: every component, its state and body boxes before and after Transform2.
+                foreach (IComponent2 comp in (object[])asm.GetComponents(false) ?? new object[0])
+                {
+                    var children = (object[])comp.GetChildren();
+                    var bodies = (object[])comp.GetBodies3(0, out _);
+                    Console.WriteLine($"Bileşen {comp.Name2}: bastırılmış {comp.IsSuppressed()}, durum {comp.GetSuppression2()}, görünür {comp.Visible}, " +
+                                      $"alt {children?.Length ?? 0}, gövde {bodies?.Length ?? 0}");
+                    if (bodies == null) continue;
+                    foreach (IBody2 body in bodies)
+                    {
+                        var copy = (IBody2)body.Copy();
+                        var raw = (double[])copy.GetBodyBox();
+                        if (comp.Transform2 != null) copy.ApplyTransform(comp.Transform2);
+                        var moved = (double[])copy.GetBodyBox();
+                        Console.WriteLine($"    kutu {Box(raw)} → dönüşümle {Box(moved)}");
+                    }
+                }
+            }
             var service = new ShrinkWrapService(swApp);
             var result = service.Compute(doc, new ShrinkWrapOptions { GapWidth = gapMm / 1000, FillCavities = true });
             Console.WriteLine(result.Summary());
@@ -62,6 +82,43 @@ namespace GeoSimplifier.Probe
             if (commit)
                 Console.WriteLine(service.Commit(result));
             return 0;
+        }
+
+        private static string Box(double[] b) =>
+            b == null ? "-" : string.Format(CultureInfo.InvariantCulture, "[{0:F1} {1:F1} {2:F1} .. {3:F1} {4:F1} {5:F1}]",
+                b[0] * 1000, b[1] * 1000, b[2] * 1000, b[3] * 1000, b[4] * 1000, b[5] * 1000);
+
+        [DllImport("ole32.dll")]
+        private static extern int GetRunningObjectTable(int reserved, out System.Runtime.InteropServices.ComTypes.IRunningObjectTable rot);
+
+        [DllImport("ole32.dll")]
+        private static extern int CreateBindCtx(int reserved, out System.Runtime.InteropServices.ComTypes.IBindCtx ctx);
+
+        /// <summary>
+        /// The running SOLIDWORKS that has an active document. With several instances open, GetActiveObject returns
+        /// whichever registered first, which may be an empty one.
+        /// </summary>
+        private static ISldWorks FindSolidWorksWithDocument()
+        {
+            ISldWorks fallback = null;
+            GetRunningObjectTable(0, out var rot);
+            CreateBindCtx(0, out var ctx);
+            rot.EnumRunning(out var monikers);
+            var one = new System.Runtime.InteropServices.ComTypes.IMoniker[1];
+            while (monikers.Next(1, one, IntPtr.Zero) == 0)
+            {
+                one[0].GetDisplayName(ctx, null, out string name);
+                if (!name.StartsWith("SolidWorks_PID_", StringComparison.OrdinalIgnoreCase))
+                    continue;
+                rot.GetObject(one[0], out object obj);
+                if (obj is ISldWorks app)
+                {
+                    if (app.ActiveDoc != null)
+                        return app;
+                    fallback = fallback ?? app;
+                }
+            }
+            return fallback ?? (ISldWorks)Marshal.GetActiveObject("SldWorks.Application");
         }
     }
 }

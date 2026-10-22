@@ -26,7 +26,9 @@ namespace GeoSimplifier.SolidWorks.Geometry
                         break;
                     foreach (IComponent2 comp in components)
                     {
-                        if (comp.IsSuppressed() || comp.Visible == (int)swComponentVisibilityState_e.swComponentHidden)
+                        // IsSuppressed() is also true for lightweight components, whose bodies GetBodies3 still returns.
+                        if (comp.GetSuppression2() == (int)swComponentSuppressionState_e.swComponentSuppressed ||
+                            comp.Visible == (int)swComponentVisibilityState_e.swComponentHidden)
                             continue;
                         // Leaf components only; sub-assemblies are covered by their children.
                         var children = (object[])comp.GetChildren();
