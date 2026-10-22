@@ -30,6 +30,10 @@ namespace GeoSimplifier.SolidWorks
         public int ExcludedBodies;
 
         public int SourceBodies;
+
+        /// <summary>Surface bodies sewn into solids and wrapped, and those left out because they stay open.</summary>
+        public int SewnSheets;
+        public int OpenSheets;
         public int HolesClosed;
         public int HolesFailed;
         public int BossesRemoved;
@@ -52,6 +56,8 @@ namespace GeoSimplifier.SolidWorks
             var notes = new List<string>(Notes);
             if (Bodies.Count > 1)
                 notes.Add("Birbirinden uzak parçalar var; tek gövde için kapatma genişliğini artırın.");
+            if (OpenSheets > 0)
+                notes.Add($"{OpenSheets} açık yüzey gövdesi katıya dönüştürülemediği için sarmaya katılmadı.");
             if (FailedBooleans > 0)
                 notes.Add($"{FailedBooleans} boolean işlemi başarısız oldu.");
             if (TooWide.Count > 0)
@@ -93,14 +99,26 @@ namespace GeoSimplifier.SolidWorks
             try
             {
                 var bodies = BodyCollector.CopyBodies(source, exclusions, out var excluded);
+                var ops = new BodyOps(_swApp);
+
+                // Surface bodies that close up a volume are sewn into solids and wrapped; open ones are left out.
+                var sheets = BodyCollector.CopySheets(source, exclusions);
+                if (sheets.Count > 0)
+                {
+                    var sewn = ops.SewSheets(sheets, 1e-5, out int open);
+                    bodies.AddRange(sewn);
+                    result.SewnSheets = sewn.Count;
+                    result.OpenSheets = open;
+                }
                 if (bodies.Count == 0)
                     throw new InvalidOperationException(excluded.Count > 0
                         ? "Sarılacak gövde kalmadı; bütün gövdeler hariç tutulmuş."
-                        : "Görünür katı gövde bulunamadı.");
+                        : result.OpenSheets > 0
+                            ? "Katı gövde yok; açık yüzeyler katıya dönüştürülemedi."
+                            : "Görünür katı gövde bulunamadı.");
                 result.SourceBodies = bodies.Count;
                 result.ExcludedBodies = excluded.Count;
 
-                var ops = new BodyOps(_swApp);
                 double tolerance = 1e-6;
 
                 progress.UpdateTitle($"Shrink wrap: {bodies.Count} gövde birleştiriliyor");

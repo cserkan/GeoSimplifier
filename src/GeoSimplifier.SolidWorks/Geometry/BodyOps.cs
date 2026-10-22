@@ -61,6 +61,34 @@ namespace GeoSimplifier.SolidWorks.Geometry
             return new Aabb(new Vec3(bb[0], bb[1], bb[2]), new Vec3(bb[3], bb[4], bb[5]));
         }
 
+        /// <summary>
+        /// Sews surface bodies together. Returns the solids that came out of closed sets of surfaces; the number
+        /// of surfaces that stayed open is returned in <paramref name="open"/>.
+        /// </summary>
+        public List<IBody2> SewSheets(List<IBody2> sheets, double tolerance, out int open)
+        {
+            var solids = new List<IBody2>();
+            open = 0;
+            if (sheets.Count == 0)
+                return solids;
+            int error = 0;
+            var results = (object[])_modeler.CreateBodiesFromSheets2(sheets.ToArray(),
+                (int)swSheetSewingOption_e.swSewToSolidOrSheets, tolerance, ref error);
+            if (results == null)
+            {
+                open = sheets.Count;
+                return solids;
+            }
+            foreach (IBody2 body in results)
+            {
+                if (body.GetType() == (int)swBodyType_e.swSolidBody)
+                    solids.Add(body);
+                else
+                    open++;
+            }
+            return solids;
+        }
+
         /// <summary>Unions every pair of bodies that touch or overlap. Returns one body per separate lump.</summary>
         public List<IBody2> UnionAll(IEnumerable<IBody2> bodies, double tolerance)
         {
