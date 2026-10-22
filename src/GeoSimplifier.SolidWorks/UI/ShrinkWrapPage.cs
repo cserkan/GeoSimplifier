@@ -1,5 +1,6 @@
 using System;
 using System.Runtime.InteropServices;
+using System.Windows.Forms;
 using GeoSimplifier.Core.Wrap;
 using SolidWorks.Interop.sldworks;
 using SolidWorks.Interop.swconst;
@@ -98,6 +99,30 @@ namespace GeoSimplifier.SolidWorks.UI
         // The number box's Value still holds the old number while OnNumberboxChanged runs, so the new one is kept here.
         private double _gapValue;
 
+        // OnNumberboxChanged fires on every keystroke; computing the wrap there blocks typing, so the preview
+        // waits until the user pauses (or leaves the box, or the spinner stops).
+        private Timer _debounce;
+
+        private void SchedulePreview()
+        {
+            if (_debounce == null)
+            {
+                _debounce = new Timer { Interval = 600 };
+                _debounce.Tick += (s, e) => { _debounce.Stop(); UpdatePreview(); };
+            }
+            _debounce.Stop();
+            _debounce.Start();
+        }
+
+        /// <summary>Takes the number box's own value when it differs from the one last reported to us.</summary>
+        private void SyncGapFromBox(string when)
+        {
+            double boxValue = _gapWidthBox.Value;
+            PageLog.Write($"{when}: kutu {boxValue:R}, son değer {_gapValue:R}");
+            if (boxValue > 0)
+                _gapValue = boxValue;
+        }
+
         private ShrinkWrapOptions CurrentOptions() => new ShrinkWrapOptions
         {
             GapWidth = _closeHolesBox.Checked ? _gapValue : 0,
@@ -115,6 +140,7 @@ namespace GeoSimplifier.SolidWorks.UI
                 return;
             HidePreview();
             _previewKey = key;
+            PageLog.Write($"Önizleme hesaplanıyor: sınır {options.GapWidth * 1000:F2} mm");
             try
             {
                 _preview = _service.Compute(_source, options);
@@ -124,8 +150,8 @@ namespace GeoSimplifier.SolidWorks.UI
                 foreach (var body in _preview.Added)
                     shown &= DisplayBody(body, AddedColor, new[] { 1.0, 0.5, 0.0 }, transparency: 0);
                 string text = _preview.Summary() + (_preview.Added.Count == 0
-                    ? " Zarf mavi gösteriliyor, eklenen malzeme yok."
-                    : " Zarf mavi, eklenecek malzeme turuncu gösteriliyor.");
+                    ? " Eklenecek malzeme yok."
+                    : " Eklenecek malzeme turuncu gösteriliyor.");
                 if (!shown)
                     text += " (Önizleme bu belgede çizilemedi.)";
                 if (_preview.Log.Count > 0)
@@ -168,13 +194,34 @@ namespace GeoSimplifier.SolidWorks.UI
 
         public void OnNumberboxChanged(int Id, double Value)
         {
-            if (Id == GapWidthId)
-                _gapValue = Value;
+            PageLog.Write($"OnNumberboxChanged {Id}: {Value:R} (kutu {_gapWidthBox.Value:R})");
+            if (Id != GapWidthId)
+                return;
+            _gapValue = Value;
+            SchedulePreview();
+        }
+
+        public void OnNumberBoxTrackingCompleted(int Id, double Value)
+        {
+            PageLog.Write($"OnNumberBoxTrackingCompleted {Id}: {Value:R}");
+            if (Id != GapWidthId)
+                return;
+            _gapValue = Value;
+            UpdatePreview();
+        }
+
+        public void OnLostFocus(int Id)
+        {
+            if (Id != GapWidthId)
+                return;
+            SyncGapFromBox("OnLostFocus");
             UpdatePreview();
         }
 
         public void OnClose(int Reason)
         {
+            _debounce?.Stop();
+            SyncGapFromBox("OnClose");
             HidePreview();
             _ok = Reason == (int)swPropertyManagerPageCloseReasons_e.swPropertyManagerPageClose_Okay;
             if (!_ok)
@@ -189,6 +236,8 @@ namespace GeoSimplifier.SolidWorks.UI
 
         public void AfterClose()
         {
+            _debounce?.Dispose();
+            _debounce = null;
             if (!_ok)
                 return;
 
@@ -234,8 +283,7 @@ namespace GeoSimplifier.SolidWorks.UI
         public void OnGroupCheck(int Id, bool Checked) { }
         public void OnOptionCheck(int Id) { }
         public void OnButtonPress(int Id) { }
-        public void OnTextboxChanged(int Id, string Text) { }
-        public void OnNumberBoxTrackingCompleted(int Id, double Value) { }
+        public void OnTextboxChanged(int Id, string Text) => PageLog.Write($"OnTextboxChanged {Id}: {Text}");
         public void OnComboboxEditChanged(int Id, string Text) { }
         public void OnComboboxSelectionChanged(int Id, int Item) { }
         public void OnListboxSelectionChanged(int Id, int Item) { }
@@ -253,6 +301,5 @@ namespace GeoSimplifier.SolidWorks.UI
         public void OnPopupMenuItem(int Id) { }
         public void OnPopupMenuItemUpdate(int Id, ref int retval) { }
         public void OnGainedFocus(int Id) { }
-        public void OnLostFocus(int Id) { }
     }
 }
