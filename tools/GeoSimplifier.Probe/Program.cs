@@ -16,6 +16,19 @@ namespace GeoSimplifier.Probe
             bool commit = Array.IndexOf(args, "--commit") >= 0;
 
             var swApp = FindSolidWorksWithDocument();
+            int open = Array.IndexOf(args, "--open");
+            if (open >= 0 && open + 1 < args.Length)
+            {
+                // Opens a part or assembly first (e.g. after SOLIDWORKS was restarted to load a rebuilt add-in).
+                string path = args[open + 1];
+                int type = path.EndsWith(".sldasm", StringComparison.OrdinalIgnoreCase) ? 2 : 1;
+                int errors = 0, warnings = 0;
+                swApp.OpenDoc6(path, type, 0, "", ref errors, ref warnings);
+                int activateErrors = 0;
+                swApp.ActivateDoc3(System.IO.Path.GetFileName(path), false, 0, ref activateErrors);
+                Console.WriteLine($"Açıldı: {path} (hata {errors}, uyarı {warnings})");
+                return 0;
+            }
             var doc = (IModelDoc2)swApp?.ActiveDoc;
             if (doc == null)
             {
@@ -78,6 +91,21 @@ namespace GeoSimplifier.Probe
                 var e = (double[])result.Envelope[i].GetBodyBox();
                 var b = (double[])result.Bodies[i].GetBodyBox();
                 Console.WriteLine($"Zarf {i}: kutu farkı {(e[3] - e[0] - (b[3] - b[0])) * 1000:F3} / {(e[4] - e[1] - (b[4] - b[1])) * 1000:F3} / {(e[5] - e[2] - (b[5] - b[2])) * 1000:F3} mm");
+            }
+            int displayAt = Array.IndexOf(args, "--display");
+            if (displayAt >= 0)
+            {
+                // Draws the preview like the PropertyManager page does, keeps it for a while for a screenshot, then hides it.
+                var preview = new GeoSimplifier.SolidWorks.UI.TempBodyPreview(doc);
+                bool ok = true;
+                foreach (var body in result.Envelope)
+                    ok &= preview.Show(body, 0xD77800, new[] { 0.0, 0.47, 0.84 }, 0.65);
+                foreach (var body in result.Added)
+                    ok &= preview.Show(body, 0x0080FF, new[] { 1.0, 0.5, 0.0 }, 0);
+                doc.GraphicsRedraw2();
+                Console.WriteLine($"Önizleme sahibi: {preview.OwnerName}, çizildi: {ok}");
+                System.Threading.Thread.Sleep(20000);
+                preview.Clear();
             }
             if (commit)
                 Console.WriteLine(service.Commit(result));
