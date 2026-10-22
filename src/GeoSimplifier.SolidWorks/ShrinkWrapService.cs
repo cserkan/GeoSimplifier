@@ -40,7 +40,8 @@ namespace GeoSimplifier.SolidWorks
             if (FailedBooleans > 0)
                 notes.Add($"{FailedBooleans} boolean işlemi başarısız oldu.");
             if (TooWide.Count > 0)
-                notes.Add($"{TooWide.Count} açıklık sınırdan geniş olduğu için açık bırakıldı (en darı {TooWide.Min() * 1000:F1} mm).");
+                notes.Add($"{TooWide.Count} açıklık sınırdan geniş olduğu için açık bırakıldı. Kapatmak için sınırı en az {Math.Ceiling(TooWide.Min() * 1000 + 0.5)} mm yapın" +
+                          (TooWide.Count > 1 ? $" (hepsi için {Math.Ceiling(TooWide.Max() * 1000 + 0.5)} mm)." : "."));
             return notes.Count == 0 ? text : text + " " + string.Join(" ", notes);
         }
     }
