@@ -30,6 +30,11 @@ namespace GeoSimplifier.SolidWorks.UI
         private readonly ISldWorks _swApp;
         private readonly ShrinkWrapService _service;
         private IPropertyManagerPage2 _page;
+
+        // Every object the page hands out is kept: when the garbage collector releases one (here the group box and
+        // the label were dropped), SOLIDWORKS crashes on the next call into the page.
+        private IPropertyManagerPageGroup _group;
+        private IPropertyManagerPageLabel _gapLabel;
         private IPropertyManagerPageCheckbox _closeHolesBox;
         private IPropertyManagerPageNumberbox _gapWidthBox;
         private IPropertyManagerPageCheckbox _fillCavitiesBox;
@@ -61,7 +66,7 @@ namespace GeoSimplifier.SolidWorks.UI
             if (_page == null)
                 throw new InvalidOperationException("Could not create the PropertyManager page (error " + errors + ").");
 
-            var group = (IPropertyManagerPageGroup)_page.AddGroupBox(GroupId, "Ayarlar",
+            var group = _group = (IPropertyManagerPageGroup)_page.AddGroupBox(GroupId, "Ayarlar",
                 (int)(swAddGroupBoxOptions_e.swGroupBoxOptions_Visible | swAddGroupBoxOptions_e.swGroupBoxOptions_Expanded));
 
             _closeHolesBox = (IPropertyManagerPageCheckbox)AddControl(group, CloseHolesId, swPropertyManagerPageControlType_e.swControlType_Checkbox,
@@ -69,7 +74,8 @@ namespace GeoSimplifier.SolidWorks.UI
                 "Ağzı aşağıdaki genişlikten dar delikler, kanallar ve cepler yüzeyle aynı hizada kapatılır; daha yakın parçalar birleştirilir.");
             _closeHolesBox.Checked = _closeHoles;
 
-            AddControl(group, GapLabelId, swPropertyManagerPageControlType_e.swControlType_Label, "Kapatılacak en büyük açıklık", null);
+            _gapLabel = (IPropertyManagerPageLabel)AddControl(group, GapLabelId, swPropertyManagerPageControlType_e.swControlType_Label,
+                "Kapatılacak en büyük açıklık", null);
             _gapWidthBox = (IPropertyManagerPageNumberbox)AddControl(group, GapWidthId, swPropertyManagerPageControlType_e.swControlType_Numberbox,
                 "Kapatılacak en büyük açıklık",
                 "Sarma bu genişlikten dar açıklıkların içine girmez. Daha geniş açıklıklar olduğu gibi kalır.");
@@ -100,17 +106,20 @@ namespace GeoSimplifier.SolidWorks.UI
         private double _gapValue;
 
         // OnNumberboxChanged fires on every keystroke; computing the wrap there blocks typing, so the preview
-        // waits until the user pauses (or leaves the box, or the spinner stops).
+        // waits until the user pauses. Every update also runs from this timer rather than inside the
+        // PropertyManager callback: hiding the previous preview of an assembly (owned by a component) inside
+        // the callback crashes SOLIDWORKS.
         private Timer _debounce;
 
-        private void SchedulePreview()
+        private void SchedulePreview(int delay = 600)
         {
             if (_debounce == null)
             {
-                _debounce = new Timer { Interval = 600 };
+                _debounce = new Timer();
                 _debounce.Tick += (s, e) => { _debounce.Stop(); UpdatePreview(); };
             }
             _debounce.Stop();
+            _debounce.Interval = delay;
             _debounce.Start();
         }
 
@@ -151,15 +160,19 @@ namespace GeoSimplifier.SolidWorks.UI
                 foreach (var body in _preview.Added)
                     shown &= _display.Show(body, AddedColor, new[] { 1.0, 0.5, 0.0 }, transparency: 0);
                 _source.GraphicsRedraw2();
-                string text = _preview.Summary() + (_preview.Added.Count == 0
-                    ? " Zarf mavi gösteriliyor, eklenen malzeme yok."
-                    : " Zarf mavi, eklenecek malzeme turuncu gösteriliyor.");
-                if (!shown)
+                string text = _preview.Summary();
+                if (!_display.Supported)
+                    text += " Montajlarda önizleme çizilmiyor; sonuç Tamam ile yeni parça olarak oluşturulur.";
+                else if (!shown)
                     text += " (Önizleme bu belgede çizilemedi.)";
+                else
+                    text += _preview.Added.Count == 0
+                        ? " Zarf mavi gösteriliyor, eklenen malzeme yok."
+                        : " Zarf mavi, eklenecek malzeme turuncu gösteriliyor.";
                 if (_preview.Log.Count > 0)
                     text += "\n\nAyrıntı: " + string.Join(" ", _preview.Log);
                 SetMessage(text);
-                PageLog.Write($"Önizleme ({_display.OwnerName}, çizildi {shown}): " + _preview.Summary());
+                PageLog.Write($"Önizleme (çizildi {shown}): " + _preview.Summary());
             }
             catch (Exception ex)
             {
@@ -169,7 +182,14 @@ namespace GeoSimplifier.SolidWorks.UI
             }
         }
 
-        private void HidePreview() => _display?.Clear();
+        private void HidePreview()
+        {
+            if (_display == null)
+                return;
+            PageLog.Write("Önizleme gizleniyor");
+            _display.Clear();
+            PageLog.Write("Önizleme gizlendi");
+        }
 
         private void SetMessage(string text)
         {
@@ -178,6 +198,38 @@ namespace GeoSimplifier.SolidWorks.UI
         }
 
         public void AfterActivation() => UpdatePreview();
+
+        /// <summary>
+        /// Test hook: types the given limits (meters) into the number box one after another, the way SOLIDWORKS
+        /// reports typing (OnNumberboxChanged + OnNumberBoxTrackingCompleted), waits for each preview, then
+        /// closes the page with OK or Cancel. Runs from a timer so everything happens in SOLIDWORKS' message loop.
+        /// </summary>
+        public void Simulate(double[] limits, bool ok)
+        {
+            int step = 0;
+            var timer = new Timer { Interval = 3000 };
+            timer.Tick += (s, e) =>
+            {
+                if (step < limits.Length)
+                {
+                    double v = limits[step++];
+                    // Forces the finalizer to run now, so a crash caused by releasing objects shows up quickly.
+                    GC.Collect();
+                    GC.WaitForPendingFinalizers();
+                    PageLog.Write($"Simülasyon: {v * 1000:F0} mm");
+                    _gapWidthBox.Value = v;
+                    OnNumberboxChanged(GapWidthId, v);
+                    OnNumberBoxTrackingCompleted(GapWidthId, v);
+                    return;
+                }
+                timer.Stop();
+                timer.Dispose();
+                PageLog.Write("Simülasyon: sayfa kapatılıyor (" + (ok ? "Tamam" : "İptal") + ")");
+                _page.Close(ok);
+                PageLog.Write("Simülasyon: bitti");
+            };
+            timer.Start();
+        }
 
         public void OnNumberboxChanged(int Id, double Value)
         {
@@ -194,7 +246,7 @@ namespace GeoSimplifier.SolidWorks.UI
             if (Id != GapWidthId)
                 return;
             _gapValue = Value;
-            UpdatePreview();
+            SchedulePreview(50);
         }
 
         public void OnLostFocus(int Id)
@@ -202,14 +254,13 @@ namespace GeoSimplifier.SolidWorks.UI
             if (Id != GapWidthId)
                 return;
             SyncGapFromBox("OnLostFocus");
-            UpdatePreview();
+            SchedulePreview(50);
         }
 
         public void OnClose(int Reason)
         {
             _debounce?.Stop();
             SyncGapFromBox("OnClose");
-            HidePreview();
             _ok = Reason == (int)swPropertyManagerPageCloseReasons_e.swPropertyManagerPageClose_Okay;
             if (!_ok)
                 return;
@@ -225,6 +276,7 @@ namespace GeoSimplifier.SolidWorks.UI
         {
             _debounce?.Dispose();
             _debounce = null;
+            HidePreview();
             if (!_ok)
                 return;
 
@@ -256,7 +308,7 @@ namespace GeoSimplifier.SolidWorks.UI
         {
             if (Id == CloseHolesId)
                 UpdateEnabled();
-            UpdatePreview();
+            SchedulePreview(50);
         }
 
         // Unused PropertyManager callbacks.

@@ -29,6 +29,13 @@ namespace GeoSimplifier.SolidWorks
         private int _cookie;
         private ShrinkWrapService _service;
 
+        // The open page is kept referenced for as long as SOLIDWORKS may call it.
+        private ShrinkWrapPage _page;
+
+        // Created on SOLIDWORKS' main thread; test hooks called from another process arrive on an RPC thread and
+        // are moved onto the main thread through it.
+        private System.Windows.Forms.Control _mainThread;
+
         public bool ConnectToSW(object ThisSW, int Cookie)
         {
             _swApp = (ISldWorks)ThisSW;
@@ -37,12 +44,16 @@ namespace GeoSimplifier.SolidWorks
             _commandManager = _swApp.GetCommandManager(_cookie);
 
             _service = new ShrinkWrapService(_swApp);
+            _mainThread = new System.Windows.Forms.Control();
+            _mainThread.CreateControl();
             AddCommands();
             return true;
         }
 
         public bool DisconnectFromSW()
         {
+            _mainThread?.Dispose();
+            _mainThread = null;
             RemoveCommandTabs();
             _commandManager?.RemoveCommandGroup(MainCommandGroupId);
 
@@ -107,7 +118,8 @@ namespace GeoSimplifier.SolidWorks
         {
             try
             {
-                new ShrinkWrapPage(_swApp, _service).Show();
+                _page = new ShrinkWrapPage(_swApp, _service);
+                _page.Show();
             }
             catch (Exception ex)
             {
@@ -124,6 +136,24 @@ namespace GeoSimplifier.SolidWorks
                 return 0;
             int type = doc.GetType();
             return type == (int)swDocumentTypes_e.swDocPART || type == (int)swDocumentTypes_e.swDocASSEMBLY ? 1 : 0;
+        }
+
+        /// <summary>
+        /// Test hook for tools\GeoSimplifier.Probe (via ISldWorks.GetAddInObject): opens the Shrink Wrap page on the
+        /// active document and types the given limits (mm, separated by ';') into it, then closes it with OK or
+        /// Cancel. Returns at once; the page logs every step to %TEMP%\GeoSimplifier.log.
+        /// </summary>
+        public string TestPage(string limitsMm, bool ok)
+        {
+            var limits = Array.ConvertAll(limitsMm.Split(';'),
+                v => double.Parse(v, System.Globalization.CultureInfo.InvariantCulture) / 1000);
+            _mainThread.BeginInvoke(new Action(() =>
+            {
+                _page = new ShrinkWrapPage(_swApp, _service);
+                _page.Show();
+                _page.Simulate(limits, ok);
+            }));
+            return "başladı";
         }
 
         private static void ReleaseCom(object o)

@@ -16,6 +16,24 @@ namespace GeoSimplifier.Probe
             bool commit = Array.IndexOf(args, "--commit") >= 0;
 
             var swApp = FindSolidWorksWithDocument();
+            if (Array.IndexOf(args, "--quit") >= 0)
+            {
+                // Closes every document without saving and exits SOLIDWORKS, so a rebuilt add-in can be loaded.
+                swApp.CloseAllDocuments(true);
+                swApp.ExitApp();
+                Console.WriteLine("SOLIDWORKS kapatıldı.");
+                return 0;
+            }
+            int test = Array.IndexOf(args, "--page-test");
+            if (test >= 0)
+            {
+                // Opens the Shrink Wrap page inside SOLIDWORKS and types limits into it: --page-test "50;30;80" [--ok].
+                var addin = swApp.GetAddInObject("GeoSimplifier.SwAddin");
+                if (addin == null) { Console.Error.WriteLine("Eklenti bulunamadı."); return 1; }
+                var callArgs = new object[] { args[test + 1], Array.IndexOf(args, "--ok") >= 0 };
+                Console.WriteLine(addin.GetType().InvokeMember("TestPage", System.Reflection.BindingFlags.InvokeMethod, null, addin, callArgs));
+                return 0;
+            }
             int open = Array.IndexOf(args, "--open");
             if (open >= 0 && open + 1 < args.Length)
             {
@@ -91,21 +109,6 @@ namespace GeoSimplifier.Probe
                 var e = (double[])result.Envelope[i].GetBodyBox();
                 var b = (double[])result.Bodies[i].GetBodyBox();
                 Console.WriteLine($"Zarf {i}: kutu farkı {(e[3] - e[0] - (b[3] - b[0])) * 1000:F3} / {(e[4] - e[1] - (b[4] - b[1])) * 1000:F3} / {(e[5] - e[2] - (b[5] - b[2])) * 1000:F3} mm");
-            }
-            int displayAt = Array.IndexOf(args, "--display");
-            if (displayAt >= 0)
-            {
-                // Draws the preview like the PropertyManager page does, keeps it for a while for a screenshot, then hides it.
-                var preview = new GeoSimplifier.SolidWorks.UI.TempBodyPreview(doc);
-                bool ok = true;
-                foreach (var body in result.Envelope)
-                    ok &= preview.Show(body, 0xD77800, new[] { 0.0, 0.47, 0.84 }, 0.65);
-                foreach (var body in result.Added)
-                    ok &= preview.Show(body, 0x0080FF, new[] { 1.0, 0.5, 0.0 }, 0);
-                doc.GraphicsRedraw2();
-                Console.WriteLine($"Önizleme sahibi: {preview.OwnerName}, çizildi: {ok}");
-                System.Threading.Thread.Sleep(20000);
-                preview.Clear();
             }
             if (commit)
                 Console.WriteLine(service.Commit(result));
