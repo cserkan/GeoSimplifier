@@ -123,14 +123,12 @@ namespace GeoSimplifier.SolidWorks
                 result.Added = ops.Difference(lumps, original);
 
                 result.Bodies = lumps;
-                // A translucent envelope is only drawn when it can be lifted off the model's faces: drawn on them it
-                // z-fights and shows streaks. MakeOffset fails on some installations, and then none is shown.
+                // The translucent envelope is lifted off the model's faces when MakeOffset works. On installations where
+                // it fails a plain copy is drawn on the faces; it shows streaks, but the envelope stays visible.
                 foreach (var lump in lumps)
                 {
                     double gap = Math.Max(5e-5, BodyOps.Bounds(lump).LongestSide * 0.0015);
-                    var envelope = ops.Offset(lump, gap, outward: true);
-                    if (envelope != null)
-                        result.Envelope.Add(envelope);
+                    result.Envelope.Add(ops.Offset(lump, gap, outward: true) ?? (IBody2)lump.Copy());
                 }
                 result.HolesClosed = closer.Closed;
                 result.HolesFailed = closer.Failed;

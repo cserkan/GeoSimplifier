@@ -150,8 +150,8 @@ namespace GeoSimplifier.SolidWorks.UI
                 foreach (var body in _preview.Added)
                     shown &= DisplayBody(body, AddedColor, new[] { 1.0, 0.5, 0.0 }, transparency: 0);
                 string text = _preview.Summary() + (_preview.Added.Count == 0
-                    ? " Eklenecek malzeme yok."
-                    : " Eklenecek malzeme turuncu gösteriliyor.");
+                    ? " Zarf mavi gösteriliyor, eklenen malzeme yok."
+                    : " Zarf mavi, eklenecek malzeme turuncu gösteriliyor.");
                 if (!shown)
                     text += " (Önizleme bu belgede çizilemedi.)";
                 if (_preview.Log.Count > 0)
