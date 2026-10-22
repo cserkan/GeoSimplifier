@@ -29,6 +29,9 @@ namespace GeoSimplifier.SolidWorks.Geometry
         public int Closed { get; private set; }
         public int Failed { get; private set; }
 
+        /// <summary>Raised details (embossed text, symbols) flattened by <see cref="RemoveBosses"/>.</summary>
+        public int BossesRemoved { get; private set; }
+
         /// <summary>What hole detection saw on the first pass of each body, for the summary and for debugging.</summary>
         public readonly List<string> Log = new List<string>();
 
@@ -53,6 +56,7 @@ namespace GeoSimplifier.SolidWorks.Geometry
             public Vec3 Normal;     // outward normal of the face holding the loop
             public Vec3 Centroid;
             public double Depth;    // how far the hole goes below the loop plane
+            public double Height;   // how far a boss rises above the loop plane
             public double Radius;   // how far the hole reaches sideways from the centroid
         }
 
@@ -92,6 +96,61 @@ namespace GeoSimplifier.SolidWorks.Geometry
             return current;
         }
 
+        /// <summary>
+        /// Flattens raised details standing on a planar face (embossed text, symbols, small bosses) that rise at
+        /// most <paramref name="maxHeight"/> above it: the part of the body inside a box standing on the face over
+        /// the detail is cut away, leaving the face flat.
+        /// </summary>
+        public IBody2 RemoveBosses(IBody2 body, double maxHeight)
+        {
+            var bosses = new List<Hole>();
+            FindHoles(body, 0, out _, bosses, maxHeight);
+            var current = body;
+            foreach (var boss in bosses)
+            {
+                var next = Cut(current, boss, boss.Mouths[0]);
+                if (next == null)
+                    continue;
+                current = next;
+                BossesRemoved++;
+            }
+            return current;
+        }
+
+        /// <summary>Cuts the material of <paramref name="boss"/> above <paramref name="mouth"/>; null on failure.</summary>
+        private IBody2 Cut(IBody2 body, Hole boss, Mouth mouth)
+        {
+            double side = 2 * mouth.Radius * 1.05 + 1e-5;
+            var box = _ops.BoxOnAxis(mouth.Centroid, mouth.Normal, side, mouth.Height * 1.02 + 1e-5);
+            if (box == null)
+                return Fail("kabartma kutusu oluşturulamadı");
+            var pieces = _ops.Intersect(box, body);
+            if (pieces == null)
+                return Fail("kabartma ayrılamadı");
+
+            double tol = boss.Bounds.LongestSide * 0.05 + 1e-6;
+            var result = body;
+            foreach (IBody2 piece in pieces)
+            {
+                if (!Inside(BodyOps.Bounds(piece), boss.Bounds, tol))
+                    continue;
+                var rest = _ops.Subtract(result, piece);
+                if (rest == null || rest.Length == 0)
+                    return Fail("kabartma gövdeden çıkarılamadı");
+                // A cut never splits the part; if it does, keep the main body and drop slivers.
+                result = rest.Cast<IBody2>().OrderByDescending(b => BodyOps.Bounds(b).LongestSide).First();
+            }
+            return result;
+        }
+
+        private static bool Inside(Aabb inner, Aabb outer, double tol)
+        {
+            bool inside = true;
+            for (int a = 0; a < 3; a++)
+                inside &= inner.Min[a] >= outer.Min[a] - tol && inner.Max[a] <= outer.Max[a] + tol;
+            return inside;
+        }
+
         /// <summary>Unites the empty space of the hole under <paramref name="mouth"/> with the body; null on failure.</summary>
         private IBody2 Fill(IBody2 body, Hole hole, Mouth mouth)
         {
@@ -127,7 +186,8 @@ namespace GeoSimplifier.SolidWorks.Geometry
             return null;
         }
 
-        private List<Hole> FindHoles(IBody2 body, double maxWidth, out Dictionary<int, IFace2> faces)
+        private List<Hole> FindHoles(IBody2 body, double maxWidth, out Dictionary<int, IFace2> faces,
+            List<Hole> bosses = null, double maxBossHeight = 0)
         {
             faces = new Dictionary<int, IFace2>();
             var faceArray = (object[])body.GetFaces() ?? new object[0];
@@ -240,6 +300,8 @@ namespace GeoSimplifier.SolidWorks.Geometry
                 }
                 if (_logging)
                     Log.Add($"Yüz {host}: {hole.FaceIds.Count} yüzlü {(hole.Depression ? "delik" : "çıkıntı")}, ağız {hole.Throat * 1000:F2} mm.");
+                if (!hole.Depression && bosses != null && hole.Mouths.Count > 0 && hole.Mouths[0].Height <= maxBossHeight)
+                    bosses.Add(hole);
                 if (hole.Depression && hole.Throat <= maxWidth)
                     holes.Add(hole);
                 else if (hole.Depression && _logging)
@@ -270,8 +332,9 @@ namespace GeoSimplifier.SolidWorks.Geometry
                 hole.Throat = Math.Min(hole.Throat, LoopMetrics.MinWidth(loop, normal));
                 var c = LoopMetrics.Centroid(loop);
                 double depth = holePoints.Max(p => -Vec3.Dot(p - c, normal));
+                double height = holePoints.Max(p => Vec3.Dot(p - c, normal));
                 double radius = holePoints.Max(p => { var d = p - c; return (d - normal * Vec3.Dot(d, normal)).Length; });
-                hole.Mouths.Add(new Mouth { Normal = normal, Centroid = c, Depth = depth, Radius = radius });
+                hole.Mouths.Add(new Mouth { Normal = normal, Centroid = c, Depth = depth, Height = height, Radius = radius });
                 if (!measured)
                     hole.Depression = LoopMetrics.IsDepression(loop, normal, holePoints);
                 measured = true;

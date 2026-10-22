@@ -10,6 +10,12 @@ namespace GeoSimplifier.Core.Wrap
         /// </summary>
         public double GapWidth { get; set; } = 0.01;
 
+        /// <summary>
+        /// Raised details on flat faces (embossed text, symbols, small bosses) at most this high are flattened
+        /// so the wrap does not follow them. 0 keeps them.
+        /// </summary>
+        public double MaxEmbossHeight { get; set; }
+
         /// <summary>Fill closed internal cavities so the result is solid inside.</summary>
         public bool FillCavities { get; set; } = true;
     }

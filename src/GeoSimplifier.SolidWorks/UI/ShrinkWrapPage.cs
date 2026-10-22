@@ -22,6 +22,8 @@ namespace GeoSimplifier.SolidWorks.UI
         private const int GapLabelId = 4;
         private const int GapWidthId = 5;
         private const int FillCavitiesId = 6;
+        private const int EmbossLabelId = 9;
+        private const int EmbossHeightId = 10;
         private const int ExcludeGroupId = 7;
         private const int ExcludeId = 8;
 
@@ -32,6 +34,7 @@ namespace GeoSimplifier.SolidWorks.UI
         private static bool _closeHoles = true;
         private static double _gapWidth = 0.01; // meters
         private static bool _fillCavities = true;
+        private static double _embossHeight = 0; // meters; 0 keeps embossed details
 
         private readonly ISldWorks _swApp;
         private readonly ShrinkWrapService _service;
@@ -44,6 +47,9 @@ namespace GeoSimplifier.SolidWorks.UI
         private IPropertyManagerPageCheckbox _closeHolesBox;
         private IPropertyManagerPageNumberbox _gapWidthBox;
         private IPropertyManagerPageCheckbox _fillCavitiesBox;
+        private IPropertyManagerPageLabel _embossLabel;
+        private IPropertyManagerPageNumberbox _embossBox;
+        private double _embossValue;
         private IPropertyManagerPageGroup _excludeGroup;
         private IPropertyManagerPageSelectionbox _excludeBox;
         private Exclusions _exclusions = new Exclusions();
@@ -58,6 +64,7 @@ namespace GeoSimplifier.SolidWorks.UI
         // material the wrap adds (plugs, bridges, filled cavities) in solid orange.
         private const int EnvelopeColor = 0xD77800;
         private const int AddedColor = 0x0080FF;
+        private const int RemovedColor = 0x1A1AD9; // flattened embossed details, red
 
         public ShrinkWrapPage(ISldWorks swApp, ShrinkWrapService service)
         {
@@ -95,6 +102,15 @@ namespace GeoSimplifier.SolidWorks.UI
             _fillCavitiesBox = (IPropertyManagerPageCheckbox)AddControl(group, FillCavitiesId, swPropertyManagerPageControlType_e.swControlType_Checkbox,
                 "İç boşlukları doldur", "Dışarıdan görünmeyen kapalı iç boşluklar dolu hale getirilir.");
             _fillCavitiesBox.Checked = _fillCavities;
+
+            _embossLabel = (IPropertyManagerPageLabel)AddControl(group, EmbossLabelId, swPropertyManagerPageControlType_e.swControlType_Label,
+                "Yok sayılacak kabartma yüksekliği", null);
+            _embossBox = (IPropertyManagerPageNumberbox)AddControl(group, EmbossHeightId, swPropertyManagerPageControlType_e.swControlType_Numberbox,
+                "Yok sayılacak kabartma yüksekliği",
+                "Düz yüzlerdeki bu yükseklikten alçak yazı, sembol ve kabartmalar düzlenir; sarma onları takip etmez. 0 hepsini korur.");
+            _embossBox.SetRange2((int)swNumberboxUnitType_e.swNumberBox_Length, 0, 1, true, 0.0005, 0.001, 0.0001);
+            _embossBox.Value = _embossHeight;
+            _embossValue = _embossHeight;
 
             _excludeGroup = (IPropertyManagerPageGroup)_page.AddGroupBox(ExcludeGroupId, "Hariç tut",
                 (int)(swAddGroupBoxOptions_e.swGroupBoxOptions_Visible | swAddGroupBoxOptions_e.swGroupBoxOptions_Expanded));
@@ -150,15 +166,19 @@ namespace GeoSimplifier.SolidWorks.UI
             PageLog.Write($"{when}: kutu {boxValue:R}, son değer {_gapValue:R}");
             if (boxValue > 0)
                 _gapValue = boxValue;
+            double emboss = _embossBox.Value;
+            if (emboss >= 0)
+                _embossValue = emboss;
         }
 
         private ShrinkWrapOptions CurrentOptions() => new ShrinkWrapOptions
         {
             GapWidth = _closeHolesBox.Checked ? _gapValue : 0,
             FillCavities = _fillCavitiesBox.Checked,
+            MaxEmbossHeight = _embossValue,
         };
 
-        private string Key(ShrinkWrapOptions o) => $"{o.GapWidth:R}|{o.FillCavities}|{_exclusions.Key}";
+        private string Key(ShrinkWrapOptions o) => $"{o.GapWidth:R}|{o.FillCavities}|{o.MaxEmbossHeight:R}|{_exclusions.Key}";
 
         /// <summary>Recomputes the wrap for the current settings and shows what it adds.</summary>
         private void UpdatePreview()
@@ -184,6 +204,8 @@ namespace GeoSimplifier.SolidWorks.UI
                     shown &= _display.Show(body, EnvelopeColor, new[] { 0.0, 0.47, 0.84 }, transparency: 0.65);
                 foreach (var body in _preview.Added)
                     shown &= _display.Show(body, AddedColor, new[] { 1.0, 0.5, 0.0 }, transparency: 0);
+                foreach (var body in _preview.Removed)
+                    shown &= _display.Show(body, RemovedColor, new[] { 0.85, 0.1, 0.1 }, transparency: 0);
                 _source.GraphicsRedraw2();
                 string text = _preview.Summary();
                 if (!_display.Supported)
@@ -194,6 +216,8 @@ namespace GeoSimplifier.SolidWorks.UI
                     text += _preview.Added.Count == 0
                         ? " Zarf mavi gösteriliyor, eklenen malzeme yok."
                         : " Zarf mavi, eklenecek malzeme turuncu gösteriliyor.";
+                if (_display.Supported && _preview.Removed.Count > 0)
+                    text += " Düzlenen kabartmalar kırmızı.";
                 if (_preview.Log.Count > 0)
                     text += "\n\nAyrıntı: " + string.Join(" ", _preview.Log);
                 SetMessage(text);
@@ -273,24 +297,34 @@ namespace GeoSimplifier.SolidWorks.UI
         public void OnNumberboxChanged(int Id, double Value)
         {
             PageLog.Write($"OnNumberboxChanged {Id}: {Value:R} (kutu {_gapWidthBox.Value:R})");
-            if (Id != GapWidthId)
+            if (!SetNumber(Id, Value))
                 return;
-            _gapValue = Value;
             SchedulePreview();
         }
 
         public void OnNumberBoxTrackingCompleted(int Id, double Value)
         {
             PageLog.Write($"OnNumberBoxTrackingCompleted {Id}: {Value:R}");
-            if (Id != GapWidthId)
+            if (!SetNumber(Id, Value))
                 return;
-            _gapValue = Value;
             SchedulePreview(50);
+        }
+
+        /// <returns>False for a control that is not one of the number boxes.</returns>
+        private bool SetNumber(int id, double value)
+        {
+            if (id == GapWidthId)
+                _gapValue = value;
+            else if (id == EmbossHeightId)
+                _embossValue = value;
+            else
+                return false;
+            return true;
         }
 
         public void OnLostFocus(int Id)
         {
-            if (Id != GapWidthId)
+            if (Id != GapWidthId && Id != EmbossHeightId)
                 return;
             SyncGapFromBox("OnLostFocus");
             SchedulePreview(50);
@@ -306,6 +340,7 @@ namespace GeoSimplifier.SolidWorks.UI
             _closeHoles = _closeHolesBox.Checked;
             _gapWidth = _gapValue;
             _fillCavities = _fillCavitiesBox.Checked;
+            _embossHeight = _embossValue;
             // The preview is the result unless it is stale or failed.
             if (Key(CurrentOptions()) != _previewKey)
                 _preview = null;
@@ -341,6 +376,7 @@ namespace GeoSimplifier.SolidWorks.UI
         {
             GapWidth = _closeHoles ? _gapWidth : 0,
             FillCavities = _fillCavities,
+            MaxEmbossHeight = _embossHeight,
         };
 
         public void OnCheckboxCheck(int Id, bool Checked)

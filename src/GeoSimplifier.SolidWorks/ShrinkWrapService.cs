@@ -17,6 +17,9 @@ namespace GeoSimplifier.SolidWorks
         /// <summary>Material the wrap adds to the original bodies (plugs, bridges, filled cavities), for the preview.</summary>
         public List<IBody2> Added = new List<IBody2>();
 
+        /// <summary>Material the wrap removes (flattened embossed details), for the preview.</summary>
+        public List<IBody2> Removed = new List<IBody2>();
+
         /// <summary>
         /// The result grown by a hair, for the translucent preview: drawn exactly on the original faces it would
         /// fight with them for the same pixels and show streaks.
@@ -29,6 +32,7 @@ namespace GeoSimplifier.SolidWorks
         public int SourceBodies;
         public int HolesClosed;
         public int HolesFailed;
+        public int BossesRemoved;
         public int FailedBooleans;
         public double Seconds;
         public List<string> Notes = new List<string>();
@@ -43,7 +47,8 @@ namespace GeoSimplifier.SolidWorks
         {
             string text = $"{SourceBodies} gövde" + (ExcludedBodies > 0 ? $" (+{ExcludedBodies} hariç tutulan)" : "") +
                           $" → {Bodies.Count} gövde, {HolesClosed} delik kapatıldı" +
-                          (HolesFailed > 0 ? $", {HolesFailed} delik kapatılamadı" : "") + $" ({Seconds:F1} sn).";
+                          (HolesFailed > 0 ? $", {HolesFailed} delik kapatılamadı" : "") +
+                          (BossesRemoved > 0 ? $", {BossesRemoved} kabartma düzlendi" : "") + $" ({Seconds:F1} sn).";
             var notes = new List<string>(Notes);
             if (Bodies.Count > 1)
                 notes.Add("Birbirinden uzak parçalar var; tek gövde için kapatma genişliğini artırın.");
@@ -115,6 +120,13 @@ namespace GeoSimplifier.SolidWorks
                 }
 
                 var closer = new HoleCloser(ops);
+                if (options.MaxEmbossHeight > 0)
+                {
+                    progress.UpdateTitle("Shrink wrap: kabartmalar düzleniyor");
+                    progress.UpdateProgress(45);
+                    for (int i = 0; i < lumps.Count; i++)
+                        lumps[i] = closer.RemoveBosses(lumps[i], options.MaxEmbossHeight);
+                }
                 if (options.GapWidth > 0)
                 {
                     progress.UpdateTitle("Shrink wrap: delikler kapatılıyor");
@@ -134,6 +146,8 @@ namespace GeoSimplifier.SolidWorks
                 progress.UpdateTitle("Shrink wrap: önizleme hazırlanıyor");
                 progress.UpdateProgress(85);
                 result.Added = ops.Difference(lumps, original);
+                if (closer.BossesRemoved > 0)
+                    result.Removed = ops.Difference(original, lumps);
 
                 if (excluded.Count > 0)
                 {
@@ -155,6 +169,7 @@ namespace GeoSimplifier.SolidWorks
                 }
                 result.HolesClosed = closer.Closed;
                 result.HolesFailed = closer.Failed;
+                result.BossesRemoved = closer.BossesRemoved;
                 result.TooWide = closer.TooWide;
                 result.Log = closer.Log;
                 result.FailedBooleans = ops.FailedBooleans;
