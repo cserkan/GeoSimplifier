@@ -38,8 +38,9 @@ namespace GeoSimplifier.Probe
                 // Opens the Shrink Wrap page inside SOLIDWORKS and types limits into it: --page-test "50;30;80" [--ok].
                 var addin = swApp.GetAddInObject("GeoSimplifier.SwAddin");
                 if (addin == null) { Console.Error.WriteLine("Eklenti bulunamadı."); return 1; }
-                var callArgs = new object[] { args[test + 1], Array.IndexOf(args, "--ok") >= 0 };
-                Console.WriteLine(addin.GetType().InvokeMember("TestPage", System.Reflection.BindingFlags.InvokeMethod, null, addin, callArgs));
+                int ex = Array.IndexOf(args, "--exclude");
+                var callArgs = new object[] { args[test + 1], Array.IndexOf(args, "--ok") >= 0, ex >= 0 ? args[ex + 1] : "" };
+                Console.WriteLine(addin.GetType().InvokeMember("TestPageExcluding", System.Reflection.BindingFlags.InvokeMethod, null, addin, callArgs));
                 return 0;
             }
             int open = Array.IndexOf(args, "--open");
@@ -147,7 +148,13 @@ namespace GeoSimplifier.Probe
             }
             GeoSimplifier.SolidWorks.Geometry.WallHoleCloser.Verbose = Array.IndexOf(args, "--verbose") >= 0;
             var service = new ShrinkWrapService(swApp);
-            var result = service.Compute(doc, new ShrinkWrapOptions { GapWidth = gapMm / 1000, FillCavities = true });
+            // --exclude "Part-1;Part-2" keeps those components (Name2) out of the wrap.
+            var exclusions = new GeoSimplifier.SolidWorks.Geometry.Exclusions();
+            int exclude = Array.IndexOf(args, "--exclude");
+            if (exclude >= 0 && exclude + 1 < args.Length)
+                foreach (var name in args[exclude + 1].Split(';'))
+                    exclusions.AddComponentName(name);
+            var result = service.Compute(doc, new ShrinkWrapOptions { GapWidth = gapMm / 1000, FillCavities = true }, exclusions);
             Console.WriteLine(result.Summary());
             foreach (var line in result.Log)
                 Console.WriteLine("  " + line);

@@ -143,7 +143,10 @@ namespace GeoSimplifier.SolidWorks
         /// active document and types the given limits (mm, separated by ';') into it, then closes it with OK or
         /// Cancel. Returns at once; the page logs every step to %TEMP%\GeoSimplifier.log.
         /// </summary>
-        public string TestPage(string limitsMm, bool ok)
+        public string TestPage(string limitsMm, bool ok) => TestPageExcluding(limitsMm, ok, "");
+
+        /// <summary>As <see cref="TestPage"/>, with the components named in <paramref name="excludeNames"/> (';'-separated Name2) excluded.</summary>
+        public string TestPageExcluding(string limitsMm, bool ok, string excludeNames)
         {
             // A leading "nogc:" runs the steps without forcing garbage collections.
             bool forceGc = !limitsMm.StartsWith("nogc:");
@@ -154,6 +157,8 @@ namespace GeoSimplifier.SolidWorks
             {
                 _page = new ShrinkWrapPage(_swApp, _service);
                 _page.Show();
+                if (!string.IsNullOrEmpty(excludeNames))
+                    _page.ExcludeForTest(excludeNames.Split(';'));
                 _page.Simulate(limits, ok, forceGc);
             }));
             return "başladı";

@@ -2,6 +2,7 @@ using System;
 using System.Runtime.InteropServices;
 using System.Windows.Forms;
 using GeoSimplifier.Core.Wrap;
+using GeoSimplifier.SolidWorks.Geometry;
 using SolidWorks.Interop.sldworks;
 using SolidWorks.Interop.swconst;
 using SolidWorks.Interop.swpublished;
@@ -21,6 +22,11 @@ namespace GeoSimplifier.SolidWorks.UI
         private const int GapLabelId = 4;
         private const int GapWidthId = 5;
         private const int FillCavitiesId = 6;
+        private const int ExcludeGroupId = 7;
+        private const int ExcludeId = 8;
+
+        // Selection mark of the exclusion box, so its items are told apart from other selections.
+        private const int ExcludeMark = 2;
 
         // Remembered between runs within a SOLIDWORKS session.
         private static bool _closeHoles = true;
@@ -38,6 +44,9 @@ namespace GeoSimplifier.SolidWorks.UI
         private IPropertyManagerPageCheckbox _closeHolesBox;
         private IPropertyManagerPageNumberbox _gapWidthBox;
         private IPropertyManagerPageCheckbox _fillCavitiesBox;
+        private IPropertyManagerPageGroup _excludeGroup;
+        private IPropertyManagerPageSelectionbox _excludeBox;
+        private Exclusions _exclusions = new Exclusions();
         private bool _ok;
         private IModelDoc2 _source;
         private WrapResult _preview;
@@ -86,6 +95,17 @@ namespace GeoSimplifier.SolidWorks.UI
             _fillCavitiesBox = (IPropertyManagerPageCheckbox)AddControl(group, FillCavitiesId, swPropertyManagerPageControlType_e.swControlType_Checkbox,
                 "İç boşlukları doldur", "Dışarıdan görünmeyen kapalı iç boşluklar dolu hale getirilir.");
             _fillCavitiesBox.Checked = _fillCavities;
+
+            _excludeGroup = (IPropertyManagerPageGroup)_page.AddGroupBox(ExcludeGroupId, "Hariç tut",
+                (int)(swAddGroupBoxOptions_e.swGroupBoxOptions_Visible | swAddGroupBoxOptions_e.swGroupBoxOptions_Expanded));
+            _excludeBox = (IPropertyManagerPageSelectionbox)AddControl(_excludeGroup, ExcludeId, swPropertyManagerPageControlType_e.swControlType_Selectionbox,
+                "Hariç tutulacak bileşen ve gövdeler",
+                "Seçilen bileşen ve gövdeler sarılmaz, delikleri kapatılmaz; olduğu gibi, değdikleri yerden tek gövdeye eklenir.");
+            _excludeBox.SingleEntityOnly = false;
+            _excludeBox.AllowMultipleSelectOfSameEntity = false;
+            _excludeBox.Height = 50;
+            _excludeBox.Mark = ExcludeMark;
+            _excludeBox.SetSelectionFilters(new[] { (int)swSelectType_e.swSelCOMPONENTS, (int)swSelectType_e.swSelSOLIDBODIES });
 
             UpdateEnabled();
             _page.Show2(0);
@@ -138,7 +158,7 @@ namespace GeoSimplifier.SolidWorks.UI
             FillCavities = _fillCavitiesBox.Checked,
         };
 
-        private static string Key(ShrinkWrapOptions o) => $"{o.GapWidth:R}|{o.FillCavities}";
+        private string Key(ShrinkWrapOptions o) => $"{o.GapWidth:R}|{o.FillCavities}|{_exclusions.Key}";
 
         /// <summary>Recomputes the wrap for the current settings and shows what it adds.</summary>
         private void UpdatePreview()
@@ -152,7 +172,7 @@ namespace GeoSimplifier.SolidWorks.UI
             PageLog.Write($"Önizleme hesaplanıyor: sınır {options.GapWidth * 1000:F2} mm");
             try
             {
-                _preview = _service.Compute(_source, options);
+                _preview = _service.Compute(_source, options, _exclusions);
                 // The computation leaves many temporary bodies behind; free their COM objects now, on SOLIDWORKS'
                 // thread and before anything is drawn, rather than whenever the finalizer gets to them.
                 GC.Collect();
@@ -241,6 +261,15 @@ namespace GeoSimplifier.SolidWorks.UI
             timer.Start();
         }
 
+        /// <summary>Test hook: excludes components by name (Name2) as if they were picked in the selection box.</summary>
+        public void ExcludeForTest(string[] componentNames)
+        {
+            _exclusions = new Exclusions();
+            foreach (var name in componentNames)
+                _exclusions.AddComponentName(name);
+            PageLog.Write("Simülasyon: hariç tutulanlar " + _exclusions.Key);
+        }
+
         public void OnNumberboxChanged(int Id, double Value)
         {
             PageLog.Write($"OnNumberboxChanged {Id}: {Value:R} (kutu {_gapWidthBox.Value:R})");
@@ -294,7 +323,7 @@ namespace GeoSimplifier.SolidWorks.UI
             int icon;
             try
             {
-                var result = _preview ?? _service.Compute(_source, CurrentOptionsFromSettings());
+                var result = _preview ?? _service.Compute(_source, CurrentOptionsFromSettings(), _exclusions);
                 message = _service.Commit(result);
                 PageLog.Write("Tamam: " + message);
                 icon = (int)swMessageBoxIcon_e.swMbInformation;
@@ -340,7 +369,14 @@ namespace GeoSimplifier.SolidWorks.UI
         public void OnListboxSelectionChanged(int Id, int Item) { }
         public void OnListboxRMBUp(int Id, int PosX, int PosY) { }
         public void OnSelectionboxFocusChanged(int Id) { }
-        public void OnSelectionboxListChanged(int Id, int Count) { }
+        public void OnSelectionboxListChanged(int Id, int Count)
+        {
+            if (Id != ExcludeId)
+                return;
+            _exclusions = Exclusions.FromSelection(_source, ExcludeMark);
+            PageLog.Write($"Hariç tutulanlar: {Count} seçim, {_exclusions.Key}");
+            SchedulePreview(50);
+        }
         public void OnSelectionboxCalloutCreated(int Id) { }
         public void OnSelectionboxCalloutDestroyed(int Id) { }
         public bool OnSubmitSelection(int Id, object Selection, int SelType, ref string ItemText) => true;

@@ -23,6 +23,9 @@ namespace GeoSimplifier.SolidWorks
         /// </summary>
         public List<IBody2> Envelope = new List<IBody2>();
 
+        /// <summary>Bodies kept out of the wrap and united with it as they are.</summary>
+        public int ExcludedBodies;
+
         public int SourceBodies;
         public int HolesClosed;
         public int HolesFailed;
@@ -38,7 +41,8 @@ namespace GeoSimplifier.SolidWorks
 
         public string Summary()
         {
-            string text = $"{SourceBodies} gövde → {Bodies.Count} gövde, {HolesClosed} delik kapatıldı" +
+            string text = $"{SourceBodies} gövde" + (ExcludedBodies > 0 ? $" (+{ExcludedBodies} hariç tutulan)" : "") +
+                          $" → {Bodies.Count} gövde, {HolesClosed} delik kapatıldı" +
                           (HolesFailed > 0 ? $", {HolesFailed} delik kapatılamadı" : "") + $" ({Seconds:F1} sn).";
             var notes = new List<string>(Notes);
             if (Bodies.Count > 1)
@@ -66,7 +70,13 @@ namespace GeoSimplifier.SolidWorks
         }
 
         /// <summary>Computes the wrap as temporary bodies without changing any document.</summary>
-        public WrapResult Compute(IModelDoc2 source, ShrinkWrapOptions options)
+        public WrapResult Compute(IModelDoc2 source, ShrinkWrapOptions options) => Compute(source, options, null);
+
+        /// <summary>
+        /// Computes the wrap without the bodies in <paramref name="exclusions"/>, then unites those bodies as they
+        /// are with the wrapped body where they touch it, so they keep all their detail.
+        /// </summary>
+        public WrapResult Compute(IModelDoc2 source, ShrinkWrapOptions options, Exclusions exclusions)
         {
             if (source == null)
                 throw new InvalidOperationException("Açık bir parça ya da montaj yok.");
@@ -77,10 +87,13 @@ namespace GeoSimplifier.SolidWorks
             progress.Start(0, 100, "Shrink wrap: gövdeler toplanıyor");
             try
             {
-                var bodies = BodyCollector.CopyBodies(source);
+                var bodies = BodyCollector.CopyBodies(source, exclusions, out var excluded);
                 if (bodies.Count == 0)
-                    throw new InvalidOperationException("Görünür katı gövde bulunamadı.");
+                    throw new InvalidOperationException(excluded.Count > 0
+                        ? "Sarılacak gövde kalmadı; bütün gövdeler hariç tutulmuş."
+                        : "Görünür katı gövde bulunamadı.");
                 result.SourceBodies = bodies.Count;
+                result.ExcludedBodies = excluded.Count;
 
                 var ops = new BodyOps(_swApp);
                 double tolerance = 1e-6;
@@ -121,6 +134,16 @@ namespace GeoSimplifier.SolidWorks
                 progress.UpdateTitle("Shrink wrap: önizleme hazırlanıyor");
                 progress.UpdateProgress(85);
                 result.Added = ops.Difference(lumps, original);
+
+                if (excluded.Count > 0)
+                {
+                    progress.UpdateTitle("Shrink wrap: hariç tutulan gövdeler ekleniyor");
+                    progress.UpdateProgress(90);
+                    int before = lumps.Count;
+                    lumps = ops.UnionAll(lumps.Concat(excluded), tolerance);
+                    if (lumps.Count > before)
+                        result.Notes.Add("Bazı hariç tutulan gövdeler sarılan gövdeye değmediği için ayrı kaldı.");
+                }
 
                 result.Bodies = lumps;
                 // The translucent envelope is lifted off the model's faces when MakeOffset works. On installations where
