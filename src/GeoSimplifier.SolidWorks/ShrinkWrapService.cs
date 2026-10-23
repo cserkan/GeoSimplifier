@@ -90,7 +90,13 @@ namespace GeoSimplifier.SolidWorks
         private readonly ISldWorks _swApp;
 
         private const int LargeModelTriangles = 200000;
-        private const int LargeModelFaces = 8000;
+        // Above this many faces the quick preview draws no translucent envelope: on a 43-body motor (about 5000
+        // faces) redrawing it took 5 s of a preview's 11.
+        private const int LargeModelFaces = 3000;
+
+        // Rough plugs of every hole of the previewed document, with the width of the opening each closes.
+        private string _plugKey;
+        private List<(IBody2 p, double w)> _plugs;
 
         // The union of the source bodies does not depend on the limit, so plugs-only previews reuse it.
         private string _unionKey;
@@ -161,7 +167,7 @@ namespace GeoSimplifier.SolidWorks
                 // The bag is computed from the bodies as they were collected: tessellating the temporary bodies that
                 // booleans produce crashed SOLIDWORKS.
                 var collected = new List<IBody2>(bodies);
-                var closer = new HoleCloser(ops) { PlugsOnly = options.Preview };
+                var closer = new HoleCloser(ops) { PlugsOnly = options.Preview, Rough = options.Preview };
                 result.IsPreview = options.Preview;
                 // With the bag, the quick preview is only the bag over the bodies as they are: no exact plugs, no
                 // flattening, no union and no box bridges (the bag fills holes and gaps itself); all of that is
@@ -181,7 +187,27 @@ namespace GeoSimplifier.SolidWorks
                     }
                     Lap("kabartma");
                 }
-                if (options.GapWidth > 0 && !bagOnly)
+                List<IBody2> previewPlugs = null;
+                if (options.GapWidth > 0 && options.Preview && !bagOnly)
+                {
+                    // The quick preview finds every hole once (at any width) and keeps the rough plugs with their
+                    // widths; a new limit only picks the plugs again.
+                    string plugKey = $"{source.GetPathName()}|{source.GetTitle()}|{exclusions?.Key}|{bodies.Count}|{options.MaxEmbossHeight:R}";
+                    if (plugKey != _plugKey)
+                    {
+                        progress.UpdateTitle("Shrink wrap: delikler bulunuyor");
+                        progress.UpdateProgress(10);
+                        var all = new HoleCloser(ops) { PlugsOnly = true, Rough = true };
+                        foreach (var body in bodies)
+                            all.CloseHoles(body, 10.0);
+                        _plugs = all.Plugs.Zip(all.PlugWidths, (p, w) => (p, w)).ToList();
+                        _plugKey = plugKey;
+                    }
+                    previewPlugs = _plugs.Where(e => e.w <= options.GapWidth).Select(e => (IBody2)e.p.Copy()).ToList();
+                    result.TooWide.AddRange(_plugs.Where(e => e.w > options.GapWidth).Select(e => e.w));
+                    Lap("delik");
+                }
+                else if (options.GapWidth > 0 && !bagOnly)
                 {
                     progress.UpdateTitle("Shrink wrap: delikler kapatılıyor");
                     progress.UpdateProgress(10);
@@ -189,7 +215,7 @@ namespace GeoSimplifier.SolidWorks
                         bodies[i] = closer.CloseHoles(bodies[i], options.GapWidth);
                     Lap("delik");
                 }
-                var plugs = closer.Plugs;
+                var plugs = previewPlugs ?? closer.Plugs;
 
                 // The insides of parts their neighbours close off (a terminal box between lid and housing) are filled
                 // exactly, flat in the plane of their rims; their holes and slots were plugged above.
@@ -323,6 +349,16 @@ namespace GeoSimplifier.SolidWorks
                     Lap("hariç");
                 }
 
+                // Slivers the fills leave apart (a few mm³ that did not merge) are no part of the result.
+                if (!options.Preview && lumps.Count > 1)
+                {
+                    var volumes = lumps.Select(l => ((double[])l.GetMassProperties(1))?[3] ?? 0).ToList();
+                    double largest = volumes.Max();
+                    var kept = lumps.Where((l, i) => volumes[i] >= largest * 1e-5).ToList();
+                    if (kept.Count < lumps.Count)
+                        UI.PageLog.Write($"  {lumps.Count - kept.Count} küçük parça atıldı");
+                    lumps = kept;
+                }
                 result.Bodies = lumps;
                 // The translucent envelope is lifted off the model's faces when MakeOffset works. On installations where
                 // it fails a plain copy is drawn on the faces; it shows streaks, but the envelope stays visible.
@@ -338,10 +374,10 @@ namespace GeoSimplifier.SolidWorks
                     result.Envelope.Add(options.Preview ? (IBody2)lump.Copy() : ops.Offset(lump, gap, outward: true) ?? (IBody2)lump.Copy());
                 }
                 Lap("zarf");
-                result.HolesClosed = closer.Closed;
+                result.HolesClosed = previewPlugs?.Count ?? closer.Closed;
                 result.HolesFailed = closer.Failed;
                 result.BossesRemoved = closer.BossesRemoved;
-                result.TooWide = closer.TooWide;
+                if (previewPlugs == null) result.TooWide = closer.TooWide;
                 result.Log = closer.Log.Concat(result.Log).ToList();
                 result.FailedBooleans = ops.FailedBooleans;
                 result.Seconds = watch.Elapsed.TotalSeconds;

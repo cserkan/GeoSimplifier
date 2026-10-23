@@ -41,11 +41,20 @@ namespace GeoSimplifier.SolidWorks.Geometry
         /// <summary>The plugs that were (or, with <see cref="PlugsOnly"/>, would be) united with the bodies.</summary>
         public readonly List<IBody2> Plugs = new List<IBody2>();
 
+        /// <summary>The width of the opening each of <see cref="Plugs"/> closes (meters).</summary>
+        public readonly List<double> PlugWidths = new List<double>();
+
         /// <summary>
         /// For the quick preview: find the plugs but leave the bodies as they are, and use only the first mouth of a
         /// hole (it reaches through the hole), so the expensive unions with the body are skipped.
         /// </summary>
         public bool PlugsOnly;
+
+        /// <summary>
+        /// For the quick preview of large models: with <see cref="PlugsOnly"/>, the plug is just the box placed in
+        /// the hole, not cut to the hole's shape (cutting it from a large body took most of a preview's time).
+        /// </summary>
+        public bool Rough;
 
         private bool _logging;
 
@@ -97,9 +106,10 @@ namespace GeoSimplifier.SolidWorks.Geometry
                 else Failed++;
             }
             // Holes whose mouth runs across several faces (e.g. on a bend radius) are found from their walls.
-            var walls = new WallHoleCloser(_ops, Log.Add) { PlugsOnly = PlugsOnly };
+            var walls = new WallHoleCloser(_ops, Log.Add) { PlugsOnly = PlugsOnly, Rough = Rough };
             current = walls.Close(body, current, maxWidth, planarFaces);
             Plugs.AddRange(walls.Plugs);
+            PlugWidths.AddRange(walls.PlugWidths);
             Closed += walls.Closed;
             Failed += walls.Failed;
             TooWide.AddRange(walls.TooWide);
@@ -168,6 +178,12 @@ namespace GeoSimplifier.SolidWorks.Geometry
             var box = _ops.BoxOnAxis(mouth.Centroid, mouth.Normal * -1, side, mouth.Depth);
             if (box == null)
                 return Fail("kutu oluşturulamadı");
+            if (PlugsOnly && Rough)
+            {
+                Plugs.Add(box);
+                PlugWidths.Add(hole.Throat);
+                return body;
+            }
             var pieces = _ops.Subtract(box, body);
             if (pieces == null)
                 return Fail("kutudan gövde çıkarılamadı");
@@ -184,6 +200,7 @@ namespace GeoSimplifier.SolidWorks.Geometry
                 if (!inside)
                     continue;
                 Plugs.Add(piece);
+                PlugWidths.Add(hole.Throat);
                 if (PlugsOnly)
                     continue;
                 result = _ops.Union(result, piece);

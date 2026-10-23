@@ -35,7 +35,9 @@ namespace GeoSimplifier.SolidWorks.Geometry
 
         /// <summary>The plugs found; see <see cref="HoleCloser.PlugsOnly"/>.</summary>
         public readonly List<IBody2> Plugs = new List<IBody2>();
+        public readonly List<double> PlugWidths = new List<double>();
         public bool PlugsOnly;
+        public bool Rough;
 
         private sealed class Hole
         {
@@ -162,6 +164,16 @@ namespace GeoSimplifier.SolidWorks.Geometry
                 lo = Math.Min(lo, t);
                 hi = Math.Max(hi, t);
             }
+            if (PlugsOnly && Rough)
+            {
+                // Quick preview: a box the size of the hole along its wall, not cut to the surfaces around it.
+                var rough = _ops.BoxOnAxis(hole.AxisPoint + hole.Axis * lo, hole.Axis, 2 * hole.Radius, hi - lo);
+                if (rough == null)
+                    return Fail("kutu oluşturulamadı");
+                Plugs.Add(rough);
+                PlugWidths.Add(2 * hole.Radius);
+                return body;
+            }
             radial = hole.Radius * 1.5 + 1e-4;
             double margin = 0.25 * (hi - lo) + 1e-3;
             var region = new List<IBody2>
@@ -218,6 +230,7 @@ namespace GeoSimplifier.SolidWorks.Geometry
             if (plug == null)
                 return Fail("delik boşluğu bulunamadı");
             Plugs.Add(plug);
+            PlugWidths.Add(2 * hole.Radius);
             if (PlugsOnly)
                 return body;
             return _ops.Union(body, plug) ?? _ops.Union(plug, body) ?? Fail("tapa gövdeyle birleştirilemedi");
