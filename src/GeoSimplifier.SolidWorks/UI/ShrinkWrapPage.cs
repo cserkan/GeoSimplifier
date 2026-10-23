@@ -236,20 +236,26 @@ namespace GeoSimplifier.SolidWorks.UI
                 GC.Collect();
                 GC.WaitForPendingFinalizers();
                 GC.Collect();
+                double collected = watch.Elapsed.TotalSeconds;
                 _display = _display ?? new TempBodyPreview(_source);
                 bool shown = true;
+                // The quick preview's bodies are made for it alone (OK computes again), so they are moved, not copied.
                 foreach (var body in _preview.Envelope)
-                    shown &= _display.Show(body, EnvelopeColor, new[] { 0.0, 0.47, 0.84 }, transparency: 0.65);
+                    shown &= _display.Show(body, EnvelopeColor, new[] { 0.0, 0.47, 0.84 }, transparency: 0.65, inPlace: _preview.IsPreview);
                 foreach (var body in _preview.Added)
-                    shown &= _display.Show(body, AddedColor, new[] { 1.0, 0.5, 0.0 }, transparency: 0);
+                    shown &= _display.Show(body, AddedColor, new[] { 1.0, 0.5, 0.0 }, transparency: 0, inPlace: _preview.IsPreview);
                 foreach (var body in _preview.Removed)
                     shown &= _display.Show(body, RemovedColor, new[] { 0.85, 0.1, 0.1 }, transparency: 0);
+                double drawnEnvelope = watch.Elapsed.TotalSeconds;
                 _source.GraphicsRedraw2();
+                PageLog.Write($"  süre: hesap {computed:F2}, bellek {collected - computed:F2}, çizim {drawnEnvelope - collected:F2}, yenileme {watch.Elapsed.TotalSeconds - drawnEnvelope:F2} sn");
                 string text = _preview.Summary();
                 if (!_display.Supported)
                     text += " Bu belgede önizleme çizilemiyor; sonuç Tamam ile yeni parça olarak oluşturulur.";
                 else if (!shown)
                     text += " (Önizleme bu belgede çizilemedi.)";
+                else if (_preview.EnvelopeLeftOut)
+                    text += " Büyük model: önizlemede zarf çizilmiyor, eklenecek malzeme turuncu gösteriliyor.";
                 else
                     text += _preview.Added.Count == 0
                         ? " Zarf mavi gösteriliyor, eklenen malzeme yok."

@@ -53,19 +53,22 @@ namespace GeoSimplifier.SolidWorks
         /// <summary>A quick preview result (<see cref="ShrinkWrapOptions.Preview"/>): not to be committed.</summary>
         public bool IsPreview;
 
+        /// <summary>The preview of a large model draws no envelope (it would take seconds to redraw).</summary>
+        public bool EnvelopeLeftOut;
+
         /// <summary>Seconds spent in each step, for finding what makes the preview slow.</summary>
         public string Timings = "";
 
         public string Summary()
         {
             string text = $"{SourceBodies} gövde" + (ExcludedBodies > 0 ? $" (+{ExcludedBodies} hariç tutulan)" : "") +
-                          $" → {Bodies.Count} gövde, {HolesClosed} delik kapatıldı" +
+                          (IsPreview ? " (hızlı önizleme)" : $" → {Bodies.Count} gövde") + $", {HolesClosed} delik kapatıldı" +
                           (HolesFailed > 0 ? $", {HolesFailed} delik kapatılamadı" : "") +
                           (BossesRemoved > 0 ? $", {BossesRemoved} kabartma düzlendi" : "") +
                           (Bridges > 0 ? $", {Bridges} boşluk köprülendi" : "") +
                           (Sheets > 0 ? $", {Sheets} yüzey gövdesi sarıldı" : "") + $" ({Seconds:F1} sn).";
             var notes = new List<string>(Notes);
-            if (Bodies.Count > 1)
+            if (Bodies.Count > 1 && !IsPreview)
                 notes.Add("Birbirinden uzak parçalar var; tek gövde için kapatma genişliğini artırın.");
             if (FailedSheets > 0)
                 notes.Add($"{FailedSheets} yüzey gövdesi kalınlaştırılamadığı için sarmaya katılmadı.");
@@ -86,9 +89,11 @@ namespace GeoSimplifier.SolidWorks
     {
         private readonly ISldWorks _swApp;
 
-        // The union of the source bodies does not depend on the settings, so previews reuse it.
-        private string _unionKey;
-        private List<IBody2> _union;
+        private const int LargeModelTriangles = 200000;
+
+        // The surface triangles of the source bodies do not depend on the settings, so previews reuse them.
+        private string _trianglesKey;
+        private List<Core.Geometry.Vec3> _triangles;
 
         public ShrinkWrapService(ISldWorks swApp)
         {
@@ -114,6 +119,7 @@ namespace GeoSimplifier.SolidWorks
             {
                 double now = watch.Elapsed.TotalSeconds;
                 laps.Add($"{step} {now - last:F2}");
+                UI.PageLog.Write($"  adım: {step} {now - last:F2} sn");
                 last = now;
             }
 
@@ -147,9 +153,14 @@ namespace GeoSimplifier.SolidWorks
 
                 // Holes are closed in each body before the bodies are united: a plug is cut from and united with
                 // that one small body instead of the whole assembly, which made this step the slowest by far.
+                // The bag is computed from the bodies as they were collected: tessellating the temporary bodies that
+                // booleans produce crashed SOLIDWORKS.
+                var collected = new List<IBody2>(bodies);
                 var closer = new HoleCloser(ops) { PlugsOnly = options.Preview };
                 result.IsPreview = options.Preview;
-                if (options.MaxEmbossHeight > 0)
+                // The quick preview is only the bag over the bodies as they are: no exact plugs, no flattening, no
+                // union and no box bridges (the bag fills holes and gaps itself); all of that is done on OK.
+                if (options.MaxEmbossHeight > 0 && !options.Preview)
                 {
                     progress.UpdateTitle("Shrink wrap: kabartmalar düzleniyor");
                     progress.UpdateProgress(5);
@@ -163,7 +174,7 @@ namespace GeoSimplifier.SolidWorks
                     }
                     Lap("kabartma");
                 }
-                if (options.GapWidth > 0)
+                if (options.GapWidth > 0 && !options.Preview)
                 {
                     progress.UpdateTitle("Shrink wrap: delikler kapatılıyor");
                     progress.UpdateProgress(10);
@@ -175,26 +186,11 @@ namespace GeoSimplifier.SolidWorks
 
                 progress.UpdateTitle($"Shrink wrap: {bodies.Count} gövde birleştiriliyor");
                 progress.UpdateProgress(30);
-                // A preview leaves the bodies unplugged (only flattened), so their union can be reused.
-                string unionKey = options.Preview
-                    ? $"{source.GetPathName()}|{source.GetTitle()}|{exclusions?.Key}|{bodies.Count}|{options.MaxEmbossHeight:R}"
-                    : null;
-                List<IBody2> original;
-                if (unionKey != null && unionKey == _unionKey)
-                    original = _union;
-                else
-                {
-                    original = ops.UnionAll(bodies, tolerance);
-                    if (unionKey != null)
-                    {
-                        _unionKey = unionKey;
-                        _union = original;
-                    }
-                }
+                var original = options.Preview ? bodies : ops.UnionAll(bodies, tolerance);
                 var lumps = new List<IBody2>(original);
                 Lap("birleştirme");
 
-                if (options.GapWidth > 0 && lumps.Count > 1)
+                if (options.GapWidth > 0 && lumps.Count > 1 && !options.Preview)
                 {
                     progress.UpdateTitle("Shrink wrap: parçalar arası boşluklar köprüleniyor");
                     progress.UpdateProgress(30);
@@ -212,8 +208,52 @@ namespace GeoSimplifier.SolidWorks
                 }
 
 
-                // The quick preview skips this, except for surface models: there the filled inside is the result.
-                if (options.FillCavities && (!options.Preview || result.Sheets > 0))
+                // The bag: a closing on a voxel grid fills what a cube of the limit's size cannot reach from outside
+                // (open shells such as a fan cover, hollow insides, gaps between parts). Its boxes are united with
+                // the exact bodies, so outside the bridged gaps the faces stay the original ones.
+                var bagBoxes = new List<IBody2>();
+                int triangleCount = 0;
+                if (options.GapWidth > 0)
+                {
+                    progress.UpdateTitle("Shrink wrap: poşet geçiriliyor");
+                    progress.UpdateProgress(60);
+                    // The surfaces do not depend on the limit, so previews reuse them.
+                    string key = $"{source.GetPathName()}|{source.GetTitle()}|{exclusions?.Key}|{bodies.Count}";
+                    List<Core.Geometry.Vec3> triangles;
+                    if (key == _trianglesKey)
+                        triangles = _triangles;
+                    else
+                    {
+                        triangles = BodyOps.Triangles(collected);
+                        _trianglesKey = key;
+                        _triangles = triangles;
+                    }
+                    Lap("üçgenler");
+                    triangleCount = triangles.Count / 3;
+                    // The same grid as the preview: a finer one gave several times more boxes, and uniting them took minutes.
+                    var bag = Core.Geometry.VoxelClosing.FillLimited(triangles, options.GapWidth / 2);
+                    foreach (var box in bag.Boxes)
+                        if (ops.Box(box) is IBody2 b)
+                            bagBoxes.Add(b);
+                    result.Log.Add($"Poşet: {triangles.Count / 3} üçgen, ızgara {bag.CellsX}x{bag.CellsY}x{bag.CellsZ} " +
+                                   $"({bag.Cell * 1000:F1} mm), {bag.FilledCells} dolu hücre, {bagBoxes.Count} kutu.");
+                    Lap("poşet");
+                    if (!options.Preview && bagBoxes.Count > 0)
+                    {
+                        // Pieces the pairwise union left are small; uniting them with each other first is cheap,
+                        // uniting each of them with the whole model is not.
+                        var fill = ops.UnionAll(ops.UnionMany(bagBoxes), tolerance);
+                        Lap("poşet birleşimi");
+                        UI.PageLog.Write($"  poşet: {bagBoxes.Count} kutu → {fill.Count} parça");
+                        lumps = ops.UnionAll(lumps.Concat(fill), tolerance);
+                        Lap("poşet ekleme");
+                    }
+                }
+
+                // The bag already fills closed hollows. Without it (no limit) cavities are filled here; the quick
+                // preview skips this, except for surface models: there the filled inside is the result.
+                bool bagged = bagBoxes.Count > 0;
+                if (options.FillCavities && !bagged && (!options.Preview || result.Sheets > 0))
                 {
                     progress.UpdateTitle("Shrink wrap: iç boşluklar dolduruluyor");
                     progress.UpdateProgress(70);
@@ -226,7 +266,8 @@ namespace GeoSimplifier.SolidWorks
                 progress.UpdateProgress(85);
                 // Plugs were taken per body; bridges and filled cavities are what the lumps have beyond the union.
                 var changed = lumps.Where(l => !original.Any(o => ReferenceEquals(o, l))).ToList();
-                result.Added = plugs.Concat(changed.Count > 0 ? ops.Difference(changed, original) : new List<IBody2>()).ToList();
+                // What is added is only drawn in the preview; the real result goes straight into the document.
+                result.Added = options.Preview ? plugs.Concat(bagBoxes).ToList() : plugs;
                 Lap("fark");
 
                 if (excluded.Count > 0)
@@ -243,7 +284,11 @@ namespace GeoSimplifier.SolidWorks
                 result.Bodies = lumps;
                 // The translucent envelope is lifted off the model's faces when MakeOffset works. On installations where
                 // it fails a plain copy is drawn on the faces; it shows streaks, but the envelope stays visible.
-                foreach (var lump in lumps)
+                // A translucent envelope of a large model takes SOLIDWORKS seconds to redraw (3.5 s for a motor of
+                // 550 000 triangles) and looks just like the model; the quick preview leaves it out there.
+                bool envelope = !options.Preview || triangleCount < LargeModelTriangles;
+                result.EnvelopeLeftOut = !envelope;
+                foreach (var lump in envelope ? lumps : new List<IBody2>())
                 {
                     double gap = Math.Max(5e-5, BodyOps.Bounds(lump).LongestSide * 0.0015);
                     result.Envelope.Add(options.Preview ? lump : ops.Offset(lump, gap, outward: true) ?? (IBody2)lump.Copy());
@@ -253,7 +298,7 @@ namespace GeoSimplifier.SolidWorks
                 result.HolesFailed = closer.Failed;
                 result.BossesRemoved = closer.BossesRemoved;
                 result.TooWide = closer.TooWide;
-                result.Log = closer.Log;
+                result.Log = closer.Log.Concat(result.Log).ToList();
                 result.FailedBooleans = ops.FailedBooleans;
                 result.Seconds = watch.Elapsed.TotalSeconds;
                 result.Timings = string.Join(", ", laps);

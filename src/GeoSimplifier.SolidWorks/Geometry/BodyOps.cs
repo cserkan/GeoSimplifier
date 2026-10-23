@@ -1,5 +1,6 @@
 using System;
 using System.Collections.Generic;
+using System.Linq;
 using GeoSimplifier.Core.Geometry;
 using SolidWorks.Interop.sldworks;
 using SolidWorks.Interop.swconst;
@@ -49,6 +50,98 @@ namespace GeoSimplifier.SolidWorks.Geometry
             return (IBody2)_modeler.CreateBodyFromCyl(new[] { start.X, start.Y, start.Z, a.X, a.Y, a.Z, radius, length });
         }
 
+        /// <summary>Surface triangles of the bodies (three points each), from SOLIDWORKS' tessellation.</summary>
+        public static List<Vec3> Triangles(IEnumerable<IBody2> bodies)
+        {
+            var points = new List<Vec3>();
+            foreach (var body in bodies)
+            {
+                foreach (IFace2 face in (object[])body.GetFaces() ?? new object[0])
+                {
+                    if (!(face.GetTessTriangles(true) is float[] t))
+                        continue;
+                    for (int i = 0; i + 8 < t.Length; i += 9)
+                    {
+                        points.Add(new Vec3(t[i], t[i + 1], t[i + 2]));
+                        points.Add(new Vec3(t[i + 3], t[i + 4], t[i + 5]));
+                        points.Add(new Vec3(t[i + 6], t[i + 7], t[i + 8]));
+                    }
+                }
+                if (points.Count > 0)
+                    continue;
+                // Temporary bodies may have no display tessellation; tessellate them explicitly.
+                var tess = (ITessellation)body.GetTessellation(body.GetFaces());
+                if (tess == null || !tess.Tessellate())
+                    continue;
+                for (int f = 0; f < tess.GetFacetCount(); f++)
+                {
+                    var corners = new List<int>();
+                    foreach (int fin in (int[])tess.GetFacetFins(f))
+                        foreach (int v in (int[])tess.GetFinVertices(fin))
+                            if (!corners.Contains(v)) corners.Add(v);
+                    if (corners.Count < 3)
+                        continue;
+                    for (int c = 0; c < 3; c++)
+                    {
+                        var p = (double[])tess.GetVertexPoint(corners[c]);
+                        points.Add(new Vec3(p[0], p[1], p[2]));
+                    }
+                }
+            }
+            return points;
+        }
+
+        /// <summary>
+        /// Unites many bodies (e.g. touching boxes) in pairs, round after round, so each boolean stays small;
+        /// returns the separate lumps that remain.
+        /// </summary>
+        public List<IBody2> UnionMany(List<IBody2> bodies)
+        {
+            // Neighbours in space are next to each other in Morton (Z-curve) order of the box centres, so most
+            // pairs touch; each body is united with the first of the next few whose box touches its own.
+            var all = bodies.Where(b => b != null).Select(b => (body: b, box: Bounds(b))).Where(e => !e.box.IsEmpty).ToList();
+            if (all.Count == 0)
+                return new List<IBody2>();
+            var extent = all.Select(e => e.box).Aggregate((a, b) => a.Union(b));
+            ulong Morton(Aabb b)
+            {
+                var c = (b.Min + b.Max) * 0.5;
+                ulong code = 0;
+                var q = new ulong[3];
+                for (int a = 0; a < 3; a++)
+                    q[a] = (ulong)(1023 * (c[a] - extent.Min[a]) / Math.Max(extent.Size[a], 1e-9));
+                for (int bit = 0; bit < 10; bit++)
+                    for (int a = 0; a < 3; a++)
+                        code |= ((q[a] >> bit) & 1) << (3 * bit + a);
+                return code;
+            }
+            var current = all.OrderBy(e => Morton(e.box)).ToList();
+            for (int round = 0; round < 64 && current.Count > 1; round++)
+            {
+                var next = new List<(IBody2 body, Aabb box)>();
+                var taken = new bool[current.Count];
+                for (int i = 0; i < current.Count; i++)
+                {
+                    if (taken[i]) continue;
+                    taken[i] = true;
+                    int partner = -1;
+                    for (int j = i + 1; j < Math.Min(current.Count, i + 8) && partner < 0; j++)
+                        if (!taken[j] && Overlaps(current[i].box, current[j].box, 1e-7))
+                            partner = j;
+                    if (partner < 0) { next.Add(current[i]); continue; }
+                    taken[partner] = true;
+                    var output = Boolean(swBodyOperationType_e.SWBODYADD, current[i].body, current[partner].body)?.OfType<IBody2>().ToList();
+                    if (output == null || output.Count == 0) { next.Add(current[i]); next.Add(current[partner]); continue; }
+                    next.AddRange(output.Select(o => (o, Bounds(o))).Where(e => !e.Item2.IsEmpty));
+                }
+                bool progress = next.Count < current.Count;
+                current = next.OrderBy(e => Morton(e.box)).ToList();
+                if (!progress)
+                    break;
+            }
+            return current.Select(e => e.body).ToList();
+        }
+
         /// <summary>The common part of a and b; null when the operation fails, empty when they do not overlap.</summary>
         public object[] Intersect(IBody2 a, IBody2 b) => Boolean(swBodyOperationType_e.SWBODYINTERSECT, a, b);
 
@@ -57,7 +150,10 @@ namespace GeoSimplifier.SolidWorks.Geometry
 
         public static Aabb Bounds(IBody2 body)
         {
-            var bb = (double[])body.GetBodyBox();
+            // A body SOLIDWORKS could not build properly has no box; it counts as empty.
+            var bb = (double[])body?.GetBodyBox();
+            if (bb == null || bb.Length < 6)
+                return Aabb.Empty;
             return new Aabb(new Vec3(bb[0], bb[1], bb[2]), new Vec3(bb[3], bb[4], bb[5]));
         }
 
@@ -178,6 +274,8 @@ namespace GeoSimplifier.SolidWorks.Geometry
             {
                 var current = body;
                 var box = Bounds(body);
+                if (box.IsEmpty)
+                    continue;
                 for (int n = lumps.Count - 1; n >= 0; n--)
                 {
                     if (!Overlaps(boxes[n], box, tolerance))
@@ -209,8 +307,13 @@ namespace GeoSimplifier.SolidWorks.Geometry
         private object[] Boolean(swBodyOperationType_e type, IBody2 a, IBody2 b)
         {
             // Boolean operations may modify their inputs, so operate on copies and keep the originals intact.
-            var target = (IBody2)a.Copy();
-            var tool = (IBody2)b.Copy();
+            var target = (IBody2)a?.Copy();
+            var tool = (IBody2)b?.Copy();
+            if (target == null || tool == null)
+            {
+                FailedBooleans++;
+                return null;
+            }
             var output = (object[])target.Operations2((int)type, tool, out int error);
             if (error != 0)
             {

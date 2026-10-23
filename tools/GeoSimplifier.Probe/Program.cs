@@ -206,6 +206,49 @@ namespace GeoSimplifier.Probe
                 }
                 return 0;
             }
+            int viewAt = Array.IndexOf(args, "--view");
+            if (viewAt >= 0 && viewAt + 1 < args.Length)
+            {
+                // Shows the active document from a standard view by number (1 front, 2 back, 3 left, 4 right, 5 top,
+                // 6 bottom, 7 isometric): view names are translated in a Turkish SOLIDWORKS.
+                doc.ShowNamedView2("", int.Parse(args[viewAt + 1]));
+                doc.ViewZoomtofit2();
+                // The Resources pane covers the right of the window: zoom out so all of the model shows.
+                var mv = (IModelView)doc.ActiveView;
+                mv.Scale2 *= 0.62;
+                mv.GraphicsRedraw(null);
+                return 0;
+            }
+            if (Array.IndexOf(args, "--halfcut") >= 0 && doc is IPartDoc cutPart)
+            {
+                // A section of the active part's solid bodies: the half beyond the middle (across the second longest
+                // side) is cut away and the rest opened in a new part, so hollows inside can be seen.
+                var ops = new GeoSimplifier.SolidWorks.Geometry.BodyOps(swApp);
+                var halves = new System.Collections.Generic.List<IBody2>();
+                foreach (IBody2 body in (object[])cutPart.GetBodies2(0, true) ?? new object[0])
+                {
+                    var bb = GeoSimplifier.SolidWorks.Geometry.BodyOps.Bounds(body);
+                    var size = bb.Size;
+                    int[] order = new[] { 0, 1, 2 }.OrderByDescending(i => size[i]).ToArray();
+                    int acrossAt = Array.IndexOf(args, "--across");
+                    int across = order[acrossAt >= 0 ? int.Parse(args[acrossAt + 1]) : 1];
+                    var min = new double[] { bb.Min.X - 1, bb.Min.Y - 1, bb.Min.Z - 1 };
+                    var max = new double[] { bb.Max.X + 1, bb.Max.Y + 1, bb.Max.Z + 1 };
+                    min[across] = (bb.Min[across] + bb.Max[across]) / 2;
+                    var cutter = ops.Box(new GeoSimplifier.Core.Geometry.Aabb(new GeoSimplifier.Core.Geometry.Vec3(min[0], min[1], min[2]),
+                                                                            new GeoSimplifier.Core.Geometry.Vec3(max[0], max[1], max[2])));
+                    var rest = ops.Subtract((IBody2)body.Copy(), cutter);
+                    if (rest != null) halves.AddRange(rest.Cast<IBody2>());
+                    Console.WriteLine($"Kesit: eksen {"XYZ"[across]} ortadan, {rest?.Length ?? 0} parça");
+                }
+                string tpl = swApp.GetUserPreferenceStringValue((int)global::SolidWorks.Interop.swconst.swUserPreferenceStringValue_e.swDefaultTemplatePart);
+                var view = (IPartDoc)swApp.NewDocument(tpl, 0, 0, 0);
+                foreach (var h in halves)
+                    view.CreateFeatureFromBody3(h, false, 0);
+                ((IModelDoc2)view).ShowNamedView2("*Isometric", 7);
+                ((IModelDoc2)view).ViewZoomtofit2();
+                return 0;
+            }
             if (Array.IndexOf(args, "--configs") >= 0 && doc is IPartDoc)
             {
                 // For each configuration of a part: how many features are suppressed, and the last feature's state.

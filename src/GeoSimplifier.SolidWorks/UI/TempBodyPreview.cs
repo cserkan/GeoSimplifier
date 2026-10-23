@@ -55,14 +55,15 @@ namespace GeoSimplifier.SolidWorks.UI
         public bool Supported => _owner != null;
 
         /// <returns>False when nothing was drawn.</returns>
-        public bool Show(IBody2 body, int color, double[] rgb, double transparency)
+        /// <param name="inPlace">The body is only made for the preview: move it instead of copying it first.</param>
+        public bool Show(IBody2 body, int color, double[] rgb, double transparency, bool inPlace = false)
         {
             if (_owner == null)
                 return false;
             var shown = body;
             if (_toOwner != null)
             {
-                shown = (IBody2)body.Copy();
+                shown = inPlace ? body : (IBody2)body.Copy();
                 shown.ApplyTransform(_toOwner);
             }
             // Colour, ambient, diffuse, specular, shininess, transparency, emission.
