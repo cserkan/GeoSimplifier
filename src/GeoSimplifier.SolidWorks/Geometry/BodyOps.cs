@@ -1,4 +1,4 @@
-using System;
+﻿using System;
 using System.Collections.Generic;
 using System.Linq;
 using GeoSimplifier.Core.Geometry;
@@ -183,7 +183,8 @@ namespace GeoSimplifier.SolidWorks.Geometry
         /// for two lumps whose boxes are at most <paramref name="gapWidth"/> apart along some axis, the space between
         /// them within the overlap of their outlines is filled, keeping only pieces that touch both lumps.
         /// </summary>
-        public List<IBody2> BridgeByBoxes(List<IBody2> lumps, double gapWidth, double tolerance, out int bridges)
+        /// <param name="added">When given, receives the bridges that were added.</param>
+        public List<IBody2> BridgeByBoxes(List<IBody2> lumps, double gapWidth, double tolerance, out int bridges, List<IBody2> added = null)
         {
             bridges = 0;
             var current = new List<IBody2>(lumps);
@@ -202,6 +203,7 @@ namespace GeoSimplifier.SolidWorks.Geometry
                         current[i] = joined;
                         current.RemoveAt(j);
                         bridges++;
+                        added?.Add(bridge);
                         merged = true;
                     }
                 if (!merged)
@@ -340,10 +342,47 @@ namespace GeoSimplifier.SolidWorks.Geometry
                     max[k] = hi;
                 }
             }
-            // Boxes that overlap on every axis are interleaved bodies, not a gap a bag would span.
             if (separated == 0)
-                return null;
+                return InterleavedBridge(a, b, ba, bb, min, max, gapWidth, tolerance);
+            return BridgeIn(a, b, min, max);
+        }
 
+        /// <summary>
+        /// Boxes that overlap on every axis but bodies that do not touch: a terminal box standing on springs above a
+        /// housing whose lifting eye reaches up between them. Along the axis where the boxes overlap least (a thin
+        /// band compared with the bodies) the space is bridged within that band, widened step by step up to the
+        /// limit until a piece of air touches both bodies. Interleaved bodies (overlapping widely on every axis)
+        /// are left alone.
+        /// </summary>
+        private IBody2 InterleavedBridge(IBody2 a, IBody2 b, Aabb ba, Aabb bb, double[] min, double[] max, double gapWidth, double tolerance)
+        {
+            int axis = -1;
+            double best = 0.5;
+            for (int k = 0; k < 3; k++)
+            {
+                double smaller = Math.Min(ba.Max[k] - ba.Min[k], bb.Max[k] - bb.Min[k]);
+                double ratio = smaller > tolerance ? (max[k] - min[k]) / smaller : 1;
+                if (ratio < best) { best = ratio; axis = k; }
+            }
+            if (axis < 0)
+                return null;
+            double lo = min[axis], hi = max[axis];
+            double outer0 = Math.Min(ba.Min[axis], bb.Min[axis]), outer1 = Math.Max(ba.Max[axis], bb.Max[axis]);
+            for (double d = Math.Max(hi - lo, 1e-3); ; d *= 2)
+            {
+                var m = (double[])min.Clone();
+                var M = (double[])max.Clone();
+                m[axis] = Math.Max(outer0, lo - Math.Min(d, gapWidth));
+                M[axis] = Math.Min(outer1, hi + Math.Min(d, gapWidth));
+                var bridge = BridgeIn(a, b, m, M);
+                if (bridge != null || d >= gapWidth || (m[axis] <= outer0 && M[axis] >= outer1))
+                    return bridge;
+            }
+        }
+
+        /// <summary>The air within the box [min, max] between a and b, as far as it touches both of them.</summary>
+        private IBody2 BridgeIn(IBody2 a, IBody2 b, double[] min, double[] max)
+        {
             var region = Box(new Aabb(new Vec3(min[0], min[1], min[2]), new Vec3(max[0], max[1], max[2])));
             if (region == null)
                 return null;
@@ -371,12 +410,16 @@ namespace GeoSimplifier.SolidWorks.Geometry
         }
 
         /// <summary>Unions every pair of bodies that touch or overlap. Returns one body per separate lump.</summary>
-        public List<IBody2> UnionAll(IEnumerable<IBody2> bodies, double tolerance)
+        /// <param name="progress">When given, called before each body with the number done and the total.</param>
+        public List<IBody2> UnionAll(IEnumerable<IBody2> bodies, double tolerance, Action<int, int> progress = null)
         {
             var lumps = new List<IBody2>();
             var boxes = new List<Aabb>();
-            foreach (var body in bodies)
+            var all = bodies.ToList();
+            for (int i = 0; i < all.Count; i++)
             {
+                progress?.Invoke(i, all.Count);
+                var body = all[i];
                 var current = body;
                 var box = Bounds(body);
                 if (box.IsEmpty)
@@ -479,7 +522,8 @@ namespace GeoSimplifier.SolidWorks.Geometry
         /// Fills closed internal cavities exactly: subtract the body from a box around it; every piece of the
         /// remainder except the one touching the box is a cavity, and is added back.
         /// </summary>
-        public IBody2 FillCavities(IBody2 body)
+        /// <param name="added">When given, receives the cavity pieces that were filled.</param>
+        public IBody2 FillCavities(IBody2 body, List<IBody2> added = null)
         {
             var bounds = Bounds(body);
             double margin = Math.Max(bounds.LongestSide * 0.1, 1e-3);
@@ -500,7 +544,11 @@ namespace GeoSimplifier.SolidWorks.Geometry
                     outside |= pb.Min[a] < bounds.Min[a] - margin * 0.5 || pb.Max[a] > bounds.Max[a] + margin * 0.5;
                 if (outside)
                     continue;
-                result = Union(result, piece) ?? result;
+                var united = Union(result, piece);
+                if (united == null)
+                    continue;
+                result = united;
+                added?.Add((IBody2)piece.Copy());
             }
             return result;
         }

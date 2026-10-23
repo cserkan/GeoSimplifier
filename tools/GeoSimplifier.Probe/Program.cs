@@ -54,7 +54,7 @@ namespace GeoSimplifier.Probe
                     Console.WriteLine($"    konfigürasyonlar: {string.Join(", ", (string[])d.GetConfigurationNames() ?? new string[0])}; etkin: {((IConfiguration)d.GetActiveConfiguration())?.Name}");
                     if (d is IPartDoc pd)
                         foreach (IBody2 b in (object[])pd.GetBodies2(0, true) ?? new object[0])
-                            Console.WriteLine($"    gövde: {((object[])b.GetFaces()).Length} yüz, hacim {((double[])b.GetMassProperties(1))[3] * 1e9:F0} mm³");
+                            Console.WriteLine($"    gövde: {((object[])b.GetFaces()).Length} yüz, hacim {((double[])b.GetMassProperties(1))[3] * 1e9:F0} mm³, kutu {Box((double[])b.GetBodyBox())}");
                     if (d is IPartDoc sd)
                         Console.WriteLine($"    yüzey gövdesi: {((object[])sd.GetBodies2(1, true))?.Length ?? 0}, özellik: {d.GetFeatureCount()}");
                 }

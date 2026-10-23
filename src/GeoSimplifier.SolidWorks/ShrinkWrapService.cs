@@ -1,4 +1,4 @@
-using System;
+﻿using System;
 using System.Collections.Generic;
 using System.Diagnostics;
 using System.Linq;
@@ -112,6 +112,44 @@ namespace GeoSimplifier.SolidWorks
             _swApp = swApp;
         }
 
+        /// <summary>The status bar's progress bar and, in the middle of the SOLIDWORKS window, a progress window.</summary>
+        private sealed class Progress
+        {
+            private readonly UserProgressBar _bar;
+            private readonly UI.ProgressWindow _window;
+            private string _title;
+            private int _percent;
+
+            public Progress(ISldWorks swApp, string title)
+            {
+                _title = title;
+                swApp.GetUserProgressBar(out _bar);
+                _bar?.Start(0, 100, title);
+                try { _window = new UI.ProgressWindow(new IntPtr(((IFrame)swApp.Frame()).GetHWndx64()), title); }
+                catch (Exception ex) { UI.PageLog.Write("İlerleme penceresi açılamadı: " + ex.Message); }
+            }
+
+            public void UpdateTitle(string title)
+            {
+                _title = title;
+                _bar?.UpdateTitle(title);
+                _window?.Update(title, _percent);
+            }
+
+            public void UpdateProgress(int percent)
+            {
+                _percent = percent;
+                _bar?.UpdateProgress(percent);
+                _window?.Update(_title, percent);
+            }
+
+            public void End()
+            {
+                _bar?.End();
+                _window?.Dispose();
+            }
+        }
+
         /// <summary>Computes the wrap as temporary bodies without changing any document.</summary>
         public WrapResult Compute(IModelDoc2 source, ShrinkWrapOptions options) => Compute(source, options, null);
 
@@ -135,8 +173,14 @@ namespace GeoSimplifier.SolidWorks
                 last = now;
             }
 
-            _swApp.GetUserProgressBar(out UserProgressBar progress);
-            progress.Start(0, 100, "Shrink wrap: gövdeler toplanıyor");
+            var progress = new Progress(_swApp, "Shrink wrap: gövdeler toplanıyor");
+            // Progress within a long step, from one percentage to the next: once per body, which costs nothing next
+            // to the booleans.
+            void Report(string title, int from, int to, int done, int total)
+            {
+                progress.UpdateProgress(from + (to - from) * done / Math.Max(1, total));
+                progress.UpdateTitle($"Shrink wrap: {title} ({done}/{total})");
+            }
             try
             {
                 var bodies = BodyCollector.CopyBodies(source, exclusions, out var excluded);
@@ -202,11 +246,12 @@ namespace GeoSimplifier.SolidWorks
                     }
                     if (!_plugsByLimit.TryGetValue(options.GapWidth, out var cached))
                     {
-                        progress.UpdateTitle("Shrink wrap: delikler kapatılıyor");
-                        progress.UpdateProgress(10);
                         var exact = new HoleCloser(ops) { PlugsOnly = true };
-                        foreach (var body in bodies)
-                            exact.CloseHoles(body, options.GapWidth);
+                        for (int i = 0; i < bodies.Count; i++)
+                        {
+                            Report("delikler kapatılıyor", 10, 25, i, bodies.Count);
+                            exact.CloseHoles(bodies[i], options.GapWidth);
+                        }
                         cached = (exact.Plugs.ToList(), exact.TooWide.ToList());
                         _plugsByLimit[options.GapWidth] = cached;
                     }
@@ -216,10 +261,11 @@ namespace GeoSimplifier.SolidWorks
                 }
                 else if (options.GapWidth > 0 && !bagOnly)
                 {
-                    progress.UpdateTitle("Shrink wrap: delikler kapatılıyor");
-                    progress.UpdateProgress(10);
                     for (int i = 0; i < bodies.Count; i++)
+                    {
+                        Report("delikler kapatılıyor", 10, 25, i, bodies.Count);
                         bodies[i] = closer.CloseHoles(bodies[i], options.GapWidth);
+                    }
                     Lap("delik");
                 }
                 var plugs = previewPlugs ?? closer.Plugs;
@@ -228,12 +274,12 @@ namespace GeoSimplifier.SolidWorks
                 // exactly, flat in the plane of their rims; their holes and slots were plugged above.
                 if (options.FillCavities && !options.Preview)
                 {
-                    progress.UpdateTitle("Shrink wrap: kap içleri dolduruluyor");
-                    progress.UpdateProgress(25);
                     int cups = 0;
-                    foreach (var body in bodies.ToList())
+                    var parts = bodies.ToList();
+                    for (int i = 0; i < parts.Count; i++)
                     {
-                        var insides = ops.CoveredInsides(body, bodies, 1e-6);
+                        Report("kap içleri dolduruluyor", 25, 40, i, parts.Count);
+                        var insides = ops.CoveredInsides(parts[i], bodies, 1e-6);
                         if (insides.Count == 0)
                             continue;
                         bodies.AddRange(insides);
@@ -257,24 +303,30 @@ namespace GeoSimplifier.SolidWorks
                     original = _union;
                 else
                 {
-                    original = ops.UnionAll(bodies, tolerance);
+                    original = ops.UnionAll(bodies, tolerance, (done, total) => Report("birleştiriliyor", 40, 60, done, total));
                     if (unionKey != null) { _unionKey = unionKey; _union = original; }
                 }
                 var lumps = new List<IBody2>(original);
                 Lap("birleştirme");
+                // What the bridges and cavity fills add, for the preview to draw; null when it is not known exactly
+                // (the offset bridge), and then it is found by subtracting the union, which is slow on large models.
+                var filledIn = new List<IBody2>();
 
                 if (options.GapWidth > 0 && lumps.Count > 1 && !bagOnly)
                 {
-                    progress.UpdateTitle("Shrink wrap: parçalar arası boşluklar köprüleniyor");
-                    progress.UpdateProgress(30);
+                    progress.UpdateTitle("Shrink wrap: köprüler kuruluyor");
+                    progress.UpdateProgress(60);
                     // The offset closing follows the parts' shapes; where SOLIDWORKS cannot offset, the gaps are
                     // spanned with boxes instead, like a bag pulled over the parts.
                     var bridged = ops.Bridge(lumps, options.GapWidth, tolerance);
                     if (bridged != null)
+                    {
                         lumps = bridged;
+                        filledIn = null;
+                    }
                     else
                     {
-                        lumps = ops.BridgeByBoxes(lumps, options.GapWidth, tolerance, out int count);
+                        lumps = ops.BridgeByBoxes(lumps, options.GapWidth, tolerance, out int count, filledIn);
                         result.Bridges = count;
                     }
                     Lap("köprü");
@@ -289,7 +341,7 @@ namespace GeoSimplifier.SolidWorks
                 if (options.GapWidth > 0 && options.Bag)
                 {
                     progress.UpdateTitle("Shrink wrap: poşet geçiriliyor");
-                    progress.UpdateProgress(60);
+                    progress.UpdateProgress(65);
                     // The surfaces do not depend on the limit, so previews reuse them.
                     string key = $"{source.GetPathName()}|{source.GetTitle()}|{exclusions?.Key}|{bodies.Count}";
                     List<Core.Geometry.Vec3> triangles;
@@ -328,10 +380,11 @@ namespace GeoSimplifier.SolidWorks
                 bool bagged = bagBoxes.Count > 0;
                 if (options.FillCavities && !bagged && (!options.Preview || result.Sheets > 0))
                 {
-                    progress.UpdateTitle("Shrink wrap: iç boşluklar dolduruluyor");
-                    progress.UpdateProgress(70);
                     for (int i = 0; i < lumps.Count; i++)
-                        lumps[i] = ops.FillCavities(lumps[i]);
+                    {
+                        Report("iç dolduruluyor", 70, 85, i, lumps.Count);
+                        lumps[i] = ops.FillCavities(lumps[i], filledIn);
+                    }
                     Lap("iç boşluk");
                 }
 
@@ -342,7 +395,7 @@ namespace GeoSimplifier.SolidWorks
                 // What is added is only drawn in the preview; the real result goes straight into the document.
                 result.Added = !options.Preview ? plugs
                     : bagOnly ? plugs.Concat(bagBoxes).ToList()
-                    : plugs.Concat(changed.Count > 0 ? ops.Difference(changed, original) : new List<IBody2>()).ToList();
+                    : plugs.Concat(changed.Count == 0 ? new List<IBody2>() : filledIn ?? ops.Difference(changed, original)).ToList();
                 Lap("fark");
 
                 if (excluded.Count > 0)

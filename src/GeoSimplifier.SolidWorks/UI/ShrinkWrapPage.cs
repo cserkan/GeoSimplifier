@@ -31,7 +31,7 @@ namespace GeoSimplifier.SolidWorks.UI
         private const int NewConfigId = 13;
         private const int ConfigNameLabelId = 14;
         private const int ConfigNameId = 15;
-        private const int PreviewButtonId = 16;
+        private const int PreviewId = 16;
 
         // Selection mark of the exclusion box, so its items are told apart from other selections.
         private const int ExcludeMark = 2;
@@ -66,7 +66,7 @@ namespace GeoSimplifier.SolidWorks.UI
         private IPropertyManagerPageOption _newConfigOption;
         private IPropertyManagerPageLabel _configNameLabel;
         private IPropertyManagerPageTextbox _configNameBox;
-        private IPropertyManagerPageButton _previewButton;
+        private IPropertyManagerPageCheckbox _previewBox;
         private bool _ok;
         private IModelDoc2 _source;
         private WrapResult _preview;
@@ -99,9 +99,10 @@ namespace GeoSimplifier.SolidWorks.UI
             var group = _group = (IPropertyManagerPageGroup)_page.AddGroupBox(GroupId, "Ayarlar",
                 (int)(swAddGroupBoxOptions_e.swGroupBoxOptions_Visible | swAddGroupBoxOptions_e.swGroupBoxOptions_Expanded));
 
-            // The preview is computed only when asked for: not when the command opens, nor on every change.
-            _previewButton = (IPropertyManagerPageButton)AddControl(group, PreviewButtonId, swPropertyManagerPageControlType_e.swControlType_Button,
-                "Önizleme göster", "Ayarlarla sarmanın önizlemesini hesaplayıp gösterir. Ayar değişince önizleme gizlenir.");
+            // The preview is computed only while this is checked; it starts unchecked, so opening the command computes nothing.
+            _previewBox = (IPropertyManagerPageCheckbox)AddControl(group, PreviewId, swPropertyManagerPageControlType_e.swControlType_Checkbox,
+                "Önizleme göster", "İşaretliyken sarmanın önizlemesi hesaplanıp gösterilir ve ayar değişince güncellenir.");
+            _previewBox.Checked = false;
 
             _closeHolesBox = (IPropertyManagerPageCheckbox)AddControl(group, CloseHolesId, swPropertyManagerPageControlType_e.swControlType_Checkbox,
                 "Delikleri ve boşlukları kapat",
@@ -188,12 +189,7 @@ namespace GeoSimplifier.SolidWorks.UI
         // the callback crashes SOLIDWORKS.
         private Timer _debounce;
 
-        // Whether the timer computes the preview (button) or only takes a stale one away (a setting changed).
-        private bool _computeOnTick;
-
-        private void SchedulePreview(int delay = 600) => Schedule(delay, compute: false);
-
-        private void Schedule(int delay, bool compute)
+        private void SchedulePreview(int delay = 600)
         {
             if (_debounce == null)
             {
@@ -201,25 +197,18 @@ namespace GeoSimplifier.SolidWorks.UI
                 _debounce.Tick += (s, e) =>
                 {
                     _debounce.Stop();
-                    if (_computeOnTick)
+                    if (_previewBox.Checked)
                         UpdatePreview();
                     else
-                        Stale();
+                    {
+                        HidePreview();
+                        _previewKey = null;
+                    }
                 };
             }
-            _computeOnTick = compute;
             _debounce.Stop();
             _debounce.Interval = delay;
             _debounce.Start();
-        }
-
-        /// <summary>A setting changed: the preview shown no longer matches, so it is taken away until asked for again.</summary>
-        private void Stale()
-        {
-            if (Key(CurrentOptions()) == _previewKey)
-                return;
-            HidePreview();
-            _previewKey = null;
         }
 
         /// <summary>Takes the number box's own value when it differs from the one last reported to us.</summary>
@@ -340,7 +329,9 @@ namespace GeoSimplifier.SolidWorks.UI
             {
                 if (step < limits.Length)
                 {
-                    double v = limits[step++];
+                    // A negative limit is typed without turning the preview on (for timing OK alone).
+                    double v = Math.Abs(limits[step]);
+                    bool preview = limits[step++] > 0;
                     PageLog.Write($"Simülasyon: {v * 1000:F0} mm");
                     // Forces the finalizer to run now, so a crash caused by releasing objects shows up quickly.
                     if (forceGc)
@@ -353,7 +344,11 @@ namespace GeoSimplifier.SolidWorks.UI
                     PageLog.Write("Simülasyon: değer yazıldı");
                     OnNumberboxChanged(GapWidthId, v);
                     OnNumberBoxTrackingCompleted(GapWidthId, v);
-                    OnButtonPress(PreviewButtonId);
+                    if (preview && !_previewBox.Checked)
+                    {
+                        _previewBox.Checked = true;
+                        OnCheckboxCheck(PreviewId, true);
+                    }
                     return;
                 }
                 timer.Stop();
@@ -484,11 +479,7 @@ namespace GeoSimplifier.SolidWorks.UI
             _outputNewConfig = Id == NewConfigId;
             UpdateEnabled();
         }
-        public void OnButtonPress(int Id)
-        {
-            if (Id == PreviewButtonId)
-                Schedule(50, compute: true);
-        }
+        public void OnButtonPress(int Id) { }
         public void OnTextboxChanged(int Id, string Text)
         {
             PageLog.Write($"OnTextboxChanged {Id}: {Text}");
