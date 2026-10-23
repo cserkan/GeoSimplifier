@@ -24,5 +24,11 @@ namespace GeoSimplifier.Core.Wrap
         /// bodies is reused between previews and cavities are not filled. The real result is computed on OK.
         /// </summary>
         public bool Preview { get; set; }
+
+        /// <summary>
+        /// Experimental voxel "bag" (VoxelClosing): fills open shells and gaps, but with a stepped surface where it
+        /// bridges; off by default (it spoiled the outer faces of a motor).
+        /// </summary>
+        public bool Bag { get; set; }
     }
 }

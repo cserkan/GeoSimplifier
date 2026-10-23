@@ -90,6 +90,11 @@ namespace GeoSimplifier.SolidWorks
         private readonly ISldWorks _swApp;
 
         private const int LargeModelTriangles = 200000;
+        private const int LargeModelFaces = 8000;
+
+        // The union of the source bodies does not depend on the limit, so plugs-only previews reuse it.
+        private string _unionKey;
+        private List<IBody2> _union;
 
         // The surface triangles of the source bodies do not depend on the settings, so previews reuse them.
         private string _trianglesKey;
@@ -158,9 +163,11 @@ namespace GeoSimplifier.SolidWorks
                 var collected = new List<IBody2>(bodies);
                 var closer = new HoleCloser(ops) { PlugsOnly = options.Preview };
                 result.IsPreview = options.Preview;
-                // The quick preview is only the bag over the bodies as they are: no exact plugs, no flattening, no
-                // union and no box bridges (the bag fills holes and gaps itself); all of that is done on OK.
-                if (options.MaxEmbossHeight > 0 && !options.Preview)
+                // With the bag, the quick preview is only the bag over the bodies as they are: no exact plugs, no
+                // flattening, no union and no box bridges (the bag fills holes and gaps itself); all of that is
+                // done on OK. Without it the preview finds the plugs and reuses the union of the bodies.
+                bool bagOnly = options.Preview && options.Bag;
+                if (options.MaxEmbossHeight > 0 && !bagOnly)
                 {
                     progress.UpdateTitle("Shrink wrap: kabartmalar düzleniyor");
                     progress.UpdateProgress(5);
@@ -174,7 +181,7 @@ namespace GeoSimplifier.SolidWorks
                     }
                     Lap("kabartma");
                 }
-                if (options.GapWidth > 0 && !options.Preview)
+                if (options.GapWidth > 0 && !bagOnly)
                 {
                     progress.UpdateTitle("Shrink wrap: delikler kapatılıyor");
                     progress.UpdateProgress(10);
@@ -186,11 +193,24 @@ namespace GeoSimplifier.SolidWorks
 
                 progress.UpdateTitle($"Shrink wrap: {bodies.Count} gövde birleştiriliyor");
                 progress.UpdateProgress(30);
-                var original = options.Preview ? bodies : ops.UnionAll(bodies, tolerance);
+                // A plugs-only preview leaves the bodies unplugged (only flattened), so their union can be reused.
+                List<IBody2> original;
+                string unionKey = options.Preview && !bagOnly
+                    ? $"{source.GetPathName()}|{source.GetTitle()}|{exclusions?.Key}|{bodies.Count}|{options.MaxEmbossHeight:R}"
+                    : null;
+                if (bagOnly)
+                    original = bodies;
+                else if (unionKey != null && unionKey == _unionKey)
+                    original = _union;
+                else
+                {
+                    original = ops.UnionAll(bodies, tolerance);
+                    if (unionKey != null) { _unionKey = unionKey; _union = original; }
+                }
                 var lumps = new List<IBody2>(original);
                 Lap("birleştirme");
 
-                if (options.GapWidth > 0 && lumps.Count > 1 && !options.Preview)
+                if (options.GapWidth > 0 && lumps.Count > 1 && !bagOnly)
                 {
                     progress.UpdateTitle("Shrink wrap: parçalar arası boşluklar köprüleniyor");
                     progress.UpdateProgress(30);
@@ -213,7 +233,7 @@ namespace GeoSimplifier.SolidWorks
                 // the exact bodies, so outside the bridged gaps the faces stay the original ones.
                 var bagBoxes = new List<IBody2>();
                 int triangleCount = 0;
-                if (options.GapWidth > 0)
+                if (options.GapWidth > 0 && options.Bag)
                 {
                     progress.UpdateTitle("Shrink wrap: poşet geçiriliyor");
                     progress.UpdateProgress(60);
@@ -267,7 +287,9 @@ namespace GeoSimplifier.SolidWorks
                 // Plugs were taken per body; bridges and filled cavities are what the lumps have beyond the union.
                 var changed = lumps.Where(l => !original.Any(o => ReferenceEquals(o, l))).ToList();
                 // What is added is only drawn in the preview; the real result goes straight into the document.
-                result.Added = options.Preview ? plugs.Concat(bagBoxes).ToList() : plugs;
+                result.Added = !options.Preview ? plugs
+                    : bagOnly ? plugs.Concat(bagBoxes).ToList()
+                    : plugs.Concat(changed.Count > 0 ? ops.Difference(changed, original) : new List<IBody2>()).ToList();
                 Lap("fark");
 
                 if (excluded.Count > 0)
@@ -286,12 +308,14 @@ namespace GeoSimplifier.SolidWorks
                 // it fails a plain copy is drawn on the faces; it shows streaks, but the envelope stays visible.
                 // A translucent envelope of a large model takes SOLIDWORKS seconds to redraw (3.5 s for a motor of
                 // 550 000 triangles) and looks just like the model; the quick preview leaves it out there.
-                bool envelope = !options.Preview || triangleCount < LargeModelTriangles;
+                int faceCount = collected.Sum(b => ((object[])b.GetFaces())?.Length ?? 0);
+                bool envelope = !options.Preview || (triangleCount < LargeModelTriangles && faceCount < LargeModelFaces);
                 result.EnvelopeLeftOut = !envelope;
                 foreach (var lump in envelope ? lumps : new List<IBody2>())
                 {
                     double gap = Math.Max(5e-5, BodyOps.Bounds(lump).LongestSide * 0.0015);
-                    result.Envelope.Add(options.Preview ? lump : ops.Offset(lump, gap, outward: true) ?? (IBody2)lump.Copy());
+                    // The preview's envelope may be the cached union, which the preview moves: give it a copy.
+                    result.Envelope.Add(options.Preview ? (IBody2)lump.Copy() : ops.Offset(lump, gap, outward: true) ?? (IBody2)lump.Copy());
                 }
                 Lap("zarf");
                 result.HolesClosed = closer.Closed;
