@@ -12,12 +12,14 @@ namespace GeoSimplifier.SolidWorks.Geometry
     {
         private readonly BoxFactory _boxes;
         private readonly IModeler _modeler;
+        private readonly IMathUtility _math;
         private double? _cylinderBaseFactor;
         private bool? _outwardFlag;
 
         public BodyOps(ISldWorks swApp)
         {
             _modeler = (IModeler)swApp.GetModeler();
+            _math = (IMathUtility)swApp.GetMathUtility();
             _boxes = new BoxFactory(_modeler);
         }
 
@@ -208,6 +210,109 @@ namespace GeoSimplifier.SolidWorks.Geometry
             return current;
         }
 
+        /// <summary>The exact extents of a body (GetBodyBox may be a little loose), from its extreme points.</summary>
+        public static Aabb TightBounds(IBody2 body)
+        {
+            var min = new double[3];
+            var max = new double[3];
+            for (int a = 0; a < 3; a++)
+            {
+                var d = new double[3];
+                d[a] = 1;
+                if (!body.GetExtremePoint(d[0], d[1], d[2], out double x, out double y, out double z))
+                    return Bounds(body);
+                max[a] = new[] { x, y, z }[a];
+                d[a] = -1;
+                if (!body.GetExtremePoint(d[0], d[1], d[2], out x, out y, out z))
+                    return Bounds(body);
+                min[a] = new[] { x, y, z }[a];
+            }
+            return new Aabb(new Vec3(min[0], min[1], min[2]), new Vec3(max[0], max[1], max[2]));
+        }
+
+        /// <summary>
+        /// The inside of a part that its neighbours close off: a terminal box between its lid and the housing, a
+        /// fan cover against the housing, a housing between its end shields. The part's own bounding box minus the
+        /// part gives the air around and inside it; a piece that reaches at most two sides of the box, each of
+        /// which another part covers just outside, is an inside, cut off flat in the plane of the part's rim.
+        /// Air around the part reaches more sides, and an opening nothing covers stays open. Exact: the pieces'
+        /// faces are the part's own faces and the flat mouths.
+        /// </summary>
+        public List<IBody2> CoveredInsides(IBody2 part, IList<IBody2> others, double tolerance)
+        {
+            var result = new List<IBody2>();
+            var bb = TightBounds(part);
+            if (bb.IsEmpty || bb.Size.X < tolerance || bb.Size.Y < tolerance || bb.Size.Z < tolerance)
+                return result;
+            // The box is a hair smaller than the part: with its faces in the planes of the part's outermost faces
+            // the subtraction fails (coincident faces); the mouths end up a few microns below the rim.
+            double eps = Math.Max(1e-6, bb.LongestSide * 1e-5);
+            var inner = new Aabb(bb.Min + new Vec3(eps, eps, eps), bb.Max - new Vec3(eps, eps, eps));
+            var pieces = Subtract(Box(inner), part);
+            if (pieces == null)
+                return result;
+            // The neighbours inside the box are taken out too: a cable gland closes the hole it sits in, a terminal
+            // block takes up room inside the box.
+            var around = new List<IBody2>(pieces.OfType<IBody2>());
+            foreach (var other in others)
+            {
+                if (ReferenceEquals(other, part) || !Overlaps(inner, Bounds(other), 0))
+                    continue;
+                var next = new List<IBody2>();
+                foreach (var piece in around)
+                {
+                    var cut = Subtract(piece, other);
+                    if (cut == null) { next.Add(piece); continue; }
+                    next.AddRange(cut.OfType<IBody2>());
+                }
+                around = next;
+            }
+            double slab = Math.Max(5e-4, bb.LongestSide * 0.01);
+            foreach (var piece in around)
+            {
+                var pb = Bounds(piece);
+                if (pb.IsEmpty)
+                    continue;
+                var sides = new List<(int axis, int dir)>();
+                for (int a = 0; a < 3; a++)
+                {
+                    if (pb.Min[a] <= inner.Min[a] + eps) sides.Add((a, -1));
+                    if (pb.Max[a] >= inner.Max[a] - eps) sides.Add((a, 1));
+                }
+                if (sides.Count > 2)
+                    continue;
+                if (Trace)
+                    UI.PageLog.Write($"  iç aday: parça kutusu {bb.Size.X * 1000:F0}x{bb.Size.Y * 1000:F0}x{bb.Size.Z * 1000:F0} mm, " +
+                                     $"hava {Volume(piece):F0} mm³, kenarlar {string.Join(" ", sides.Select(sd => (sd.dir > 0 ? "+" : "-") + "XYZ"[sd.axis]))}");
+                bool covered = true;
+                foreach (var (a, dir) in sides)
+                {
+                    // A thin slab just outside the mouth, over the piece's outline: another part must be in it.
+                    var min = pb.Min;
+                    var max = pb.Max;
+                    var lo = new double[] { min.X, min.Y, min.Z };
+                    var hi = new double[] { max.X, max.Y, max.Z };
+                    if (dir > 0) { lo[a] = bb.Max[a] + eps; hi[a] = bb.Max[a] + slab; }
+                    else { lo[a] = bb.Min[a] - slab; hi[a] = bb.Min[a] - eps; }
+                    var region = new Aabb(new Vec3(lo[0], lo[1], lo[2]), new Vec3(hi[0], hi[1], hi[2]));
+                    bool any = false;
+                    foreach (var other in others)
+                    {
+                        if (ReferenceEquals(other, part) || !Overlaps(region, Bounds(other), 0))
+                            continue;
+                        var common = Intersect(Box(region), other);
+                        if (common != null && common.Length > 0) { any = true; break; }
+                    }
+                    if (!any) { covered = false; break; }
+                }
+                if (Trace)
+                    UI.PageLog.Write($"    örtülü: {covered}");
+                if (covered)
+                    result.Add(piece);
+            }
+            return result;
+        }
+
         /// <summary>The material that joins <paramref name="a"/> and <paramref name="b"/>, or null when they are too far apart.</summary>
         private IBody2 BoxBridge(IBody2 a, IBody2 b, double gapWidth, double tolerance)
         {
@@ -275,7 +380,16 @@ namespace GeoSimplifier.SolidWorks.Geometry
                 var current = body;
                 var box = Bounds(body);
                 if (box.IsEmpty)
+                {
+                    // No box to compare: keep the body as it is rather than lose it (this once dropped a whole model).
+                    if (body != null)
+                    {
+                        lumps.Add(body);
+                        boxes.Add(Aabb.Empty);
+                        if (Trace) UI.PageLog.Write("  kutusu olmayan gövde ayrı tutuldu");
+                    }
                     continue;
+                }
                 for (int n = lumps.Count - 1; n >= 0; n--)
                 {
                     if (!Overlaps(boxes[n], box, tolerance))
@@ -295,9 +409,26 @@ namespace GeoSimplifier.SolidWorks.Geometry
         }
 
         /// <returns>The single merged body, or null when the bodies stay separate or the union fails.</returns>
-        public IBody2 Union(IBody2 a, IBody2 b)
+        /// <summary>Logs failing booleans to the page log (for finding why bodies stay apart).</summary>
+        public bool Trace;
+
+        private static double Volume(IBody2 b) => (((double[])b?.GetMassProperties(1))?[3] ?? 0) * 1e9;
+
+                public IBody2 Union(IBody2 a, IBody2 b)
         {
             var output = Boolean(swBodyOperationType_e.SWBODYADD, a, b);
+            if (output == null && _math != null)
+            {
+                // A union that fails outright is usually two bodies sharing faces exactly (a gland's thread in its
+                // threaded hole); moved by 2 microns they overlap instead, and that SOLIDWORKS can unite.
+                var moved = (IBody2)b.Copy();
+                var shift = (MathTransform)_math.CreateTransform(new double[] { 1, 0, 0, 0, 1, 0, 0, 0, 1, 1.2e-6, 1.1e-6, 1.3e-6, 1, 0, 0, 0 });
+                if (moved != null && shift != null && moved.ApplyTransform(shift))
+                    output = Boolean(swBodyOperationType_e.SWBODYADD, a, moved);
+            }
+            if (Trace && (output == null || output.Length != 1))
+                UI.PageLog.Write($"  birleşim: {(output == null ? "hata" : output.Length + " gövde")} " +
+                                 $"(a {Volume(a):F0}, b {Volume(b):F0} mm³ → {(output == null ? "-" : string.Join(", ", output.OfType<IBody2>().Select(o => Volume(o).ToString("F0"))))})");
             return output != null && output.Length == 1 ? (IBody2)output[0] : null;
         }
 
@@ -318,6 +449,7 @@ namespace GeoSimplifier.SolidWorks.Geometry
             if (error != 0)
             {
                 FailedBooleans++;
+                if (Trace) UI.PageLog.Write($"  boolean {type} hatası {error}");
                 return null;
             }
             return output ?? new object[0];
@@ -448,7 +580,7 @@ namespace GeoSimplifier.SolidWorks.Geometry
             return body.MakeOffset(distance, outward == _outwardFlag.Value);
         }
 
-        private static bool Overlaps(Aabb a, Aabb b, double tol) =>
+        public static bool Overlaps(Aabb a, Aabb b, double tol) =>
             a.Min.X <= b.Max.X + tol && b.Min.X <= a.Max.X + tol &&
             a.Min.Y <= b.Max.Y + tol && b.Min.Y <= a.Max.Y + tol &&
             a.Min.Z <= b.Max.Z + tol && b.Min.Z <= a.Max.Z + tol;

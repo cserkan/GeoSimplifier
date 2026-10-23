@@ -191,6 +191,26 @@ namespace GeoSimplifier.SolidWorks
                 }
                 var plugs = closer.Plugs;
 
+                // The insides of parts their neighbours close off (a terminal box between lid and housing) are filled
+                // exactly, flat in the plane of their rims; their holes and slots were plugged above.
+                if (options.FillCavities && !options.Preview)
+                {
+                    progress.UpdateTitle("Shrink wrap: kap içleri dolduruluyor");
+                    progress.UpdateProgress(25);
+                    int cups = 0;
+                    foreach (var body in bodies.ToList())
+                    {
+                        var insides = ops.CoveredInsides(body, bodies, 1e-6);
+                        if (insides.Count == 0)
+                            continue;
+                        bodies.AddRange(insides);
+                        cups++;
+                    }
+                    result.Log.Add($"Kap içi dolgusu: {cups} parça.");
+                    UI.PageLog.Write($"  kap içi dolgusu: {cups} parça");
+                    Lap("kap içleri");
+                }
+
                 progress.UpdateTitle($"Shrink wrap: {bodies.Count} gövde birleştiriliyor");
                 progress.UpdateProgress(30);
                 // A plugs-only preview leaves the bodies unplugged (only flattened), so their union can be reused.

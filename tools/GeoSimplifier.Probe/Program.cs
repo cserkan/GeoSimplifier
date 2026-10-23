@@ -206,6 +206,32 @@ namespace GeoSimplifier.Probe
                 }
                 return 0;
             }
+            if (Array.IndexOf(args, "--insides") >= 0 && doc is IPartDoc insidePart)
+            {
+                // For the active part: the pieces of its own box minus the part, with the box sides they reach.
+                var ops = new GeoSimplifier.SolidWorks.Geometry.BodyOps(swApp);
+                foreach (IBody2 body in (object[])insidePart.GetBodies2(0, true) ?? new object[0])
+                {
+                    var b = (IBody2)body.Copy();
+                    var tb = GeoSimplifier.SolidWorks.Geometry.BodyOps.TightBounds(b);
+                    Console.WriteLine($"Gövde: kutu {Box(new[] { tb.Min.X, tb.Min.Y, tb.Min.Z, tb.Max.X, tb.Max.Y, tb.Max.Z })}, {((object[])b.GetFaces()).Length} yüz");
+                    double eps = tb.LongestSide * 1e-5;
+                    var inner = new GeoSimplifier.Core.Geometry.Aabb(tb.Min + new GeoSimplifier.Core.Geometry.Vec3(eps, eps, eps), tb.Max - new GeoSimplifier.Core.Geometry.Vec3(eps, eps, eps));
+                    var pieces = ops.Subtract(ops.Box(inner), b);
+                    foreach (IBody2 piece in pieces ?? new object[0])
+                    {
+                        var pb = (double[])piece.GetBodyBox();
+                        var sides = new System.Collections.Generic.List<string>();
+                        for (int a = 0; a < 3; a++)
+                        {
+                            if (pb[a] <= inner.Min[a] + eps) sides.Add("-" + "XYZ"[a]);
+                            if (pb[a + 3] >= inner.Max[a] - eps) sides.Add("+" + "XYZ"[a]);
+                        }
+                        Console.WriteLine($"  hava parçası: {((double[])piece.GetMassProperties(1))[3] * 1e9:F0} mm³, kutu {Box(pb)}, kenarlar {string.Join(" ", sides)}");
+                    }
+                }
+                return 0;
+            }
             int viewAt = Array.IndexOf(args, "--view");
             if (viewAt >= 0 && viewAt + 1 < args.Length)
             {
