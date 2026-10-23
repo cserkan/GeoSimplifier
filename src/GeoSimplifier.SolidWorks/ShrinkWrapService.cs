@@ -94,9 +94,10 @@ namespace GeoSimplifier.SolidWorks
         // faces) redrawing it took 5 s of a preview's 11.
         private const int LargeModelFaces = 3000;
 
-        // Rough plugs of every hole of the previewed document, with the width of the opening each closes.
+        // Exact preview plugs of the previewed document for each limit tried.
         private string _plugKey;
-        private List<(IBody2 p, double w)> _plugs;
+        private readonly Dictionary<double, (List<IBody2> plugs, List<double> tooWide)> _plugsByLimit =
+            new Dictionary<double, (List<IBody2> plugs, List<double> tooWide)>();
 
         // The union of the source bodies does not depend on the limit, so plugs-only previews reuse it.
         private string _unionKey;
@@ -167,7 +168,7 @@ namespace GeoSimplifier.SolidWorks
                 // The bag is computed from the bodies as they were collected: tessellating the temporary bodies that
                 // booleans produce crashed SOLIDWORKS.
                 var collected = new List<IBody2>(bodies);
-                var closer = new HoleCloser(ops) { PlugsOnly = options.Preview, Rough = options.Preview };
+                var closer = new HoleCloser(ops) { PlugsOnly = options.Preview };
                 result.IsPreview = options.Preview;
                 // With the bag, the quick preview is only the bag over the bodies as they are: no exact plugs, no
                 // flattening, no union and no box bridges (the bag fills holes and gaps itself); all of that is
@@ -190,21 +191,27 @@ namespace GeoSimplifier.SolidWorks
                 List<IBody2> previewPlugs = null;
                 if (options.GapWidth > 0 && options.Preview && !bagOnly)
                 {
-                    // The quick preview finds every hole once (at any width) and keeps the rough plugs with their
-                    // widths; a new limit only picks the plugs again.
+                    // The preview shows the plugs cut exactly to the holes, as OK makes them (rough boxes in their
+                    // place looked like slabs much larger than the model). They are kept per limit, so going back to
+                    // a value tried before is instant.
                     string plugKey = $"{source.GetPathName()}|{source.GetTitle()}|{exclusions?.Key}|{bodies.Count}|{options.MaxEmbossHeight:R}";
                     if (plugKey != _plugKey)
                     {
-                        progress.UpdateTitle("Shrink wrap: delikler bulunuyor");
-                        progress.UpdateProgress(10);
-                        var all = new HoleCloser(ops) { PlugsOnly = true, Rough = true };
-                        foreach (var body in bodies)
-                            all.CloseHoles(body, 10.0);
-                        _plugs = all.Plugs.Zip(all.PlugWidths, (p, w) => (p, w)).ToList();
+                        _plugsByLimit.Clear();
                         _plugKey = plugKey;
                     }
-                    previewPlugs = _plugs.Where(e => e.w <= options.GapWidth).Select(e => (IBody2)e.p.Copy()).ToList();
-                    result.TooWide.AddRange(_plugs.Where(e => e.w > options.GapWidth).Select(e => e.w));
+                    if (!_plugsByLimit.TryGetValue(options.GapWidth, out var cached))
+                    {
+                        progress.UpdateTitle("Shrink wrap: delikler kapatılıyor");
+                        progress.UpdateProgress(10);
+                        var exact = new HoleCloser(ops) { PlugsOnly = true };
+                        foreach (var body in bodies)
+                            exact.CloseHoles(body, options.GapWidth);
+                        cached = (exact.Plugs.ToList(), exact.TooWide.ToList());
+                        _plugsByLimit[options.GapWidth] = cached;
+                    }
+                    previewPlugs = cached.plugs.Select(p => (IBody2)p.Copy()).ToList();
+                    result.TooWide.AddRange(cached.tooWide);
                     Lap("delik");
                 }
                 else if (options.GapWidth > 0 && !bagOnly)
