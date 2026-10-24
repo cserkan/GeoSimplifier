@@ -83,6 +83,159 @@ namespace GeoSimplifier.SolidWorks.Geometry
             public double Depth;    // how far the hole goes below the loop plane
             public double Height;   // how far a boss rises above the loop plane
             public double Radius;   // how far the hole reaches sideways from the centroid
+            public List<IEdge> Edges; // the loop on the face around the hole
+        }
+
+        /// <summary>
+        /// The mouths of the holes at most <paramref name="maxWidth"/> wide, each as a closed polygon in its plane
+        /// (points along its edges, in order), with the plane's outward normal; for a quick preview that draws a
+        /// lid on each mouth without any boolean. Only the first mouth of a through hole.
+        /// </summary>
+        public List<(List<Vec3> loop, Vec3 normal)> MouthLoops(IBody2 body, double maxWidth)
+        {
+            var result = new List<(List<Vec3>, Vec3)>();
+            foreach (var hole in FindHoles(body, maxWidth, out _))
+            {
+                var mouth = hole.Mouths.FirstOrDefault();
+                if (mouth?.Edges == null || mouth.Edges.Count == 0)
+                    continue;
+                var loop = Chain(mouth.Edges.Select(e => Sample(e, 12).ToList()).ToList());
+                if (loop.Count >= 3)
+                    result.Add((loop, mouth.Normal));
+            }
+            return result;
+        }
+
+        /// <summary>
+        /// A thin lid on the mouth of every hole at most <paramref name="maxWidth"/> wide: a disc 0.3 mm thick just
+        /// inside the mouth, as wide as the mouth reaches from its centre. No boolean is needed, so it is quick; for
+        /// the preview. Only the first mouth of a through hole. (A sheet trimmed to the mouth's own edges crashed
+        /// SOLIDWORKS.)
+        /// </summary>
+        /// <summary>Mouths <see cref="MouthCaps"/> could not draw.</summary>
+        public int SkippedCaps { get; private set; }
+
+        /// <summary>
+        /// A thin plate under the mouth: the rectangle holding the loop in its plane, along the loop's main direction
+        /// (from its spread), made as a flat sheet and thickened inward.
+        /// </summary>
+        private IBody2 Plate(List<Vec3> loop, Vec3 centre, Vec3 normal, double thickness)
+        {
+            // Main direction in the plane: of the in-plane offsets, the one the others spread along most.
+            var flat = loop.Select(p => { var d = p - centre; return d - normal * Vec3.Dot(d, normal); }).ToList();
+            double sxx = 0, sxy = 0, syy = 0;
+            var a = Math.Abs(normal.X) < 0.9 ? new Vec3(1, 0, 0) : new Vec3(0, 1, 0);
+            a = (a - normal * Vec3.Dot(a, normal)).Normalized();
+            var b = Vec3.Cross(normal, a);
+            foreach (var d in flat)
+            {
+                double x = Vec3.Dot(d, a), y = Vec3.Dot(d, b);
+                sxx += x * x; sxy += x * y; syy += y * y;
+            }
+            double angle = 0.5 * Math.Atan2(2 * sxy, sxx - syy);
+            var u = a * Math.Cos(angle) + b * Math.Sin(angle);
+            var v = Vec3.Cross(normal, u);
+            double u0 = flat.Min(d => Vec3.Dot(d, u)), u1 = flat.Max(d => Vec3.Dot(d, u));
+            double v0 = flat.Min(d => Vec3.Dot(d, v)), v1 = flat.Max(d => Vec3.Dot(d, v));
+            // Only a mouth that mostly fills its rectangle (a slot, a rectangular opening); an L-shaped or irregular
+            // one would get a plate well beyond it.
+            double area = 0;
+            for (int i = 0; i < flat.Count; i++)
+            {
+                var p = flat[i];
+                var q = flat[(i + 1) % flat.Count];
+                area += Vec3.Dot(p, u) * Vec3.Dot(q, v) - Vec3.Dot(q, u) * Vec3.Dot(p, v);
+            }
+            if (Math.Abs(area) / 2 < 0.6 * (u1 - u0) * (v1 - v0))
+            {
+                SkippedCaps++;
+                return null;
+            }
+            var modeler = (IModeler)_ops.Modeler;
+            var plane = modeler.CreatePlanarSurface2(new[] { centre.X, centre.Y, centre.Z }, new[] { normal.X, normal.Y, normal.Z },
+                                                     new[] { u.X, u.Y, u.Z }) as Surface;
+            var sheet = plane == null ? null : modeler.CreateSheetFromSurface(plane, new[] { u0, u1, v0, v1 }) as IBody2;
+            if (sheet == null)
+            {
+                SkippedCaps++;
+                return null;
+            }
+            // Thickened to one side, into the hole (the sheet's normal is the mouth's, pointing out).
+            return modeler.ThickenSheet((Body2)sheet, thickness, (int)swThickenDirection_e.swThickenDirection_Side2) as IBody2;
+        }
+
+        public List<IBody2> MouthCaps(IBody2 body, double maxWidth)
+        {
+            const double thickness = 3e-4;
+            var caps = new List<IBody2>();
+            foreach (var hole in FindHoles(body, maxWidth, out _))
+            {
+                var mouth = hole.Mouths.FirstOrDefault();
+                if (mouth?.Edges == null || mouth.Edges.Count == 0)
+                    continue;
+                var loop = mouth.Edges.SelectMany(edge => Sample(edge, 12)).ToList();
+                if (loop.Count == 0)
+                    continue;
+                // The centre of the loop's box: the mouth's centroid leans toward where a closed edge starts (its
+                // first point is sampled twice), which made round mouths look oval.
+                var box = Aabb.FromPoints(loop.ToArray());
+                var centre = (box.Min + box.Max) * 0.5;
+                var reach = loop.Select(p => { var d = p - centre; return (d - mouth.Normal * Vec3.Dot(d, mouth.Normal)).Length; }).ToList();
+                double radius = reach.Max();
+                // Only round mouths get a disc; on a slot or an irregular opening a disc reaching its farthest point
+                // stuck far out of the part (seen edge-on as long lines). Those are closed on OK only.
+                if (radius < 1e-5)
+                    continue;
+                // A round mouth gets a disc. Any other (a slot, a rectangular opening) gets a thin plate over the
+                // rectangle that holds it, turned along the mouth's own longest direction: a disc reaching its
+                // farthest point stuck far out of the part (seen edge-on as long lines).
+                var cap = reach.Min() >= 0.92 * radius
+                    ? _ops.SolidCylinder(centre - mouth.Normal * (thickness / 2), mouth.Normal, radius, thickness)
+                    : Plate(loop, centre, mouth.Normal, thickness);
+                if (cap == null)
+                    continue;
+                // A lid covers a mouth of this body, so it lies within the body's box.
+                var limit = BodyOps.AnyBounds(body);
+                var cb = BodyOps.AnyBounds(cap);
+                double m = Math.Max(5e-4, limit.LongestSide * 0.02);
+                if (cb.Min.X < limit.Min.X - m || cb.Min.Y < limit.Min.Y - m || cb.Min.Z < limit.Min.Z - m ||
+                    cb.Max.X > limit.Max.X + m || cb.Max.Y > limit.Max.Y + m || cb.Max.Z > limit.Max.Z + m)
+                {
+                    SkippedCaps++;
+                    continue;
+                }
+                caps.Add(cap);
+                Closed++;
+            }
+            return caps;
+        }
+        /// <summary>Joins the edges' point runs end to start, turning runs round where needed.</summary>
+        private static List<Vec3> Chain(List<List<Vec3>> runs)
+        {
+            var loop = new List<Vec3>();
+            var left = runs.Where(r => r.Count > 0).ToList();
+            if (left.Count == 0)
+                return loop;
+            loop.AddRange(left[0]);
+            left.RemoveAt(0);
+            while (left.Count > 0)
+            {
+                var end = loop[loop.Count - 1];
+                int best = 0;
+                bool flip = false;
+                double bestDistance = double.PositiveInfinity;
+                for (int i = 0; i < left.Count; i++)
+                {
+                    double toStart = (left[i][0] - end).Length, toEnd = (left[i][left[i].Count - 1] - end).Length;
+                    if (toStart < bestDistance) { bestDistance = toStart; best = i; flip = false; }
+                    if (toEnd < bestDistance) { bestDistance = toEnd; best = i; flip = true; }
+                }
+                var run = left[best];
+                if (flip) run.Reverse();
+                loop.AddRange(run.Skip(1));
+                left.RemoveAt(best);
+            }
+            return loop;
         }
 
         private const int MaxHoleFaces = 400;
@@ -371,7 +524,7 @@ namespace GeoSimplifier.SolidWorks.Geometry
                 double depth = holePoints.Max(p => -Vec3.Dot(p - c, normal));
                 double height = holePoints.Max(p => Vec3.Dot(p - c, normal));
                 double radius = holePoints.Max(p => { var d = p - c; return (d - normal * Vec3.Dot(d, normal)).Length; });
-                hole.Mouths.Add(new Mouth { Normal = normal, Centroid = c, Depth = depth, Height = height, Radius = radius });
+                hole.Mouths.Add(new Mouth { Normal = normal, Centroid = c, Depth = depth, Height = height, Radius = radius, Edges = edges });
                 if (!measured)
                     hole.Depression = LoopMetrics.IsDepression(loop, normal, holePoints);
                 measured = true;

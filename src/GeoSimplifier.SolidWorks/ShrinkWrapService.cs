@@ -221,6 +221,43 @@ namespace GeoSimplifier.SolidWorks
             }
         }
 
+        /// <summary>
+        /// The lids of the preview, per body; a body that is another instance of a part body already done, with the
+        /// same rotation, gets that body's lids moved into place.
+        /// </summary>
+        private List<IBody2> MouthCaps(BodyOps ops, List<IBody2> bodies, List<(string key, double[] transform)> instances,
+                                       double width, Action<int, int> report)
+        {
+            var math = (IMathUtility)_swApp.GetMathUtility();
+            var finder = new HoleCloser(ops) { PlugsOnly = true };
+            var done = new Dictionary<string, (double[] t, List<IBody2> caps)>();
+            var all = new List<IBody2>();
+            for (int i = 0; i < bodies.Count; i++)
+            {
+                report(i, bodies.Count);
+                var (key, t) = i < instances.Count ? instances[i] : (null, null);
+                string k = key == null || t == null || t.Length < 13 ? null
+                    : key + "|" + string.Join(",", t.Take(9).Concat(new[] { t[12] }).Select(v => Math.Round(v, 9).ToString("R")));
+                if (k != null && done.TryGetValue(k, out var d) &&
+                    math.CreateTransform(new double[] { 1, 0, 0, 0, 1, 0, 0, 0, 1, t[9] - d.t[9], t[10] - d.t[10], t[11] - d.t[11], 1, 0, 0, 0 }) is MathTransform shift)
+                {
+                    foreach (var cap in d.caps)
+                    {
+                        var moved = (IBody2)cap.Copy();
+                        moved.ApplyTransform(shift);
+                        all.Add(moved);
+                    }
+                    continue;
+                }
+                var caps = finder.MouthCaps(bodies[i], width);
+                all.AddRange(caps);
+                if (k != null)
+                    done[k] = (t, caps);
+            }
+            UI.PageLog.Write($"  önizleme kapakları: {all.Count} yuvarlak delik ağzı ({finder.SkippedCaps} yuvarlak olmayan çizilmedi), {bodies.Count} gövde");
+            return all;
+        }
+
         /// <summary>A box grown by a small margin: 0.5 mm or 2 % of its longest side.</summary>
         private static Core.Geometry.Aabb Grown(Core.Geometry.Aabb box)
         {
@@ -248,7 +285,9 @@ namespace GeoSimplifier.SolidWorks
                 _title = title;
                 swApp.GetUserProgressBar(out _bar);
                 _bar?.Start(0, 100, title);
-                try { _window = new UI.ProgressWindow(new IntPtr(((IFrame)swApp.Frame()).GetHWndx64()), title); }
+                // No window over other programs while SOLIDWORKS itself is hidden (it runs in the background).
+                if (swApp.Visible)
+                    try { _window = new UI.ProgressWindow(new IntPtr(((IFrame)swApp.Frame()).GetHWndx64()), title); }
                 catch (Exception ex) { UI.PageLog.Write("İlerleme penceresi açılamadı: " + ex.Message); }
             }
 
@@ -333,7 +372,7 @@ namespace GeoSimplifier.SolidWorks
                         : result.FailedSheets > 0
                             ? "Katı gövde yok; yüzeyler kalınlaştırılamadı."
                             : "Görünür katı veya yüzey gövdesi bulunamadı.");
-                if (options.SurfaceShell && instances.Count > 1)
+                if (options.SurfaceShell && !options.Preview && instances.Count > 1)
                 {
                     // For the outer skin, parts the wrap never touches (no ray from outside reaches them: bearings,
                     // a rotor) are left out of hole closing and uniting. Not for a solid result: where the housing is
@@ -377,6 +416,23 @@ namespace GeoSimplifier.SolidWorks
                 result.SourceBodies = bodies.Count;
                 // Nothing the wrap adds may reach out of the model: the result is checked against this at the end.
                 var sourceLimit = Grown(bodies.Aggregate(Core.Geometry.Aabb.Empty, (box, b) => box.Union(BodyOps.AnyBounds(b))));
+                if (options.Preview && options.GapWidth > 0 && !options.Bag)
+                {
+                    // The preview does no boolean at all (on a 3145-body assembly it took 46 minutes): it draws a
+                    // flat lid on the mouth of every hole the wrap closes, bounded by the mouth's own edges. Bridges
+                    // between parts and filled insides are only made on OK.
+                    var caps = MouthCaps(ops, bodies, instances, options.GapWidth, (i, n) => Report("delik ağızları bulunuyor", 10, 90, i, n));
+                    Lap("kapaklar");
+                    result.IsPreview = true;
+                    result.Added = caps;
+                    result.HolesClosed = caps.Count;
+                    result.EnvelopeLeftOut = true;
+                    result.Notes.Add("Hızlı önizleme: yalnız delik kapakları gösteriliyor; parçalar arası köprüler ve iç dolgu Tamam'da hesaplanır.");
+                    result.Seconds = watch.Elapsed.TotalSeconds;
+                    result.Timings = string.Join(", ", laps);
+                    UI.PageLog.Write($"Süreler ({bodies.Count} gövde): {result.Timings}");
+                    return result;
+                }
                 if (options.FillThreads)
                 {
                     var threads = new ThreadFiller(ops);
@@ -560,9 +616,10 @@ namespace GeoSimplifier.SolidWorks
                 }
 
                 // The bag already fills closed hollows. Without it (no limit) cavities are filled here; the quick
-                // preview skips this, except for surface models: there the filled inside is the result.
+                // preview skips this, except for models made mostly of surfaces: there the filled inside is the
+                // result. (A few surfaces in a large assembly made every preview fill its cavities.)
                 bool bagged = bagBoxes.Count > 0;
-                if (options.FillCavities && !bagged && (!options.Preview || result.Sheets > 0))
+                if (options.FillCavities && !bagged && (!options.Preview || result.Sheets * 2 > result.SourceBodies))
                 {
                     for (int i = 0; i < lumps.Count; i++)
                     {

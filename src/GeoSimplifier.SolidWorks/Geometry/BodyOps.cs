@@ -13,6 +13,8 @@ namespace GeoSimplifier.SolidWorks.Geometry
     {
         private readonly BoxFactory _boxes;
         private readonly IModeler _modeler;
+
+        public IModeler Modeler => _modeler;
         private readonly IMathUtility _math;
         private double? _cylinderBaseFactor;
         private bool? _outwardFlag;
@@ -203,12 +205,17 @@ namespace GeoSimplifier.SolidWorks.Geometry
         {
             bridges = 0;
             var current = new List<IBody2>(lumps);
+            // Pairs that gave no bridge give none in a later round either (only the merged lump is new), so they are
+            // not tried again: every round started over and tried them all (279 s for 147 lumps).
+            var tried = new HashSet<(IBody2, IBody2)>();
             for (int round = 0; round < 50 && current.Count > 1; round++)
             {
                 bool merged = false;
                 for (int i = 0; i < current.Count && !merged; i++)
                     for (int j = i + 1; j < current.Count && !merged; j++)
                     {
+                        if (!tried.Add((current[i], current[j])))
+                            continue;
                         var bridge = BoxBridge(current[i], current[j], gapWidth, tolerance);
                         if (bridge == null)
                             continue;
@@ -433,9 +440,14 @@ namespace GeoSimplifier.SolidWorks.Geometry
         /// </summary>
         private List<IBody2> UnionByRounds(List<IBody2> bodies, double tolerance, Action<int, int> progress)
         {
-            var items = bodies.Select(b => (body: b, box: AnyBounds(b))).ToList();
+            // Each lump has an id; apart[id] holds the lumps it is known not to touch. A lump made of two that both
+            // do not touch X does not touch X either, so such pairs are not tried again after every merge (on a
+            // 3145-body assembly most attempts were these).
+            var apart = new List<HashSet<int>>();
+            var items = bodies.Select(b => { apart.Add(new HashSet<int>()); return (body: b, box: AnyBounds(b), id: apart.Count - 1); }).ToList();
             var failed = new HashSet<(IBody2, IBody2)>();
-            int total = items.Count, done = 0;
+            int total = items.Count, done = 0, attempts = 0, merges = 0, apartCount = 0, errors = 0, skipped = 0;
+            var watch = System.Diagnostics.Stopwatch.StartNew();
             while (items.Count > 1)
             {
                 // Overlapping pairs by a sweep along x.
@@ -449,27 +461,45 @@ namespace GeoSimplifier.SolidWorks.Geometry
                         int a = order[s], b = order[t];
                         if (!Overlaps(bi, items[b].box, tolerance) || failed.Contains((items[a].body, items[b].body)))
                             continue;
+                        if (apart[items[a].id].Contains(items[b].id)) { skipped++; continue; }
                         pairs.Add((a, b, Volume(bi) + Volume(items[b].box)));
                     }
                 }
                 if (pairs.Count == 0)
                     break;
                 var taken = new bool[items.Count];
-                var next = new List<(IBody2 body, Aabb box)>();
+                var next = new List<(IBody2 body, Aabb box, int id)>();
                 foreach (var (a, b, _) in pairs.OrderBy(p => p.size))
                 {
                     if (taken[a] || taken[b])
                         continue;
                     progress?.Invoke(Math.Min(done++, total - 1), total);
-                    var u = Union(items[a].body, items[b].body);
+                    attempts++;
+                    var u = Union(items[a].body, items[b].body, out bool isApart);
                     if (u == null)
                     {
-                        failed.Add((items[a].body, items[b].body));
-                        failed.Add((items[b].body, items[a].body));
+                        if (isApart)
+                        {
+                            apartCount++;
+                            apart[items[a].id].Add(items[b].id);
+                            apart[items[b].id].Add(items[a].id);
+                        }
+                        else
+                        {
+                            errors++;
+                            failed.Add((items[a].body, items[b].body));
+                            failed.Add((items[b].body, items[a].body));
+                        }
                         continue;
                     }
+                    merges++;
                     taken[a] = taken[b] = true;
-                    next.Add((u, AnyBounds(u)));
+                    var both = new HashSet<int>(apart[items[a].id]);
+                    both.IntersectWith(apart[items[b].id]);
+                    apart.Add(both);
+                    int id = apart.Count - 1;
+                    foreach (int x in both) apart[x].Add(id);
+                    next.Add((u, AnyBounds(u), id));
                 }
                 bool merged = taken.Any(x => x);
                 for (int i = 0; i < items.Count; i++)
@@ -479,6 +509,7 @@ namespace GeoSimplifier.SolidWorks.Geometry
                 if (!merged)
                     break;
             }
+            UI.PageLog.Write($"  birleştirme turları: {attempts} deneme, {merges} birleşti, {apartCount} değmiyor, {errors} hata, {skipped} değmediği bilindiği için denenmedi ({watch.Elapsed.TotalSeconds:F0} sn)");
             return items.Select(e => e.body).ToList();
         }
 

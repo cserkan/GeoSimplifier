@@ -25,6 +25,32 @@ namespace GeoSimplifier.Probe
                 Console.WriteLine("SOLIDWORKS kapatıldı.");
                 return 0;
             }
+            int deps = Array.IndexOf(args, "--deps");
+            if (deps >= 0 && deps + 1 < args.Length)
+            {
+                // --deps <file>: the documents a file references (all levels), their count and total size.
+                var list = (string[])swApp.GetDocumentDependencies2(args[deps + 1], true, true, false) ?? new string[0];
+                // Pairs of name and path.
+                var paths = list.Where((v, i) => i % 2 == 1).Distinct(StringComparer.OrdinalIgnoreCase).ToList();
+                long bytes = new System.IO.FileInfo(args[deps + 1]).Length + paths.Where(System.IO.File.Exists).Sum(p => new System.IO.FileInfo(p).Length);
+                Console.WriteLine($"Bağımlılık: {paths.Count + 1} dosya, {bytes / 1048576.0:F1} MB");
+                return 0;
+            }
+            int image = Array.IndexOf(args, "--image");
+            if (image >= 0 && image + 1 < args.Length)
+            {
+                // --image <file.png>: saves the active document's view as a picture (works with SOLIDWORKS hidden).
+                var md = (IModelDoc2)swApp.ActiveDoc;
+                bool saved = md.SaveBMP(args[image + 1], 1600, 1000);
+                Console.WriteLine($"Görüntü: {saved} ({args[image + 1]})");
+                return 0;
+            }
+            if (Array.IndexOf(args, "--hide") >= 0)
+            {
+                // Keeps SOLIDWORKS off the screen while tests run in the background.
+                swApp.Visible = false;
+                return 0;
+            }
             if (Array.IndexOf(args, "--close-all") >= 0)
             {
                 // Closes every document without saving, keeping SOLIDWORKS open.
