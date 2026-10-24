@@ -1,0 +1,86 @@
+using System.Collections.Generic;
+using System.Runtime.InteropServices;
+using SolidWorks.Interop.sldworks;
+using SolidWorks.Interop.swconst;
+
+namespace GeoSimplifier.SolidWorks.UI
+{
+    /// <summary>
+    /// Draws temporary bodies (in model coordinates) on a part or assembly. In a part the part owns them. An
+    /// assembly cannot own temporary bodies: Display3 succeeds but nothing is drawn, so one part component owns
+    /// them and the bodies are moved into its coordinates first. That component is resolved if it is lightweight.
+    /// </summary>
+    public sealed class TempBodyPreview
+    {
+        private readonly IModelDoc2 _doc;
+        private readonly object _owner;
+        private readonly MathTransform _toOwner;
+        private readonly List<IBody2> _shown = new List<IBody2>();
+
+        // Everything SOLIDWORKS hands out while the preview exists stays referenced; see ShrinkWrapPage.
+        private readonly List<object> _keep = new List<object>();
+
+        public TempBodyPreview(IModelDoc2 doc)
+        {
+            _doc = doc;
+            _owner = doc;
+            if (doc is IAssemblyDoc assembly)
+            {
+                _owner = null;
+                var components = (object[])assembly.GetComponents(false) ?? new object[0];
+                _keep.Add(components);
+                foreach (IComponent2 comp in components)
+                {
+                    var children = (object[])comp.GetChildren();
+                    _keep.Add(children);
+                    if ((children != null && children.Length > 0) ||
+                        comp.GetSuppression2() == (int)swComponentSuppressionState_e.swComponentSuppressed)
+                        continue;
+                    // A lightweight owner crashes SOLIDWORKS as soon as the page changes while the preview is drawn.
+                    if (comp.GetSuppression2() == (int)swComponentSuppressionState_e.swComponentLightweight)
+                    {
+                        int r = comp.SetSuppression2((int)swComponentSuppressionState_e.swComponentFullyResolved);
+                        PageLog.Write($"Önizleme sahibi çözüldü: {comp.Name2}, sonuç {r}, durum {comp.GetSuppression2()}");
+                    }
+                    _owner = comp;
+                    var transform = comp.Transform2;
+                    _keep.Add(transform);
+                    _toOwner = (MathTransform)transform?.Inverse();
+                    break;
+                }
+            }
+        }
+
+        /// <summary>False when the document has nothing that can own the preview.</summary>
+        public bool Supported => _owner != null;
+
+        /// <returns>False when nothing was drawn.</returns>
+        /// <param name="inPlace">The body is only made for the preview: move it instead of copying it first.</param>
+        public bool Show(IBody2 body, int color, double[] rgb, double transparency, bool inPlace = false)
+        {
+            if (_owner == null)
+                return false;
+            var shown = body;
+            if (_toOwner != null)
+            {
+                shown = inPlace ? body : (IBody2)body.Copy();
+                shown.ApplyTransform(_toOwner);
+            }
+            // Colour, ambient, diffuse, specular, shininess, transparency, emission.
+            shown.MaterialPropertyValues2 = new[] { rgb[0], rgb[1], rgb[2], 1, 1, 0.3, 0.3, transparency, 0 };
+            _shown.Add(shown);
+            return shown.Display3(_owner, color, (int)swTempBodySelectOptions_e.swTempBodySelectOptionNone) == 0;
+        }
+
+        public void Clear()
+        {
+            foreach (var body in _shown)
+            {
+                try { body.Hide(_owner); }
+                catch (COMException) { }
+            }
+            _shown.Clear();
+            _doc?.GraphicsRedraw2();
+        }
+    }
+}
