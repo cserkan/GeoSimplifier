@@ -43,6 +43,9 @@ namespace GeoSimplifier.SolidWorks
 
         /// <summary>Small parts left out (<see cref="ShrinkWrapOptions.MinPartSize"/>).</summary>
         public int SmallPartsRemoved;
+
+        /// <summary>Threaded regions filled (<see cref="ShrinkWrapOptions.FillThreads"/>).</summary>
+        public int ThreadsFilled;
         public int FailedBooleans;
         public double Seconds;
         public List<string> Notes = new List<string>();
@@ -69,6 +72,7 @@ namespace GeoSimplifier.SolidWorks
                           (HolesFailed > 0 ? $", {HolesFailed} delik kapatılamadı" : "") +
                           (BossesRemoved > 0 ? $", {BossesRemoved} kabartma düzlendi" : "") +
                           (SmallPartsRemoved > 0 ? $", {SmallPartsRemoved} küçük parça çıkarıldı" : "") +
+                          (ThreadsFilled > 0 ? $", {ThreadsFilled} vida dişi dolduruldu" : "") +
                           (Bridges > 0 ? $", {Bridges} boşluk köprülendi" : "") +
                           (Sheets > 0 ? $", {Sheets} yüzey gövdesi sarıldı" : "") + $" ({Seconds:F1} sn).";
             var notes = new List<string>(Notes);
@@ -276,6 +280,18 @@ namespace GeoSimplifier.SolidWorks
                 }
                 Lap("toplama");
                 result.SourceBodies = bodies.Count;
+                if (options.FillThreads)
+                {
+                    var threads = new ThreadFiller(ops);
+                    for (int i = 0; i < bodies.Count; i++)
+                    {
+                        Report("vida dişleri dolduruluyor", 2, 8, i, bodies.Count);
+                        bodies[i] = threads.Fill(bodies[i]);
+                    }
+                    result.ThreadsFilled = threads.Filled;
+                    UI.PageLog.Write($"  vida dişleri: {threads.Filled} dişli bölge dolduruldu");
+                    Lap("diş");
+                }
                 result.ExcludedBodies = excluded.Count;
 
                 double tolerance = 1e-6;

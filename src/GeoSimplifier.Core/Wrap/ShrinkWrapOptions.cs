@@ -22,6 +22,13 @@
         /// </summary>
         public double MinPartSize { get; set; }
 
+        /// <summary>
+        /// Modeled screw threads are filled with a plain cylinder of their outer diameter (a screw becomes a shank,
+        /// a nut a solid ring), which removes most of their faces. Always on in the add-in (Serkan: threads are
+        /// never wanted in a simplified model).
+        /// </summary>
+        public bool FillThreads { get; set; } = true;
+
         /// <summary>Fill closed internal cavities so the result is solid inside.</summary>
         public bool FillCavities { get; set; } = true;
 

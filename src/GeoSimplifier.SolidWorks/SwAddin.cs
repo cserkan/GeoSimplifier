@@ -156,7 +156,7 @@ namespace GeoSimplifier.SolidWorks
             bool forceGc = !limitsMm.StartsWith("nogc:");
             limitsMm = limitsMm.Replace("nogc:", "");
             // A leading "shell:" ticks "Yüzey gövde (dış kabuk)".
-            bool shell = limitsMm.StartsWith("shell:");
+            bool shell = limitsMm.Contains("shell:");
             limitsMm = limitsMm.Replace("shell:", "");
             // A leading "small<mm>:" sets "Bundan küçük parçaları çıkar".
             double small = 0;

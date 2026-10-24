@@ -130,10 +130,31 @@ namespace GeoSimplifier.Probe
                 string path = args[open + 1];
                 int type = path.EndsWith(".sldasm", StringComparison.OrdinalIgnoreCase) ? 2 : 1;
                 int errors = 0, warnings = 0;
-                swApp.OpenDoc6(path, type, 0, "", ref errors, ref warnings);
+                var openWatch = System.Diagnostics.Stopwatch.StartNew();
+                var opened = swApp.OpenDoc6(path, type, 0, "", ref errors, ref warnings);
+                Console.WriteLine($"Açılma süresi: {openWatch.Elapsed.TotalSeconds:F2} sn");
                 int activateErrors = 0;
                 swApp.ActivateDoc3(System.IO.Path.GetFileName(path), false, 0, ref activateErrors);
                 Console.WriteLine($"Açıldı: {path} (hata {errors}, uyarı {warnings})");
+                return 0;
+            }
+            if (Array.IndexOf(args, "--threads") >= 0)
+            {
+                // Lists the leaf components of the active assembly with their faces by surface type, to find modeled
+                // threads (helical faces are neither planes, cylinders, cones, spheres nor tori).
+                var asmDoc = (IAssemblyDoc)swApp.ActiveDoc;
+                foreach (IComponent2 comp in (object[])asmDoc.GetComponents(false))
+                {
+                    var bodies = (object[])comp.GetBodies3(0, out _);
+                    if (bodies == null) continue;
+                    foreach (IBody2 b in bodies)
+                    {
+                        var kinds = ((object[])b.GetFaces()).Cast<IFace2>().GroupBy(f => ((ISurface)f.GetSurface()).Identity()).OrderBy(g => g.Key)
+                            .Select(g => $"{g.Key}:{g.Count()}");
+                        var bb = (double[])b.GetBodyBox();
+                        Console.WriteLine($"{comp.Name2}: {((object[])b.GetFaces()).Length} yüz [{string.Join(" ", kinds)}] boy {Math.Max(bb[3] - bb[0], Math.Max(bb[4] - bb[1], bb[5] - bb[2])) * 1000:F0} mm");
+                    }
+                }
                 return 0;
             }
             int blends = Array.IndexOf(args, "--blends");
@@ -550,8 +571,8 @@ namespace GeoSimplifier.Probe
             int emboss = Array.IndexOf(args, "--emboss");
             double embossMm = emboss >= 0 && emboss + 1 < args.Length ? double.Parse(args[emboss + 1], CultureInfo.InvariantCulture) : 0;
             // --small 25 leaves out parts smaller than 25 mm.
-            int small = Array.IndexOf(args, "--small");
-            double smallMm = small >= 0 && small + 1 < args.Length ? double.Parse(args[small + 1], CultureInfo.InvariantCulture) : 0;
+            int smallAt = Array.IndexOf(args, "--small");
+            double smallMm = smallAt >= 0 && smallAt + 1 < args.Length ? double.Parse(args[smallAt + 1], CultureInfo.InvariantCulture) : 0;
             var result = service.Compute(doc, new ShrinkWrapOptions { GapWidth = gapMm / 1000, FillCavities = true, MaxEmbossHeight = embossMm / 1000, MinPartSize = smallMm / 1000 }, exclusions);
             Console.WriteLine(result.Summary());
             foreach (var line in result.Log)
