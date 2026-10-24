@@ -47,7 +47,8 @@ namespace GeoSimplifier.SolidWorks.UI
         private static double _gapWidth = 0.01; // meters
         private static bool _fillCavities = true;
         private static double _embossHeight = 0; // meters; 0 keeps embossed details
-        private static double _smallParts = 0;   // meters; 0 keeps every part
+        private static double _smallParts = 5;   // percent of the model's size (Serkan: 5 by default)
+        private static bool _removeSmallParts = true;
         private static bool _newConfiguration;
         private static string _configurationName = "Simple";
         private static bool _surfaceShell;
@@ -68,7 +69,7 @@ namespace GeoSimplifier.SolidWorks.UI
         private IPropertyManagerPageLabel _embossLabel;
         private IPropertyManagerPageNumberbox _embossBox;
         private double _embossValue;
-        private IPropertyManagerPageLabel _smallPartsLabel;
+        private IPropertyManagerPageCheckbox _smallPartsCheck;
         private IPropertyManagerPageNumberbox _smallPartsBox;
         private double _smallPartsValue;
         private IPropertyManagerPageGroup _excludeGroup;
@@ -149,12 +150,13 @@ namespace GeoSimplifier.SolidWorks.UI
             _embossBox.Value = _embossHeight;
             _embossValue = _embossHeight;
 
-            _smallPartsLabel = (IPropertyManagerPageLabel)AddControl(group, SmallPartsLabelId, swPropertyManagerPageControlType_e.swControlType_Label,
-                "Bundan küçük parçaları çıkar", null);
+            _smallPartsCheck = (IPropertyManagerPageCheckbox)AddControl(group, SmallPartsLabelId, swPropertyManagerPageControlType_e.swControlType_Checkbox,
+                "Bundan küçük parçaları çıkar (%)", "İşaretliyken aşağıdaki yüzdeden küçük parçalar en baştan sarmaya alınmaz.");
+            _smallPartsCheck.Checked = _removeSmallParts;
             _smallPartsBox = (IPropertyManagerPageNumberbox)AddControl(group, SmallPartsId, swPropertyManagerPageControlType_e.swControlType_Numberbox,
-                "Bundan küçük parçaları çıkar",
-                "En büyük boyu bundan küçük parçalar (vida, somun, pul, küçük bağlantı elemanları) sarmaya alınmaz; oturdukları delikler kapatılır. Modeli hafifletir. 0 hepsini korur.");
-            _smallPartsBox.SetRange2((int)swNumberboxUnitType_e.swNumberBox_Length, 0, 1, true, 0.001, 0.005, 0.0005);
+                "Bundan küçük parçaları çıkar (%)",
+                "Boyu modelin bu yüzdesinden küçük parçalar (vida, somun, pul, küçük bağlantı elemanları) en baştan, dışta olsalar bile sarmaya alınmaz; oturdukları delikler kapatılır. Modeli hafifletir ve hızlandırır. 0 hepsini korur.");
+            _smallPartsBox.SetRange2((int)swNumberboxUnitType_e.swNumberBox_UnitlessDouble, 0, 100, true, 1, 5, 0.5);
             _smallPartsBox.Value = _smallParts;
             _smallPartsValue = _smallParts;
 
@@ -222,6 +224,8 @@ namespace GeoSimplifier.SolidWorks.UI
             ((IPropertyManagerPageControl)_gapWidthBox).Enabled = _closeHolesBox.Checked;
             if (_configNameBox != null)
                 ((IPropertyManagerPageControl)_configNameBox).Enabled = _outputNewConfig;
+            if (_smallPartsBox != null)
+                ((IPropertyManagerPageControl)_smallPartsBox).Enabled = _smallPartsCheck.Checked;
             if (_smallShellBox != null)
                 ((IPropertyManagerPageControl)_smallShellBox).Enabled = _surfaceShellBox.Checked;
         }
@@ -280,12 +284,12 @@ namespace GeoSimplifier.SolidWorks.UI
             GapWidth = _closeHolesBox.Checked ? _gapValue : 0,
             FillCavities = _fillCavitiesBox.Checked,
             MaxEmbossHeight = _embossValue,
-            MinPartSize = _smallPartsValue,
+            MinPartPercent = _smallPartsCheck.Checked ? _smallPartsValue : 0,
             ForceSingleBody = _singleBodyBox.Checked,
             SurfaceShell = _surfaceShellBox.Checked,
         };
 
-        private string Key(ShrinkWrapOptions o) => $"{o.GapWidth:R}|{o.FillCavities}|{o.MaxEmbossHeight:R}|{o.MinPartSize:R}|{o.SurfaceShell}|{_exclusions.Key}";
+        private string Key(ShrinkWrapOptions o) => $"{o.GapWidth:R}|{o.FillCavities}|{o.MaxEmbossHeight:R}|{o.MinPartPercent:R}|{o.SurfaceShell}|{_exclusions.Key}";
 
         /// <summary>Recomputes the wrap for the current settings and shows what it adds.</summary>
         private void UpdatePreview()
@@ -484,6 +488,7 @@ namespace GeoSimplifier.SolidWorks.UI
             _fillCavities = _fillCavitiesBox.Checked;
             _embossHeight = _embossValue;
             _smallParts = _smallPartsValue;
+            _removeSmallParts = _smallPartsCheck.Checked;
             _forceSingleBody = _singleBodyBox.Checked;
             // The preview is only a quick, rough result; OK computes the real one.
             _preview = null;
@@ -519,14 +524,14 @@ namespace GeoSimplifier.SolidWorks.UI
             GapWidth = _closeHoles ? _gapWidth : 0,
             FillCavities = _fillCavities,
             MaxEmbossHeight = _embossHeight,
-            MinPartSize = _smallParts,
+            MinPartPercent = _removeSmallParts ? _smallParts : 0,
             ForceSingleBody = _forceSingleBody,
             SurfaceShell = _surfaceShell,
         };
 
         public void OnCheckboxCheck(int Id, bool Checked)
         {
-            if (Id == CloseHolesId || Id == SurfaceShellId)
+            if (Id == CloseHolesId || Id == SurfaceShellId || Id == SmallPartsLabelId)
                 UpdateEnabled();
             SchedulePreview(50);
         }
@@ -573,11 +578,12 @@ namespace GeoSimplifier.SolidWorks.UI
         /// <summary>Test hook: ticks "Tek gövdeye zorla".</summary>
         public void SingleBodyForTest() => _singleBodyBox.Checked = true;
 
-        /// <summary>Test hook: sets "Bundan küçük parçaları çıkar" (meters).</summary>
+        /// <summary>Test hook: sets "Bundan küçük parçaları çıkar (%)".</summary>
         public void SmallPartsForTest(double size)
         {
             _smallPartsBox.Value = size;
             _smallPartsValue = size;
+            _smallPartsCheck.Checked = size > 0;
         }
 
         public void OnComboboxEditChanged(int Id, string Text) { }

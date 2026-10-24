@@ -166,7 +166,7 @@ namespace GeoSimplifier.SolidWorks
             var smallMatch = System.Text.RegularExpressions.Regex.Match(limitsMm, @"^small([0-9.]+):");
             if (smallMatch.Success)
             {
-                small = double.Parse(smallMatch.Groups[1].Value, System.Globalization.CultureInfo.InvariantCulture) / 1000;
+                small = double.Parse(smallMatch.Groups[1].Value, System.Globalization.CultureInfo.InvariantCulture); // percent
                 limitsMm = limitsMm.Substring(smallMatch.Length);
             }
             var limits = Array.ConvertAll(limitsMm.Split(';'),

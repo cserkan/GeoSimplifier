@@ -17,10 +17,11 @@
         public double MaxEmbossHeight { get; set; }
 
         /// <summary>
-        /// Parts (bodies) whose largest extent is below this are left out of the wrap: screws, nuts, washers, small
-        /// fittings. Their holes are then closed like any other. Lightens the result; 0 keeps every part.
+        /// Parts (bodies) smaller than this percentage of the model's size (box diagonals) are left out of the wrap from
+        /// the start, even on the outside: screws, nuts, washers, small fittings. Their holes are closed like any other.
+        /// Lightens and speeds up the result; 0 keeps every part.
         /// </summary>
-        public double MinPartSize { get; set; }
+        public double MinPartPercent { get; set; }
 
         /// <summary>
         /// Modeled screw threads are filled with a plain cylinder of their outer diameter (a screw becomes a shank,

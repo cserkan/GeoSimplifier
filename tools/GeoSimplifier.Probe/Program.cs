@@ -645,10 +645,10 @@ namespace GeoSimplifier.Probe
             // --emboss 2 flattens embossed details up to 2 mm high.
             int emboss = Array.IndexOf(args, "--emboss");
             double embossMm = emboss >= 0 && emboss + 1 < args.Length ? double.Parse(args[emboss + 1], CultureInfo.InvariantCulture) : 0;
-            // --small 25 leaves out parts smaller than 25 mm.
+            // --small 5 leaves out parts smaller than 5 % of the model's size.
             int smallAt = Array.IndexOf(args, "--small");
             double smallMm = smallAt >= 0 && smallAt + 1 < args.Length ? double.Parse(args[smallAt + 1], CultureInfo.InvariantCulture) : 0;
-            var result = service.Compute(doc, new ShrinkWrapOptions { GapWidth = gapMm / 1000, FillCavities = true, MaxEmbossHeight = embossMm / 1000, MinPartSize = smallMm / 1000 }, exclusions);
+            var result = service.Compute(doc, new ShrinkWrapOptions { GapWidth = gapMm / 1000, FillCavities = true, MaxEmbossHeight = embossMm / 1000, MinPartPercent = smallMm }, exclusions);
             Console.WriteLine(result.Summary());
             foreach (var line in result.Log)
                 Console.WriteLine("  " + line);

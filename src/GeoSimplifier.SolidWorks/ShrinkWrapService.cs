@@ -41,7 +41,7 @@ namespace GeoSimplifier.SolidWorks
         public int HolesFailed;
         public int BossesRemoved;
 
-        /// <summary>Small parts left out (<see cref="ShrinkWrapOptions.MinPartSize"/>).</summary>
+        /// <summary>Small parts left out (<see cref="ShrinkWrapOptions.MinPartPercent"/>).</summary>
         public int SmallPartsRemoved;
 
         /// <summary>"Tek gövdeye zorla" was off: many bodies are expected.</summary>
@@ -479,7 +479,24 @@ namespace GeoSimplifier.SolidWorks
                         : result.FailedSheets > 0
                             ? "Katı gövde yok; yüzeyler kalınlaştırılamadı."
                             : "Görünür katı veya yüzey gövdesi bulunamadı.");
-                if (options.SurfaceShell && !options.Preview && instances.Count > 1)
+                if (options.MinPartPercent > 0 && bodies.Count > 1)
+                {
+                    // First of all, small parts (screws, nuts, washers, small fittings) are left out, wherever they
+                    // are, even on the outside: below MinPartPercent of the model's size (the diagonal of its box,
+                    // as for the shell's small surfaces). They get no work at all; holes they sat in close as usual.
+                    var boxes = bodies.Select(BodyOps.AnyBounds).ToList();
+                    var model = boxes.Aggregate(Core.Geometry.Aabb.Empty, (a, b) => a.Union(b));
+                    double limit = options.MinPartPercent / 100 * (model.Max - model.Min).Length;
+                    int before = bodies.Count;
+                    for (int i = bodies.Count - 1; i >= 0; i--)
+                        if (!boxes[i].IsEmpty && (boxes[i].Max - boxes[i].Min).Length < limit && bodies.Count > 1)
+                        {
+                            bodies.RemoveAt(i);
+                            if (i < instances.Count) instances.RemoveAt(i);
+                        }
+                    result.SmallPartsRemoved = before - bodies.Count;
+                    UI.PageLog.Write($"  küçük parçalar: {before - bodies.Count} gövde çıkarıldı (%{options.MinPartPercent:0.#} = {limit * 1000:F0} mm altı)");
+                }                if (options.SurfaceShell && !options.Preview && instances.Count > 1)
                 {
                     // For the outer skin, parts the wrap never touches (no ray from outside reaches them: bearings,
                     // a rotor) are left out of hole closing and uniting. Not for a solid result: where the housing is
@@ -506,19 +523,7 @@ namespace GeoSimplifier.SolidWorks
                     UI.PageLog.Write($"  iç parçalar: {before - bodies.Count} gövde dışarıdan görünmüyor, sarmaya alınmadı ({rays.Triangles} üçgen)");
                     Lap("görünürlük");
                 }
-                if (options.MinPartSize > 0)
-                {
-                    // Small parts (screws, nuts, washers) are left out; the holes they sit in are closed instead.
-                    int before = bodies.Count;
-                    for (int i = bodies.Count - 1; i >= 0; i--)
-                        if (BodyOps.TightBounds(bodies[i]).LongestSide < options.MinPartSize && bodies.Count > 1)
-                        {
-                            bodies.RemoveAt(i);
-                            if (i < instances.Count) instances.RemoveAt(i);
-                        }
-                    result.SmallPartsRemoved = before - bodies.Count;
-                    UI.PageLog.Write($"  küçük parçalar: {before - bodies.Count} gövde çıkarıldı");
-                }
+
                 Lap("toplama");
                 result.SourceBodies = bodies.Count;
                 // Nothing the wrap adds may reach out of the model: the result is checked against this at the end.
@@ -603,7 +608,7 @@ namespace GeoSimplifier.SolidWorks
                     // The preview shows the plugs cut exactly to the holes, as OK makes them (rough boxes in their
                     // place looked like slabs much larger than the model). They are kept per limit, so going back to
                     // a value tried before is instant.
-                    string plugKey = $"{source.GetPathName()}|{source.GetTitle()}|{exclusions?.Key}|{bodies.Count}|{options.MaxEmbossHeight:R}|{options.MinPartSize:R}|{options.SurfaceShell}";
+                    string plugKey = $"{source.GetPathName()}|{source.GetTitle()}|{exclusions?.Key}|{bodies.Count}|{options.MaxEmbossHeight:R}|{options.MinPartPercent:R}|{options.SurfaceShell}";
                     if (plugKey != _plugKey)
                     {
                         _plugsByLimit.Clear();
@@ -648,8 +653,12 @@ namespace GeoSimplifier.SolidWorks
                         if (boxVolume <= 0 || partVolume > 0.6 * boxVolume || partBox.LongestSide < 0.01 * sourceLimit.LongestSide)
                             continue;
                         var partLimit = Grown(partBox);
+                        double cupStart = watch.Elapsed.TotalSeconds;
                         var insides = ops.CoveredInsides(parts[i], bodies, 1e-6)
                             .Where(p => !Outside(BodyOps.AnyBounds(p), partLimit)).ToList();
+                        double cupTime = watch.Elapsed.TotalSeconds - cupStart;
+                        if (cupTime > 5)
+                            UI.PageLog.Write($"  yavaş kap içi: {cupTime:F1} sn, kutu {partBox.Size.X * 1000:F0}x{partBox.Size.Y * 1000:F0}x{partBox.Size.Z * 1000:F0} mm, doluluk %{100 * partVolume / boxVolume:F0}, {insides.Count} dolgu");
                         if (insides.Count == 0)
                             continue;
                         cups++;
@@ -678,7 +687,7 @@ namespace GeoSimplifier.SolidWorks
                 // A plugs-only preview leaves the bodies unplugged (only flattened), so their union can be reused.
                 List<IBody2> original;
                 string unionKey = options.Preview && !bagOnly
-                    ? $"{source.GetPathName()}|{source.GetTitle()}|{exclusions?.Key}|{bodies.Count}|{options.MaxEmbossHeight:R}|{options.MinPartSize:R}|{options.SurfaceShell}"
+                    ? $"{source.GetPathName()}|{source.GetTitle()}|{exclusions?.Key}|{bodies.Count}|{options.MaxEmbossHeight:R}|{options.MinPartPercent:R}|{options.SurfaceShell}"
                     : null;
                 if (bagOnly)
                     original = bodies;
@@ -882,7 +891,10 @@ namespace GeoSimplifier.SolidWorks
 
             var part = NewPart();
             int created = 0;
-            int featureOptions = (int)(swCreateFeatureBodyOpts_e.swCreateFeatureBodyCheck | swCreateFeatureBodyOpts_e.swCreateFeatureBodySimplify);
+            // Checking and simplifying each body took most of the 8.5 minutes 1753 bodies needed; with many bodies
+            // they are put in as they are.
+            int featureOptions = bodies.Count > 50 ? 0
+                : (int)(swCreateFeatureBodyOpts_e.swCreateFeatureBodyCheck | swCreateFeatureBodyOpts_e.swCreateFeatureBodySimplify);
             foreach (var body in bodies)
             {
                 if (part.CreateFeatureFromBody3((IBody2)body.Copy(), false, featureOptions) != null)
