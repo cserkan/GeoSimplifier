@@ -651,13 +651,15 @@ namespace GeoSimplifier.SolidWorks
         /// <paramref name="source"/> (see <see cref="ConfigurationOutput"/>) instead of a new part.
         /// </summary>
         public string Commit(WrapResult result, IModelDoc2 source, string configurationName) =>
-            Commit(result, source, configurationName, surfaceShell: false);
+            Commit(result, source, configurationName, surfaceShell: false, smallShellPercent: 0);
 
         /// <param name="surfaceShell">Put in only the outer skin: each result body becomes one surface body made of
         /// its faces (the insides are filled, so all of them are outer faces), and no solid.</param>
-        public string Commit(WrapResult result, IModelDoc2 source, string configurationName, bool surfaceShell)
+        /// <param name="smallShellPercent">Surface bodies of the shell smaller than this percentage of the model's
+        /// size are deleted; 0 keeps them all.</param>
+        public string Commit(WrapResult result, IModelDoc2 source, string configurationName, bool surfaceShell, double smallShellPercent)
         {
-            var bodies = surfaceShell ? Shells(result) : result.Bodies;
+            var bodies = surfaceShell ? Shells(result, smallShellPercent / 100) : result.Bodies;
             if (source != null && configurationName != null)
                 return "Tamamlandı: " + result.Summary() + " " +
                        new ConfigurationOutput(_swApp).Create(source, bodies, configurationName, NewPart);
@@ -683,7 +685,7 @@ namespace GeoSimplifier.SolidWorks
         /// The visibility is worked out on the tessellation, which needs the bodies in a document; they are put in
         /// a hidden part that is closed afterwards.
         /// </summary>
-        private List<IBody2> Shells(WrapResult result)
+        private List<IBody2> Shells(WrapResult result, double smallPart)
         {
             var modeler = (IModeler)_swApp.GetModeler();
             var shells = new List<IBody2>();
@@ -747,14 +749,14 @@ namespace GeoSimplifier.SolidWorks
                 progress.End();
             }
             // Small surface bodies left over (bits of screw heads and rings seen through gaps) are dropped: below
-            // SmallShellPart of the model's size (Serkan picked them with "select bodies by size" at 14 %). The
+            // smallPart of the model's size (Serkan picked them with "select bodies by size" at 14 %). The
             // largest one always stays.
             var model = shells.Aggregate(Core.Geometry.Aabb.Empty, (b, s) => b.Union(BodyOps.AnyBounds(s)));
             double modelSize = (model.Max - model.Min).Length;
             var largest = shells.OrderByDescending(s => (BodyOps.AnyBounds(s).Max - BodyOps.AnyBounds(s).Min).Length).FirstOrDefault();
             int before = shells.Count;
             shells = shells.Where(s => s == largest || s.GetType() != (int)swBodyType_e.swSheetBody ||
-                                       (BodyOps.AnyBounds(s).Max - BodyOps.AnyBounds(s).Min).Length >= SmallShellPart * modelSize).ToList();
+                                       (BodyOps.AnyBounds(s).Max - BodyOps.AnyBounds(s).Min).Length >= smallPart * modelSize).ToList();
             UI.PageLog.Write($"  dış kabuk: {result.Bodies.Count} gövde → {shells.Count(s => s.GetType() == (int)swBodyType_e.swSheetBody)} yüzey gövdesi " +
                              $"({before - shells.Count} küçük parça atıldı), {kept}/{total} yüz görünüyor ({watch.Elapsed.TotalSeconds:F1} sn)");
             return shells;
@@ -762,9 +764,6 @@ namespace GeoSimplifier.SolidWorks
         // CreateBodiesFromSheets2 option that knits into sheet bodies instead of closing them into solids
         // (found by trying: 0 and 2 gave solids).
         private const int SheetBodiesOnly = 1;
-
-        // Surface bodies of the outer shell smaller than this share of the model's size are dropped.
-        private const double SmallShellPart = 0.14;
 
         private IPartDoc NewPart()
         {
