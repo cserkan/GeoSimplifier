@@ -33,6 +33,8 @@ namespace GeoSimplifier.SolidWorks.UI
         private const int ConfigNameId = 15;
         private const int PreviewId = 16;
         private const int SurfaceShellId = 17;
+        private const int SmallPartsLabelId = 18;
+        private const int SmallPartsId = 19;
 
         // Selection mark of the exclusion box, so its items are told apart from other selections.
         private const int ExcludeMark = 2;
@@ -42,6 +44,7 @@ namespace GeoSimplifier.SolidWorks.UI
         private static double _gapWidth = 0.01; // meters
         private static bool _fillCavities = true;
         private static double _embossHeight = 0; // meters; 0 keeps embossed details
+        private static double _smallParts = 0;   // meters; 0 keeps every part
         private static bool _newConfiguration;
         private static string _configurationName = "Simple";
         private static bool _surfaceShell;
@@ -60,6 +63,9 @@ namespace GeoSimplifier.SolidWorks.UI
         private IPropertyManagerPageLabel _embossLabel;
         private IPropertyManagerPageNumberbox _embossBox;
         private double _embossValue;
+        private IPropertyManagerPageLabel _smallPartsLabel;
+        private IPropertyManagerPageNumberbox _smallPartsBox;
+        private double _smallPartsValue;
         private IPropertyManagerPageGroup _excludeGroup;
         private IPropertyManagerPageSelectionbox _excludeBox;
         private Exclusions _exclusions = new Exclusions();
@@ -133,6 +139,15 @@ namespace GeoSimplifier.SolidWorks.UI
             _embossBox.SetRange2((int)swNumberboxUnitType_e.swNumberBox_Length, 0, 1, true, 0.0005, 0.001, 0.0001);
             _embossBox.Value = _embossHeight;
             _embossValue = _embossHeight;
+
+            _smallPartsLabel = (IPropertyManagerPageLabel)AddControl(group, SmallPartsLabelId, swPropertyManagerPageControlType_e.swControlType_Label,
+                "Bundan küçük parçaları çıkar", null);
+            _smallPartsBox = (IPropertyManagerPageNumberbox)AddControl(group, SmallPartsId, swPropertyManagerPageControlType_e.swControlType_Numberbox,
+                "Bundan küçük parçaları çıkar",
+                "En büyük boyu bundan küçük parçalar (vida, somun, pul, küçük bağlantı elemanları) sarmaya alınmaz; oturdukları delikler kapatılır. Modeli hafifletir. 0 hepsini korur.");
+            _smallPartsBox.SetRange2((int)swNumberboxUnitType_e.swNumberBox_Length, 0, 1, true, 0.001, 0.005, 0.0005);
+            _smallPartsBox.Value = _smallParts;
+            _smallPartsValue = _smallParts;
 
             _excludeGroup = (IPropertyManagerPageGroup)_page.AddGroupBox(ExcludeGroupId, "Hariç tut",
                 (int)(swAddGroupBoxOptions_e.swGroupBoxOptions_Visible | swAddGroupBoxOptions_e.swGroupBoxOptions_Expanded));
@@ -228,6 +243,9 @@ namespace GeoSimplifier.SolidWorks.UI
             double emboss = _embossBox.Value;
             if (emboss >= 0)
                 _embossValue = emboss;
+            double small = _smallPartsBox.Value;
+            if (small >= 0)
+                _smallPartsValue = small;
         }
 
         private ShrinkWrapOptions CurrentOptions() => new ShrinkWrapOptions
@@ -235,6 +253,7 @@ namespace GeoSimplifier.SolidWorks.UI
             GapWidth = _closeHolesBox.Checked ? _gapValue : 0,
             FillCavities = _fillCavitiesBox.Checked,
             MaxEmbossHeight = _embossValue,
+            MinPartSize = _smallPartsValue,
         };
 
         private string Key(ShrinkWrapOptions o) => $"{o.GapWidth:R}|{o.FillCavities}|{o.MaxEmbossHeight:R}|{_exclusions.Key}";
@@ -399,6 +418,8 @@ namespace GeoSimplifier.SolidWorks.UI
                 _gapValue = value;
             else if (id == EmbossHeightId)
                 _embossValue = value;
+            else if (id == SmallPartsId)
+                _smallPartsValue = value;
             else
                 return false;
             return true;
@@ -406,7 +427,7 @@ namespace GeoSimplifier.SolidWorks.UI
 
         public void OnLostFocus(int Id)
         {
-            if (Id != GapWidthId && Id != EmbossHeightId)
+            if (Id != GapWidthId && Id != EmbossHeightId && Id != SmallPartsId)
                 return;
             SyncGapFromBox("OnLostFocus");
             SchedulePreview(50);
@@ -426,6 +447,7 @@ namespace GeoSimplifier.SolidWorks.UI
             _gapWidth = _gapValue;
             _fillCavities = _fillCavitiesBox.Checked;
             _embossHeight = _embossValue;
+            _smallParts = _smallPartsValue;
             // The preview is only a quick, rough result; OK computes the real one.
             _preview = null;
         }
@@ -460,6 +482,7 @@ namespace GeoSimplifier.SolidWorks.UI
             GapWidth = _closeHoles ? _gapWidth : 0,
             FillCavities = _fillCavities,
             MaxEmbossHeight = _embossHeight,
+            MinPartSize = _smallParts,
         };
 
         public void OnCheckboxCheck(int Id, bool Checked)
@@ -507,6 +530,13 @@ namespace GeoSimplifier.SolidWorks.UI
         }
         /// <summary>Test hook: ticks "Yüzey gövde (dış kabuk)".</summary>
         public void ShellForTest() => _surfaceShellBox.Checked = true;
+
+        /// <summary>Test hook: sets "Bundan küçük parçaları çıkar" (meters).</summary>
+        public void SmallPartsForTest(double size)
+        {
+            _smallPartsBox.Value = size;
+            _smallPartsValue = size;
+        }
 
         public void OnComboboxEditChanged(int Id, string Text) { }
         public void OnComboboxSelectionChanged(int Id, int Item) { }

@@ -158,6 +158,14 @@ namespace GeoSimplifier.SolidWorks
             // A leading "shell:" ticks "Yüzey gövde (dış kabuk)".
             bool shell = limitsMm.StartsWith("shell:");
             limitsMm = limitsMm.Replace("shell:", "");
+            // A leading "small<mm>:" sets "Bundan küçük parçaları çıkar".
+            double small = 0;
+            var smallMatch = System.Text.RegularExpressions.Regex.Match(limitsMm, @"^small([0-9.]+):");
+            if (smallMatch.Success)
+            {
+                small = double.Parse(smallMatch.Groups[1].Value, System.Globalization.CultureInfo.InvariantCulture) / 1000;
+                limitsMm = limitsMm.Substring(smallMatch.Length);
+            }
             var limits = Array.ConvertAll(limitsMm.Split(';'),
                 v => double.Parse(v, System.Globalization.CultureInfo.InvariantCulture) / 1000);
             _mainThread.BeginInvoke(new Action(() =>
@@ -170,6 +178,8 @@ namespace GeoSimplifier.SolidWorks
                     _page.OutputForTest(configurationName);
                 if (shell)
                     _page.ShellForTest();
+                if (small > 0)
+                    _page.SmallPartsForTest(small);
                 _page.Simulate(limits, ok, forceGc);
             }));
             return "başladı";

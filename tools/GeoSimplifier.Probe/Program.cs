@@ -136,6 +136,78 @@ namespace GeoSimplifier.Probe
                 Console.WriteLine($"Açıldı: {path} (hata {errors}, uyarı {warnings})");
                 return 0;
             }
+            int blends = Array.IndexOf(args, "--blends");
+            if (blends >= 0 && blends + 1 < args.Length)
+            {
+                // --blends <mm>: deletes and patches cylinder, cone and torus faces of the active part's first solid
+                // body whose radius is below the size (fillets, small holes, round bosses); prints the face counts.
+                double r = double.Parse(args[blends + 1], CultureInfo.InvariantCulture) / 1000;
+                var md = (IModelDoc2)swApp.ActiveDoc;
+                var pd = (IPartDoc)md;
+                var body = (IBody2)((object[])pd.GetBodies2(0, true))[0];
+                var faces = ((object[])body.GetFaces()).Cast<IFace2>().ToList();
+                var small = new System.Collections.Generic.List<IFace2>();
+                foreach (var f in faces)
+                {
+                    var s = (ISurface)f.GetSurface();
+                    double radius = double.PositiveInfinity;
+                    if (s.IsCylinder()) radius = ((double[])s.CylinderParams)[6];
+                    else if (s.IsTorus()) radius = ((double[])s.TorusParams)[7];
+                    else if (s.IsCone()) radius = ((double[])s.ConeParams)[6];
+                    if (radius < r) small.Add(f);
+                }
+                Console.WriteLine($"Yüz {faces.Count}, {r * 1000} mm altı yuvarlak yüz {small.Count}");
+                if (Array.IndexOf(args, "--temp") >= 0)
+                {
+                    // Body level, on a copy: each small face deleted and healed on its own, every heal action.
+                    foreach (int heal in new[] { 0, 1 })
+                    {
+                        var work = (IBody2)body.Copy();
+                        var tw = System.Diagnostics.Stopwatch.StartNew();
+                        int done = 0, failedOps = 0;
+                        for (int k = 0; k < 40; k++)
+                        {
+                            var wf = ((object[])work.GetFaces()).Cast<IFace2>().Where(f =>
+                            {
+                                var s = (ISurface)f.GetSurface();
+                                double rr = s.IsCylinder() ? ((double[])s.CylinderParams)[6] : s.IsTorus() ? ((double[])s.TorusParams)[7] : s.IsCone() ? ((double[])s.ConeParams)[6] : double.PositiveInfinity;
+                                return rr < r;
+                            }).Skip(failedOps).FirstOrDefault();
+                            if (wf == null) break;
+                            object bodyList; bool check;
+                            bool okDel = work.DeleteFaces5(new object[] { wf }, heal, 2, false, out bodyList, out check);
+                            if (okDel) done++; else failedOps++;
+                        }
+                        Console.WriteLine($"DeleteFaces5 iyileştirme {heal}: 40 denemede {done} başarılı, {failedOps} başarısız, {tw.Elapsed.TotalSeconds:F1} sn, kalan yüz {((object[])work.GetFaces()).Length}");
+                    }
+                    return 0;
+                }
+                var watch = System.Diagnostics.Stopwatch.StartNew();
+                var sel = (SelectData)((ISelectionMgr)md.SelectionManager).CreateSelectData();
+                int selected = 0, okCount = 0;
+                foreach (int opt in new[] { 1, 3 })
+                    for (int k = 0; k < 15; k++)
+                    {
+                        // Faces are looked up again: a delete feature rebuilds the body.
+                        var cur = ((object[])((IBody2)((object[])pd.GetBodies2(0, true))[0]).GetFaces()).Cast<IFace2>().Where(f =>
+                        {
+                            var s = (ISurface)f.GetSurface();
+                            double rr = s.IsCylinder() ? ((double[])s.CylinderParams)[6] : s.IsTorus() ? ((double[])s.TorusParams)[7] : s.IsCone() ? ((double[])s.ConeParams)[6] : double.PositiveInfinity;
+                            return rr < r;
+                        }).Skip(k + 15 * (opt == 3 ? 1 : 0) - okCount).FirstOrDefault();
+                        if (cur == null) break;
+                        md.ClearSelection2(true);
+                        if (((IEntity)cur).Select4(false, sel)) selected++;
+                        bool one = opt == 1 ? md.Extension.InsertDeleteFace(1) : md.InsertDeleteFace2(1);
+                        if (one) okCount++;
+                    }
+                bool ok = okCount > 0;
+                Console.WriteLine($"tek tek: {okCount}/{selected} başarılı");
+                var after = (object[])pd.GetBodies2(0, true);
+                Console.WriteLine($"Seçilen {selected}, sil+yama {ok}, {watch.Elapsed.TotalSeconds:F1} sn; sonra {after?.Length} gövde, " +
+                                  $"{after?.Cast<IBody2>().Sum(b => ((object[])b.GetFaces()).Length)} yüz");
+                return 0;
+            }
             if (Array.IndexOf(args, "--hidden") >= 0)
             {
                 // Counts faces of the active part's first solid body from which no ray escapes: rays leave a few
@@ -477,7 +549,10 @@ namespace GeoSimplifier.Probe
             // --emboss 2 flattens embossed details up to 2 mm high.
             int emboss = Array.IndexOf(args, "--emboss");
             double embossMm = emboss >= 0 && emboss + 1 < args.Length ? double.Parse(args[emboss + 1], CultureInfo.InvariantCulture) : 0;
-            var result = service.Compute(doc, new ShrinkWrapOptions { GapWidth = gapMm / 1000, FillCavities = true, MaxEmbossHeight = embossMm / 1000 }, exclusions);
+            // --small 25 leaves out parts smaller than 25 mm.
+            int small = Array.IndexOf(args, "--small");
+            double smallMm = small >= 0 && small + 1 < args.Length ? double.Parse(args[small + 1], CultureInfo.InvariantCulture) : 0;
+            var result = service.Compute(doc, new ShrinkWrapOptions { GapWidth = gapMm / 1000, FillCavities = true, MaxEmbossHeight = embossMm / 1000, MinPartSize = smallMm / 1000 }, exclusions);
             Console.WriteLine(result.Summary());
             foreach (var line in result.Log)
                 Console.WriteLine("  " + line);

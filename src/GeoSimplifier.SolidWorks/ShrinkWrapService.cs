@@ -40,6 +40,9 @@ namespace GeoSimplifier.SolidWorks
         public int HolesClosed;
         public int HolesFailed;
         public int BossesRemoved;
+
+        /// <summary>Small parts left out (<see cref="ShrinkWrapOptions.MinPartSize"/>).</summary>
+        public int SmallPartsRemoved;
         public int FailedBooleans;
         public double Seconds;
         public List<string> Notes = new List<string>();
@@ -65,6 +68,7 @@ namespace GeoSimplifier.SolidWorks
                           (IsPreview ? " (hızlı önizleme)" : $" → {Bodies.Count} gövde") + $", {HolesClosed} delik kapatıldı" +
                           (HolesFailed > 0 ? $", {HolesFailed} delik kapatılamadı" : "") +
                           (BossesRemoved > 0 ? $", {BossesRemoved} kabartma düzlendi" : "") +
+                          (SmallPartsRemoved > 0 ? $", {SmallPartsRemoved} küçük parça çıkarıldı" : "") +
                           (Bridges > 0 ? $", {Bridges} boşluk köprülendi" : "") +
                           (Sheets > 0 ? $", {Sheets} yüzey gövdesi sarıldı" : "") + $" ({Seconds:F1} sn).";
             var notes = new List<string>(Notes);
@@ -257,6 +261,19 @@ namespace GeoSimplifier.SolidWorks
                         : result.FailedSheets > 0
                             ? "Katı gövde yok; yüzeyler kalınlaştırılamadı."
                             : "Görünür katı veya yüzey gövdesi bulunamadı.");
+                if (options.MinPartSize > 0)
+                {
+                    // Small parts (screws, nuts, washers) are left out; the holes they sit in are closed instead.
+                    int before = bodies.Count;
+                    for (int i = bodies.Count - 1; i >= 0; i--)
+                        if (BodyOps.TightBounds(bodies[i]).LongestSide < options.MinPartSize && bodies.Count > 1)
+                        {
+                            bodies.RemoveAt(i);
+                            if (i < instances.Count) instances.RemoveAt(i);
+                        }
+                    result.SmallPartsRemoved = before - bodies.Count;
+                    UI.PageLog.Write($"  küçük parçalar: {before - bodies.Count} gövde çıkarıldı");
+                }
                 Lap("toplama");
                 result.SourceBodies = bodies.Count;
                 result.ExcludedBodies = excluded.Count;

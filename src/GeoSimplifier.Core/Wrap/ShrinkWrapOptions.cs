@@ -1,4 +1,4 @@
-namespace GeoSimplifier.Core.Wrap
+﻿namespace GeoSimplifier.Core.Wrap
 {
     /// <summary>Shrink wrap settings. Lengths are in model units (meters for SOLIDWORKS).</summary>
     public sealed class ShrinkWrapOptions
@@ -15,6 +15,12 @@ namespace GeoSimplifier.Core.Wrap
         /// so the wrap does not follow them. 0 keeps them.
         /// </summary>
         public double MaxEmbossHeight { get; set; }
+
+        /// <summary>
+        /// Parts (bodies) whose largest extent is below this are left out of the wrap: screws, nuts, washers, small
+        /// fittings. Their holes are then closed like any other. Lightens the result; 0 keeps every part.
+        /// </summary>
+        public double MinPartSize { get; set; }
 
         /// <summary>Fill closed internal cavities so the result is solid inside.</summary>
         public bool FillCavities { get; set; } = true;
