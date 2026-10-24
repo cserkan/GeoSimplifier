@@ -44,6 +44,9 @@ namespace GeoSimplifier.SolidWorks
         /// <summary>Small parts left out (<see cref="ShrinkWrapOptions.MinPartSize"/>).</summary>
         public int SmallPartsRemoved;
 
+        /// <summary>Parts no ray from outside reaches, left out of the wrap (their space is filled).</summary>
+        public int InsideParts;
+
         /// <summary>Threaded regions filled (<see cref="ShrinkWrapOptions.FillThreads"/>).</summary>
         public int ThreadsFilled;
         public int FailedBooleans;
@@ -72,6 +75,7 @@ namespace GeoSimplifier.SolidWorks
                           (HolesFailed > 0 ? $", {HolesFailed} delik kapatılamadı" : "") +
                           (BossesRemoved > 0 ? $", {BossesRemoved} kabartma düzlendi" : "") +
                           (SmallPartsRemoved > 0 ? $", {SmallPartsRemoved} küçük parça çıkarıldı" : "") +
+                          (InsideParts > 0 ? $", {InsideParts} iç parça atlandı" : "") +
                           (ThreadsFilled > 0 ? $", {ThreadsFilled} vida dişi dolduruldu" : "") +
                           (Bridges > 0 ? $", {Bridges} boşluk köprülendi" : "") +
                           (Sheets > 0 ? $", {Sheets} yüzey gövdesi sarıldı" : "") + $" ({Seconds:F1} sn).";
@@ -160,12 +164,38 @@ namespace GeoSimplifier.SolidWorks
                     continue;
                 }
                 int p0 = closer.Plugs.Count, w0 = closer.TooWide.Count, c0 = closer.Closed, f0 = closer.Failed;
+                var original = bodies[i];
                 bodies[i] = closer.CloseHoles(bodies[i], width);
+                // A plug fills a hole of this body, so it lies within the body's box. One that reaches out of it was
+                // made from a misread hole (a huge block once swallowed a motor): the body is left as it was.
+                var limit = Grown(BodyOps.AnyBounds(original));
+                if (!limit.IsEmpty && (Outside(BodyOps.AnyBounds(bodies[i]), limit) ||
+                                       closer.Plugs.Skip(p0).Any(p => Outside(BodyOps.AnyBounds(p), limit))))
+                {
+                    UI.PageLog.Write($"  delik kapatma kutudan taştı, gövde {i} olduğu gibi bırakıldı");
+                    bodies[i] = original;
+                    closer.Plugs.RemoveRange(p0, closer.Plugs.Count - p0);
+                    closer.PlugWidths.RemoveRange(p0, closer.PlugWidths.Count - p0);
+                }
                 if (k != null)
                     done[k] = (t, bodies[i], p0, closer.Plugs.Count, w0, closer.TooWide.Count, closer.Closed - c0, closer.Failed - f0);
             }
             UI.PageLog.Write($"  delikler: {bodies.Count} gövde, {reused} tanesi tekrar eden parçadan taşındı");
         }
+
+        /// <summary>A box grown by a small margin: 0.5 mm or 2 % of its longest side.</summary>
+        private static Core.Geometry.Aabb Grown(Core.Geometry.Aabb box)
+        {
+            if (box.IsEmpty) return box;
+            double m = Math.Max(5e-4, box.LongestSide * 0.02);
+            var g = new Core.Geometry.Vec3(m, m, m);
+            return new Core.Geometry.Aabb(box.Min - g, box.Max + g);
+        }
+
+        /// <summary>Whether <paramref name="box"/> reaches out of <paramref name="limit"/>.</summary>
+        private static bool Outside(Core.Geometry.Aabb box, Core.Geometry.Aabb limit) =>
+            !box.IsEmpty && (box.Min.X < limit.Min.X || box.Min.Y < limit.Min.Y || box.Min.Z < limit.Min.Z ||
+                             box.Max.X > limit.Max.X || box.Max.Y > limit.Max.Y || box.Max.Z > limit.Max.Z);
 
         /// <summary>The status bar's progress bar and, in the middle of the SOLIDWORKS window, a progress window.</summary>
         private sealed class Progress
@@ -265,6 +295,33 @@ namespace GeoSimplifier.SolidWorks
                         : result.FailedSheets > 0
                             ? "Katı gövde yok; yüzeyler kalınlaştırılamadı."
                             : "Görünür katı veya yüzey gövdesi bulunamadı.");
+                if (options.SurfaceShell && instances.Count > 1)
+                {
+                    // For the outer skin, parts the wrap never touches (no ray from outside reaches them: bearings,
+                    // a rotor) are left out of hole closing and uniting. Not for a solid result: where the housing is
+                    // open the space they took would stay empty (a motor lost 0.23 million mm3 inside).
+                    // Only the parts as collected are measured (thickened surfaces are kept as they are).
+                    int solids = instances.Count;
+                    var rays = new Core.Geometry.OutsideRays();
+                    var extent = Core.Geometry.Aabb.Empty;
+                    for (int i = 0; i < solids; i++)
+                    {
+                        Report("dışarıdan görünen parçalar bulunuyor", 1, 3, i, solids);
+                        rays.AddBody(i, BodyOps.Triangles(new[] { bodies[i] }));
+                        extent = extent.Union(BodyOps.Bounds(bodies[i]));
+                    }
+                    var seen = rays.Seen(directions: 64, spacing: Math.Max(extent.LongestSide / 300, 5e-4));
+                    int before = bodies.Count;
+                    for (int i = solids - 1; i >= 0; i--)
+                        if (!seen.Contains(i) && seen.Count > 0)
+                        {
+                            bodies.RemoveAt(i);
+                            instances.RemoveAt(i);
+                        }
+                    result.InsideParts = before - bodies.Count;
+                    UI.PageLog.Write($"  iç parçalar: {before - bodies.Count} gövde dışarıdan görünmüyor, sarmaya alınmadı ({rays.Triangles} üçgen)");
+                    Lap("görünürlük");
+                }
                 if (options.MinPartSize > 0)
                 {
                     // Small parts (screws, nuts, washers) are left out; the holes they sit in are closed instead.
@@ -280,6 +337,8 @@ namespace GeoSimplifier.SolidWorks
                 }
                 Lap("toplama");
                 result.SourceBodies = bodies.Count;
+                // Nothing the wrap adds may reach out of the model: the result is checked against this at the end.
+                var sourceLimit = Grown(bodies.Aggregate(Core.Geometry.Aabb.Empty, (box, b) => box.Union(BodyOps.AnyBounds(b))));
                 if (options.FillThreads)
                 {
                     var threads = new ThreadFiller(ops);
@@ -327,7 +386,7 @@ namespace GeoSimplifier.SolidWorks
                     // The preview shows the plugs cut exactly to the holes, as OK makes them (rough boxes in their
                     // place looked like slabs much larger than the model). They are kept per limit, so going back to
                     // a value tried before is instant.
-                    string plugKey = $"{source.GetPathName()}|{source.GetTitle()}|{exclusions?.Key}|{bodies.Count}|{options.MaxEmbossHeight:R}";
+                    string plugKey = $"{source.GetPathName()}|{source.GetTitle()}|{exclusions?.Key}|{bodies.Count}|{options.MaxEmbossHeight:R}|{options.MinPartSize:R}|{options.SurfaceShell}";
                     if (plugKey != _plugKey)
                     {
                         _plugsByLimit.Clear();
@@ -363,7 +422,9 @@ namespace GeoSimplifier.SolidWorks
                     for (int i = 0; i < parts.Count; i++)
                     {
                         Report("kap içleri dolduruluyor", 25, 40, i, parts.Count);
-                        var insides = ops.CoveredInsides(parts[i], bodies, 1e-6);
+                        var partLimit = Grown(BodyOps.AnyBounds(parts[i]));
+                        var insides = ops.CoveredInsides(parts[i], bodies, 1e-6)
+                            .Where(p => !Outside(BodyOps.AnyBounds(p), partLimit)).ToList();
                         if (insides.Count == 0)
                             continue;
                         bodies.AddRange(insides);
@@ -379,7 +440,7 @@ namespace GeoSimplifier.SolidWorks
                 // A plugs-only preview leaves the bodies unplugged (only flattened), so their union can be reused.
                 List<IBody2> original;
                 string unionKey = options.Preview && !bagOnly
-                    ? $"{source.GetPathName()}|{source.GetTitle()}|{exclusions?.Key}|{bodies.Count}|{options.MaxEmbossHeight:R}"
+                    ? $"{source.GetPathName()}|{source.GetTitle()}|{exclusions?.Key}|{bodies.Count}|{options.MaxEmbossHeight:R}|{options.MinPartSize:R}|{options.SurfaceShell}"
                     : null;
                 if (bagOnly)
                     original = bodies;
@@ -504,6 +565,12 @@ namespace GeoSimplifier.SolidWorks
                         UI.PageLog.Write($"  {lumps.Count - kept.Count} küçük parça atıldı");
                     lumps = kept;
                 }
+                var outside = lumps.Where(l => Outside(BodyOps.AnyBounds(l), sourceLimit)).ToList();
+                if (outside.Count > 0)
+                {
+                    UI.PageLog.Write($"  UYARI: {outside.Count} sonuç gövdesi modelin kutusunun dışına taşıyor");
+                    result.Notes.Add("Uyarı: sonuç modelin dışına taşıyor; lütfen kontrol edin.");
+                }
                 result.Bodies = lumps;
                 // The translucent envelope is lifted off the model's faces when MakeOffset works. On installations where
                 // it fails a plain copy is drawn on the faces; it shows streaks, but the envelope stays visible.
@@ -600,7 +667,7 @@ namespace GeoSimplifier.SolidWorks
                     var faces = ((placed?.GetFaces() as object[]) ?? new object[0]).OfType<IFace2>().ToList();
                     var visibility = new Core.Geometry.FaceVisibility();
                     for (int i = 0; i < faces.Count; i++)
-                        visibility.AddFace(i, (float[])faces[i].GetTessTriangles(true) ?? new float[0], (float[])faces[i].GetTessNorms(), samples: 4);
+                        visibility.AddFace(i, faces[i].GetTessTriangles(true) as float[] ?? new float[0], faces[i].GetTessNorms() as float[], samples: 4);
                     var box = BodyOps.Bounds(placed);
                     var visible = visibility.Visible(Math.Max(1e-5, (box.Max - box.Min).Length * 2e-5));
                     total += faces.Count;

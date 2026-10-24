@@ -138,6 +138,26 @@ namespace GeoSimplifier.Probe
                 Console.WriteLine($"Açıldı: {path} (hata {errors}, uyarı {warnings})");
                 return 0;
             }
+            int namedView = Array.IndexOf(args, "--named-view");
+            if (namedView >= 0 && namedView + 1 < args.Length)
+            {
+                // --named-view 1|3|7: front, right, isometric (swStandardViews_e), zoomed to fit.
+                var md = (IModelDoc2)swApp.ActiveDoc;
+                md.ShowNamedView2("", int.Parse(args[namedView + 1]));
+                md.ViewZoomtofit2();
+                md.GraphicsRedraw2();
+                return 0;
+            }
+            if (Array.IndexOf(args, "--bodies") >= 0)
+            {
+                // The active part's bodies: kind, faces, volume, box.
+                var pd = (IPartDoc)swApp.ActiveDoc;
+                Console.WriteLine(((IModelDoc2)pd).GetTitle());
+                foreach (int kind in new[] { 0, 1 })
+                    foreach (IBody2 b in (object[])pd.GetBodies2(kind, true) ?? new object[0])
+                        Console.WriteLine($"  {(kind == 0 ? "katı" : "yüzey")}: {((object[])b.GetFaces()).Length} yüz, hacim {((double[])b.GetMassProperties(1))?[3] * 1e9:F0} mm³, kutu {Box((double[])b.GetBodyBox())}");
+                return 0;
+            }
             if (Array.IndexOf(args, "--threads") >= 0)
             {
                 // Lists the leaf components of the active assembly with their faces by surface type, to find modeled

@@ -29,6 +29,12 @@
         /// </summary>
         public bool FillThreads { get; set; } = true;
 
+        /// <summary>
+        /// The result is wanted as its outer skin only (surface bodies): parts no ray from outside reaches are then
+        /// left out from the start. A solid result keeps them, so its inside stays filled where they were.
+        /// </summary>
+        public bool SurfaceShell { get; set; }
+
         /// <summary>Fill closed internal cavities so the result is solid inside.</summary>
         public bool FillCavities { get; set; } = true;
 

@@ -254,9 +254,10 @@ namespace GeoSimplifier.SolidWorks.UI
             FillCavities = _fillCavitiesBox.Checked,
             MaxEmbossHeight = _embossValue,
             MinPartSize = _smallPartsValue,
+            SurfaceShell = _surfaceShellBox.Checked,
         };
 
-        private string Key(ShrinkWrapOptions o) => $"{o.GapWidth:R}|{o.FillCavities}|{o.MaxEmbossHeight:R}|{_exclusions.Key}";
+        private string Key(ShrinkWrapOptions o) => $"{o.GapWidth:R}|{o.FillCavities}|{o.MaxEmbossHeight:R}|{o.MinPartSize:R}|{o.SurfaceShell}|{_exclusions.Key}";
 
         /// <summary>Recomputes the wrap for the current settings and shows what it adds.</summary>
         private void UpdatePreview()
@@ -483,6 +484,7 @@ namespace GeoSimplifier.SolidWorks.UI
             FillCavities = _fillCavities,
             MaxEmbossHeight = _embossHeight,
             MinPartSize = _smallParts,
+            SurfaceShell = _surfaceShell,
         };
 
         public void OnCheckboxCheck(int Id, bool Checked)

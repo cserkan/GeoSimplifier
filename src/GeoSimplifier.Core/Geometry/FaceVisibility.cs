@@ -13,6 +13,7 @@ namespace GeoSimplifier.Core.Geometry
     {
         private readonly List<Vec3> _a = new List<Vec3>(), _b = new List<Vec3>(), _c = new List<Vec3>();
         private readonly List<int> _face = new List<int>();
+        private readonly HashSet<int> _unsampled = new HashSet<int>();
         private readonly List<(Vec3 point, Vec3 normal, int face)> _samples = new List<(Vec3, Vec3, int)>();
         private Node[] _nodes;
         private int[] _order;
@@ -38,7 +39,13 @@ namespace GeoSimplifier.Core.Geometry
                 _c.Add(new Vec3(triangles[9 * t + 6], triangles[9 * t + 7], triangles[9 * t + 8]));
                 _face.Add(face);
             }
-            if (count == 0 || normals == null || normals.Count < 9 * count)
+            if (normals == null || normals.Count < 9 * count)
+            {
+                // Without normals the direction of "out" is unknown: the face is kept as visible.
+                _unsampled.Add(face);
+                return;
+            }
+            if (count == 0)
                 return;
             int step = Math.Max(1, count / Math.Max(1, samples));
             for (int t = 0, n = 0; t < count && n < samples; t += step, n++)
@@ -70,7 +77,7 @@ namespace GeoSimplifier.Core.Geometry
                         return;
                     }
             });
-            var visible = new HashSet<int>();
+            var visible = new HashSet<int>(_unsampled);
             for (int s = 0; s < _samples.Count; s++)
                 if (escaped[s])
                     visible.Add(_samples[s].face);

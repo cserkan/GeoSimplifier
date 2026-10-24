@@ -90,9 +90,28 @@ namespace GeoSimplifier.SolidWorks.Geometry
                     continue;
                 var centre = axis.origin + axis.dir * ((t0 + t1) / 2);
                 var cylinder = _ops.SolidCylinder(centre, axis.dir, rMax, t1 - t0);
+                // The cylinder covers the thread's own faces, so it lies within the body's box; one that does not
+                // came from a misread band and is not used.
+                var limit = BodyOps.AnyBounds(body);
+                double m = Math.Max(5e-4, limit.LongestSide * 0.02);
+                var cb = BodyOps.AnyBounds(cylinder);
+                if (cylinder != null && (cb.Min.X < limit.Min.X - m || cb.Min.Y < limit.Min.Y - m || cb.Min.Z < limit.Min.Z - m ||
+                                         cb.Max.X > limit.Max.X + m || cb.Max.Y > limit.Max.Y + m || cb.Max.Z > limit.Max.Z + m))
+                {
+                    UI.PageLog.Write($"  diş silindiri gövdenin kutusundan taştı, kullanılmadı (r {rMax * 1000:F1} mm, boy {(t1 - t0) * 1000:F1} mm)");
+                    continue;
+                }
                 var united = cylinder == null ? null : _ops.Union(current, cylinder);
                 if (united == null)
                     continue;
+                // Filling a thread adds only its grooves, a small part of the cylinder; a cylinder that adds mostly
+                // air was put where there is no thread (a housing's feet once got two large round lumps).
+                double added = Volume(united) - Volume(current), whole = Volume(cylinder);
+                if (whole <= 0 || added > 0.35 * whole)
+                {
+                    UI.PageLog.Write($"  diş silindiri çoğunlukla boşluğa denk geldi, kullanılmadı (r {rMax * 1000:F1} mm, eklenen %{100 * added / Math.Max(whole, 1e-12):F0})");
+                    continue;
+                }
                 current = united;
                 Filled++;
                 foreach (var b in band) used.Add(b.face);
@@ -101,6 +120,8 @@ namespace GeoSimplifier.SolidWorks.Geometry
         }
 
         private static int Identity(IFace2 f) => ((ISurface)f.GetSurface()).Identity();
+
+        private static double Volume(IBody2 b) => ((double[])b?.GetMassProperties(1))?[3] ?? 0;
 
         /// <summary>Points on the face: its surface evaluated on a grid over its parameter range.</summary>
         private static List<Vec3> Sample(IFace2 face)
