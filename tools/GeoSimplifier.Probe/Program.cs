@@ -25,6 +25,12 @@ namespace GeoSimplifier.Probe
                 Console.WriteLine("SOLIDWORKS kapatıldı.");
                 return 0;
             }
+            if (Array.IndexOf(args, "--close-all") >= 0)
+            {
+                // Closes every document without saving, keeping SOLIDWORKS open.
+                swApp.CloseAllDocuments(true);
+                return 0;
+            }
             if (Array.IndexOf(args, "--local-ops") >= 0)
             {
                 // Runs SwAddin.TestLocalOps inside SOLIDWORKS; results go to %TEMP%\GeoSimplifier.log.
