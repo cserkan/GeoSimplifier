@@ -183,6 +183,44 @@ namespace GeoSimplifier.SolidWorks
             UI.PageLog.Write($"  delikler: {bodies.Count} gövde, {reused} tanesi tekrar eden parçadan taşındı");
         }
 
+        /// <summary>
+        /// Leaving hidden faces out splits the visible ones into islands, each a surface body of its own (126 on a
+        /// motor). A hidden face that touches two or more islands is kept, joining them, as long as that helps.
+        /// </summary>
+        private static void ConnectIslands(List<IFace2> faces, HashSet<int> visible)
+        {
+            var index = new Dictionary<IFace2, int>();
+            for (int i = 0; i < faces.Count; i++)
+                index[faces[i]] = i;
+            var neighbours = new List<int>[faces.Count];
+            for (int i = 0; i < faces.Count; i++)
+            {
+                neighbours[i] = new List<int>();
+                foreach (IEdge edge in (object[])faces[i].GetEdges() ?? new object[0])
+                    foreach (IFace2 other in (object[])edge.GetTwoAdjacentFaces2() ?? new object[0])
+                        if (other != null && index.TryGetValue(other, out int j) && j != i && !neighbours[i].Contains(j))
+                            neighbours[i].Add(j);
+            }
+            var parent = Enumerable.Range(0, faces.Count).ToArray();
+            int Find(int x) { while (parent[x] != x) x = parent[x] = parent[parent[x]]; return x; }
+            foreach (int i in visible)
+                foreach (int j in neighbours[i])
+                    if (visible.Contains(j)) parent[Find(i)] = Find(j);
+            for (bool changed = true; changed;)
+            {
+                changed = false;
+                for (int h = 0; h < faces.Count; h++)
+                {
+                    if (visible.Contains(h)) continue;
+                    var islands = neighbours[h].Where(visible.Contains).Select(Find).Distinct().ToList();
+                    if (islands.Count < 2) continue;
+                    visible.Add(h);
+                    foreach (int r in islands) parent[r] = Find(h);
+                    changed = true;
+                }
+            }
+        }
+
         /// <summary>A box grown by a small margin: 0.5 mm or 2 % of its longest side.</summary>
         private static Core.Geometry.Aabb Grown(Core.Geometry.Aabb box)
         {
@@ -670,6 +708,7 @@ namespace GeoSimplifier.SolidWorks
                         visibility.AddFace(i, faces[i].GetTessTriangles(true) as float[] ?? new float[0], faces[i].GetTessNorms() as float[], samples: 4);
                     var box = BodyOps.Bounds(placed);
                     var visible = visibility.Visible(Math.Max(1e-5, (box.Max - box.Min).Length * 2e-5));
+                    ConnectIslands(faces, visible);
                     total += faces.Count;
                     var sheets = new List<IBody2>();
                     for (int i = 0; i < faces.Count; i++)
@@ -707,13 +746,25 @@ namespace GeoSimplifier.SolidWorks
                     _swApp.CloseDoc(temp.GetTitle());
                 progress.End();
             }
-            UI.PageLog.Write($"  dış kabuk: {result.Bodies.Count} gövde → {shells.Count(s => s.GetType() == (int)swBodyType_e.swSheetBody)} yüzey gövdesi, " +
-                             $"{kept}/{total} yüz görünüyor ({watch.Elapsed.TotalSeconds:F1} sn)");
+            // Small surface bodies left over (bits of screw heads and rings seen through gaps) are dropped: below
+            // SmallShellPart of the model's size (Serkan picked them with "select bodies by size" at 14 %). The
+            // largest one always stays.
+            var model = shells.Aggregate(Core.Geometry.Aabb.Empty, (b, s) => b.Union(BodyOps.AnyBounds(s)));
+            double modelSize = (model.Max - model.Min).Length;
+            var largest = shells.OrderByDescending(s => (BodyOps.AnyBounds(s).Max - BodyOps.AnyBounds(s).Min).Length).FirstOrDefault();
+            int before = shells.Count;
+            shells = shells.Where(s => s == largest || s.GetType() != (int)swBodyType_e.swSheetBody ||
+                                       (BodyOps.AnyBounds(s).Max - BodyOps.AnyBounds(s).Min).Length >= SmallShellPart * modelSize).ToList();
+            UI.PageLog.Write($"  dış kabuk: {result.Bodies.Count} gövde → {shells.Count(s => s.GetType() == (int)swBodyType_e.swSheetBody)} yüzey gövdesi " +
+                             $"({before - shells.Count} küçük parça atıldı), {kept}/{total} yüz görünüyor ({watch.Elapsed.TotalSeconds:F1} sn)");
             return shells;
         }
         // CreateBodiesFromSheets2 option that knits into sheet bodies instead of closing them into solids
         // (found by trying: 0 and 2 gave solids).
         private const int SheetBodiesOnly = 1;
+
+        // Surface bodies of the outer shell smaller than this share of the model's size are dropped.
+        private const double SmallShellPart = 0.14;
 
         private IPartDoc NewPart()
         {
