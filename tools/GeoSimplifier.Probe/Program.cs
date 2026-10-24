@@ -648,7 +648,7 @@ namespace GeoSimplifier.Probe
             // --small 5 leaves out parts smaller than 5 % of the model's size.
             int smallAt = Array.IndexOf(args, "--small");
             double smallMm = smallAt >= 0 && smallAt + 1 < args.Length ? double.Parse(args[smallAt + 1], CultureInfo.InvariantCulture) : 0;
-            var result = service.Compute(doc, new ShrinkWrapOptions { GapWidth = gapMm / 1000, FillCavities = true, MaxEmbossHeight = embossMm / 1000, MinPartPercent = smallMm }, exclusions);
+            var result = service.Compute(doc, new ShrinkWrapOptions { GapWidth = gapMm / 1000, FillCavities = true, MaxEmbossHeight = embossMm / 1000, MinPartPercent = smallMm, ForceSingleBody = Array.IndexOf(args, "--single") >= 0 }, exclusions);
             Console.WriteLine(result.Summary());
             foreach (var line in result.Log)
                 Console.WriteLine("  " + line);

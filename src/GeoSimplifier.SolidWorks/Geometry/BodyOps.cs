@@ -343,18 +343,19 @@ namespace GeoSimplifier.SolidWorks.Geometry
             Aabb ba = Bounds(a), bb = Bounds(b);
             var min = new double[3];
             var max = new double[3];
-            int separated = 0;
+            int separated = 0, apartAxis = -1;
             for (int k = 0; k < 3; k++)
             {
                 double lo = Math.Max(ba.Min[k], bb.Min[k]), hi = Math.Min(ba.Max[k], bb.Max[k]);
                 if (lo > hi)
                 {
-                    // Apart along this axis: span both bodies so the faces that look at each other are reached.
+                    // Apart along this axis: the gap between the boxes, widened below into the bodies (see below).
                     if (lo - hi > gapWidth)
                         return null;
                     separated++;
-                    min[k] = Math.Min(ba.Min[k], bb.Min[k]);
-                    max[k] = Math.Max(ba.Max[k], bb.Max[k]);
+                    apartAxis = k;
+                    min[k] = hi;
+                    max[k] = lo;
                 }
                 else
                 {
@@ -366,7 +367,30 @@ namespace GeoSimplifier.SolidWorks.Geometry
             }
             if (separated == 0)
                 return InterleavedBridge(a, b, ba, bb, min, max, gapWidth, tolerance);
-            return BridgeIn(a, b, min, max);
+            if (separated > 1)
+            {
+                // Apart diagonally: the old way, the boxes spanned whole (rare).
+                for (int k = 0; k < 3; k++)
+                    if (Math.Max(ba.Min[k], bb.Min[k]) > Math.Min(ba.Max[k], bb.Max[k]))
+                    {
+                        min[k] = Math.Min(ba.Min[k], bb.Min[k]);
+                        max[k] = Math.Max(ba.Max[k], bb.Max[k]);
+                    }
+                return BridgeIn(a, b, min, max);
+            }
+            // Apart along one axis: the air in the band between the boxes, reaching into each body only as deep as
+            // needed to meet its facing surface (widened step by step). Spanning both bodies whole filled the air
+            // around them too: on a press the motor on top disappeared in a block.
+            double gap0 = min[apartAxis], gap1 = max[apartAxis];
+            double outer0 = Math.Min(ba.Min[apartAxis], bb.Min[apartAxis]), outer1 = Math.Max(ba.Max[apartAxis], bb.Max[apartAxis]);
+            for (double d = Math.Max(gap1 - gap0, 1e-3); ; d *= 2)
+            {
+                min[apartAxis] = Math.Max(outer0, gap0 - d);
+                max[apartAxis] = Math.Min(outer1, gap1 + d);
+                var bridge = BridgeIn(a, b, min, max);
+                if (bridge != null || d >= gapWidth || (min[apartAxis] <= outer0 && max[apartAxis] >= outer1))
+                    return bridge;
+            }
         }
 
         /// <summary>
