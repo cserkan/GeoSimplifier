@@ -106,6 +106,9 @@ namespace GeoSimplifier.SolidWorks
         // faces) redrawing it took 5 s of a preview's 11.
         private const int LargeModelFaces = 3000;
 
+        // Lids the preview draws at most (the largest ones).
+        private const int MaxPreviewLids = 800;
+
         // Exact preview plugs of the previewed document for each limit tried.
         private string _plugKey;
         private readonly Dictionary<double, (List<IBody2> plugs, List<double> tooWide)> _plugsByLimit =
@@ -258,6 +261,39 @@ namespace GeoSimplifier.SolidWorks
             return all;
         }
 
+        /// <summary>
+        /// The bodies some ray from outside reaches first. Repeated instances of a part (same rotation) reuse its
+        /// triangles, moved into place, so the tessellation is read once per part.
+        /// </summary>
+        private HashSet<int> SeenFromOutside(List<IBody2> bodies, List<(string key, double[] transform)> instances, Action<int, int> report)
+        {
+            var rays = new Core.Geometry.OutsideRays();
+            var cache = new Dictionary<string, (double[] t, List<Core.Geometry.Vec3> triangles)>();
+            var extent = Core.Geometry.Aabb.Empty;
+            for (int i = 0; i < bodies.Count; i++)
+            {
+                report(i, bodies.Count);
+                var (key, t) = i < instances.Count ? instances[i] : (null, null);
+                string k = key == null || t == null || t.Length < 13 ? null
+                    : key + "|" + string.Join(",", t.Take(9).Concat(new[] { t[12] }).Select(v => Math.Round(v, 9).ToString("R")));
+                List<Core.Geometry.Vec3> triangles;
+                if (k != null && cache.TryGetValue(k, out var c))
+                {
+                    var shift = new Core.Geometry.Vec3(t[9] - c.t[9], t[10] - c.t[10], t[11] - c.t[11]);
+                    triangles = c.triangles.Select(p => p + shift).ToList();
+                }
+                else
+                {
+                    triangles = BodyOps.Triangles(new[] { bodies[i] });
+                    if (k != null) cache[k] = (t, triangles);
+                }
+                rays.AddBody(i, triangles);
+                extent = extent.Union(BodyOps.Bounds(bodies[i]));
+            }
+            // Coarser than for the shell: a part missed here only goes without lids in the preview.
+            return rays.Seen(directions: 32, spacing: Math.Max(extent.LongestSide / 250, 5e-4), maxRaysPerSide: 250);
+        }
+
         /// <summary>A box grown by a small margin: 0.5 mm or 2 % of its longest side.</summary>
         private static Core.Geometry.Aabb Grown(Core.Geometry.Aabb box)
         {
@@ -339,8 +375,15 @@ namespace GeoSimplifier.SolidWorks
             // Progress within a long step, from one percentage to the next: once per body, which costs nothing next
             // to the booleans.
             int reports = 0;
+            double lastBeat = 0;
             void Report(string title, int from, int to, int done, int total)
             {
+                // A heartbeat in the log once a minute, so a long run can be told apart from a stuck one.
+                if (watch.Elapsed.TotalSeconds - lastBeat >= 60)
+                {
+                    lastBeat = watch.Elapsed.TotalSeconds;
+                    UI.PageLog.Write($"  nabız: {title} {done}/{total}, {lastBeat:F0} sn");
+                }
                 // The booleans leave temporary bodies behind that SOLIDWORKS keeps until their COM objects are
                 // released (19.7 GB on a 117-body motor); collecting now and then releases them on the way.
                 if (++reports % 20 == 0)
@@ -358,7 +401,9 @@ namespace GeoSimplifier.SolidWorks
                 var ops = new BodyOps(_swApp) { Trace = System.Environment.GetEnvironmentVariable("GEOSIMPLIFIER_TRACE") == "1" };
 
                 // Surface bodies are wrapped as they are, as thin solids (0.1 mm); they are not sewn together.
-                var sheets = BodyCollector.CopySheets(source, exclusions);
+                // The lid preview does not use them, so it leaves them out (1015 surfaces took seconds to thicken).
+                bool lidPreview = options.Preview && options.GapWidth > 0 && !options.Bag;
+                var sheets = lidPreview ? new List<IBody2>() : BodyCollector.CopySheets(source, exclusions);
                 if (sheets.Count > 0)
                 {
                     var thick = ops.ThickenSheets(sheets, 1e-4, out int failed);
@@ -416,13 +461,22 @@ namespace GeoSimplifier.SolidWorks
                 result.SourceBodies = bodies.Count;
                 // Nothing the wrap adds may reach out of the model: the result is checked against this at the end.
                 var sourceLimit = Grown(bodies.Aggregate(Core.Geometry.Aabb.Empty, (box, b) => box.Union(BodyOps.AnyBounds(b))));
-                if (options.Preview && options.GapWidth > 0 && !options.Bag)
+                if (lidPreview)
                 {
                     // The preview does no boolean at all (on a 3145-body assembly it took 46 minutes): it draws a
                     // flat lid on the mouth of every hole the wrap closes, bounded by the mouth's own edges. Bridges
                     // between parts and filled insides are only made on OK.
+                    // Every part gets lids: leaving out the parts no ray from outside reaches took longer (97 s to read
+                    // the tessellation of 2130 bodies) than it saved in drawing.
                     var caps = MouthCaps(ops, bodies, instances, options.GapWidth, (i, n) => Report("delik ağızları bulunuyor", 10, 90, i, n));
                     Lap("kapaklar");
+                    // Drawing a lid costs SOLIDWORKS about 25 ms whatever its size (4000 lids took 100 s), and on a
+                    // large assembly most are too small to be seen: only the largest MaxPreviewLids are drawn.
+                    if (caps.Count > MaxPreviewLids)
+                    {
+                        UI.PageLog.Write($"  önizlemede en büyük {MaxPreviewLids} kapak çiziliyor ({caps.Count} kapaktan)");
+                        caps = caps.OrderByDescending(c => (BodyOps.AnyBounds(c).Max - BodyOps.AnyBounds(c).Min).Length).Take(MaxPreviewLids).ToList();
+                    }
                     result.IsPreview = true;
                     result.Added = caps;
                     result.HolesClosed = caps.Count;

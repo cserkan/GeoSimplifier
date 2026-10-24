@@ -302,6 +302,9 @@ namespace GeoSimplifier.SolidWorks.UI
                 double collected = watch.Elapsed.TotalSeconds;
                 _display = _display ?? new TempBodyPreview(_source);
                 bool shown = true;
+                // Thousands of lids are drawn one by one; the view is redrawn once at the end instead of after each.
+                var view = _source.ActiveView as IModelView;
+                if (view != null) view.EnableGraphicsUpdate = false;
                 // The quick preview's bodies are made for it alone (OK computes again), so they are moved, not copied.
                 foreach (var body in _preview.Envelope)
                     shown &= _display.Show(body, EnvelopeColor, new[] { 0.0, 0.47, 0.84 }, transparency: 0.65, inPlace: _preview.IsPreview);
@@ -309,6 +312,7 @@ namespace GeoSimplifier.SolidWorks.UI
                     shown &= _display.Show(body, AddedColor, new[] { 1.0, 0.5, 0.0 }, transparency: 0, inPlace: _preview.IsPreview);
                 foreach (var body in _preview.Removed)
                     shown &= _display.Show(body, RemovedColor, new[] { 0.85, 0.1, 0.1 }, transparency: 0);
+                if (view != null) view.EnableGraphicsUpdate = true;
                 double drawnEnvelope = watch.Elapsed.TotalSeconds;
                 _source.GraphicsRedraw2();
                 PageLog.Write($"  süre: hesap {computed:F2}, bellek {collected - computed:F2}, çizim {drawnEnvelope - collected:F2}, yenileme {watch.Elapsed.TotalSeconds - drawnEnvelope:F2} sn");

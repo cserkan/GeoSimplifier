@@ -45,6 +45,29 @@ namespace GeoSimplifier.Probe
                 Console.WriteLine($"Görüntü: {saved} ({args[image + 1]})");
                 return 0;
             }
+            if (Array.IndexOf(args, "--sheets-by-part") >= 0)
+            {
+                // Which parts of the active assembly hold surface (sheet) bodies: per part file, instances and bodies.
+                var asmDoc = (IAssemblyDoc)swApp.ActiveDoc;
+                var rows = new System.Collections.Generic.Dictionary<string, (int instances, int sheets, int solids)>();
+                int leaves = 0, solidTotal = 0, sheetTotal = 0;
+                foreach (IComponent2 comp in (object[])asmDoc.GetComponents(false) ?? new object[0])
+                {
+                    if (comp.GetSuppression2() == 0 || ((object[])comp.GetChildren())?.Length > 0) continue;
+                    leaves++;
+                    int sh = ((object[])comp.GetBodies3(1, out _))?.Length ?? 0;
+                    int so = ((object[])comp.GetBodies3(0, out _))?.Length ?? 0;
+                    solidTotal += so; sheetTotal += sh;
+                    if (sh == 0) continue;
+                    string key = System.IO.Path.GetFileName(comp.GetPathName());
+                    rows.TryGetValue(key, out var r);
+                    rows[key] = (r.instances + 1, r.sheets + sh, r.solids + so);
+                }
+                Console.WriteLine($"Yaprak bileşen {leaves}, katı gövde {solidTotal}, yüzey gövdesi {sheetTotal}, yüzeyli parça dosyası {rows.Count}");
+                foreach (var kv in rows.OrderByDescending(r => r.Value.sheets).Take(20))
+                    Console.WriteLine($"  {kv.Key}: {kv.Value.instances} adet, {kv.Value.sheets} yüzey gövdesi, {kv.Value.solids} katı gövde");
+                return 0;
+            }
             if (Array.IndexOf(args, "--hide") >= 0)
             {
                 // Keeps SOLIDWORKS off the screen while tests run in the background.
