@@ -35,6 +35,12 @@
         /// </summary>
         public bool SurfaceShell { get; set; }
 
+        /// <summary>
+        /// Unite all bodies into as few as possible (and bridge the gaps between them). Off, each body keeps its own
+        /// plugs and filled insides but is not united with the others: many bodies, much faster.
+        /// </summary>
+        public bool ForceSingleBody { get; set; }
+
         /// <summary>Fill closed internal cavities so the result is solid inside.</summary>
         public bool FillCavities { get; set; } = true;
 

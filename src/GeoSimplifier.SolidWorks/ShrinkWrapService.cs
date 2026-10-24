@@ -44,6 +44,9 @@ namespace GeoSimplifier.SolidWorks
         /// <summary>Small parts left out (<see cref="ShrinkWrapOptions.MinPartSize"/>).</summary>
         public int SmallPartsRemoved;
 
+        /// <summary>"Tek gövdeye zorla" was off: many bodies are expected.</summary>
+        public bool ManyBodiesWanted;
+
         /// <summary>Parts no ray from outside reaches, left out of the wrap (their space is filled).</summary>
         public int InsideParts;
 
@@ -80,7 +83,7 @@ namespace GeoSimplifier.SolidWorks
                           (Bridges > 0 ? $", {Bridges} boşluk köprülendi" : "") +
                           (Sheets > 0 ? $", {Sheets} yüzey gövdesi sarıldı" : "") + $" ({Seconds:F1} sn).";
             var notes = new List<string>(Notes);
-            if (Bodies.Count > 1 && !IsPreview)
+            if (Bodies.Count > 1 && !IsPreview && !ManyBodiesWanted)
                 notes.Add("Birbirinden uzak parçalar var; tek gövde için kapatma genişliğini artırın.");
             if (FailedSheets > 0)
                 notes.Add($"{FailedSheets} yüzey gövdesi kalınlaştırılamadığı için sarmaya katılmadı.");
@@ -265,7 +268,8 @@ namespace GeoSimplifier.SolidWorks
         /// The bodies some ray from outside reaches first. Repeated instances of a part (same rotation) reuse its
         /// triangles, moved into place, so the tessellation is read once per part.
         /// </summary>
-        private HashSet<int> SeenFromOutside(List<IBody2> bodies, List<(string key, double[] transform)> instances, Action<int, int> report)
+        private HashSet<int> SeenFromOutside(List<IBody2> bodies, List<(string key, double[] transform)> instances, Action<int, int> report,
+                                             List<List<Core.Geometry.Vec3>> trianglesOut = null)
         {
             var rays = new Core.Geometry.OutsideRays();
             var cache = new Dictionary<string, (double[] t, List<Core.Geometry.Vec3> triangles)>();
@@ -288,10 +292,68 @@ namespace GeoSimplifier.SolidWorks
                     if (k != null) cache[k] = (t, triangles);
                 }
                 rays.AddBody(i, triangles);
+                trianglesOut?.Add(triangles);
                 extent = extent.Union(BodyOps.Bounds(bodies[i]));
             }
             // Coarser than for the shell: a part missed here only goes without lids in the preview.
             return rays.Seen(directions: 32, spacing: Math.Max(extent.LongestSide / 250, 5e-4), maxRaysPerSide: 250);
+        }
+
+        /// <summary>The twelve triangles of a box's faces.</summary>
+        private static List<Core.Geometry.Vec3> BoxTriangles(Core.Geometry.Aabb b)
+        {
+            Core.Geometry.Vec3 P(int i) => new Core.Geometry.Vec3((i & 1) == 0 ? b.Min.X : b.Max.X, (i & 2) == 0 ? b.Min.Y : b.Max.Y, (i & 4) == 0 ? b.Min.Z : b.Max.Z);
+            var t = new List<Core.Geometry.Vec3>();
+            void Quad(int a, int c, int d, int e) => t.AddRange(new[] { P(a), P(c), P(d), P(a), P(d), P(e) });
+            Quad(0, 1, 3, 2); Quad(4, 5, 7, 6); Quad(0, 1, 5, 4); Quad(2, 3, 7, 6); Quad(0, 2, 6, 4); Quad(1, 3, 7, 5);
+            return t;
+        }
+
+        /// <summary>
+        /// For a solid result of a large assembly: the parts no ray from outside reaches are taken out of the wrap's
+        /// work (hole closing, insides, uniting) and stand in as their boxes, which unite quickly. A box is used only
+        /// where it stays hidden too (rays from outside still reach nothing of it); otherwise the part stays as it is.
+        /// So the inside stays solid where they were and the outside does not change. Returns the boxes.
+        /// </summary>
+        private List<IBody2> HiddenPartsAsBoxes(BodyOps ops, List<IBody2> bodies, List<(string key, double[] transform)> instances,
+                                                Action<int, int> report)
+        {
+            int solids = instances.Count;
+            var triangles = new List<List<Core.Geometry.Vec3>>();
+            var seen = SeenFromOutside(bodies.Take(solids).ToList(), instances, report, triangles);
+            var hidden = Enumerable.Range(0, solids).Where(i => !seen.Contains(i)).ToList();
+            if (hidden.Count == 0)
+                return new List<IBody2>();
+            var check = new Core.Geometry.OutsideRays();
+            var extent = Core.Geometry.Aabb.Empty;
+            foreach (int i in seen)
+            {
+                check.AddBody(i, triangles[i]);
+                extent = extent.Union(BodyOps.Bounds(bodies[i]));
+            }
+            var boxes = hidden.Select(i => BodyOps.TightBounds(bodies[i])).ToList();
+            for (int j = 0; j < hidden.Count; j++)
+                check.AddBody(solids + j, BoxTriangles(boxes[j]));
+            var seenBoxes = check.Seen(directions: 32, spacing: Math.Max(extent.LongestSide / 250, 5e-4), maxRaysPerSide: 250);
+            var proxies = new List<IBody2>();
+            var replaced = new List<int>();
+            for (int j = 0; j < hidden.Count; j++)
+            {
+                if (seenBoxes.Contains(solids + j))
+                    continue;
+                var box = ops.Box(boxes[j]);
+                if (box == null)
+                    continue;
+                proxies.Add(box);
+                replaced.Add(hidden[j]);
+            }
+            foreach (int i in replaced.OrderByDescending(i => i))
+            {
+                bodies.RemoveAt(i);
+                instances.RemoveAt(i);
+            }
+            UI.PageLog.Write($"  iç parçalar: {hidden.Count} parça dışarıdan görünmüyor; {proxies.Count} tanesi kutusuyla temsil ediliyor, {hidden.Count - proxies.Count} tanesinin kutusu dışarıdan görüneceği için kendisi kaldı");
+            return proxies;
         }
 
         /// <summary>A box grown by a small margin: 0.5 mm or 2 % of its longest side.</summary>
@@ -461,6 +523,13 @@ namespace GeoSimplifier.SolidWorks
                 result.SourceBodies = bodies.Count;
                 // Nothing the wrap adds may reach out of the model: the result is checked against this at the end.
                 var sourceLimit = Grown(bodies.Aggregate(Core.Geometry.Aabb.Empty, (box, b) => box.Union(BodyOps.AnyBounds(b))));
+                var insideBoxes = new List<IBody2>();
+                if (!options.Preview && !options.SurfaceShell && options.FillCavities && instances.Count > 50)
+                {
+                    insideBoxes = HiddenPartsAsBoxes(ops, bodies, instances, (i, n) => Report("dışarıdan görünmeyen parçalar bulunuyor", 1, 8, i, n));
+                    result.InsideParts = insideBoxes.Count;
+                    Lap("iç parçalar");
+                }
                 if (lidPreview)
                 {
                     // The preview does no boolean at all (on a 3145-body assembly it took 46 minutes): it draws a
@@ -570,13 +639,34 @@ namespace GeoSimplifier.SolidWorks
                     for (int i = 0; i < parts.Count; i++)
                     {
                         Report("kap içleri dolduruluyor", 25, 40, i, parts.Count);
-                        var partLimit = Grown(BodyOps.AnyBounds(parts[i]));
+                        // Only parts that can hold an inside: hollow ones (much less volume than their box) and not
+                        // tiny ones. A plate, a block or a bolt has none worth filling; trying every part took 24
+                        // minutes on a 2130-body press.
+                        var partBox = BodyOps.AnyBounds(parts[i]);
+                        double boxVolume = partBox.Size.X * partBox.Size.Y * partBox.Size.Z;
+                        double partVolume = ((double[])parts[i].GetMassProperties(1))?[3] ?? 0;
+                        if (boxVolume <= 0 || partVolume > 0.6 * boxVolume || partBox.LongestSide < 0.01 * sourceLimit.LongestSide)
+                            continue;
+                        var partLimit = Grown(partBox);
                         var insides = ops.CoveredInsides(parts[i], bodies, 1e-6)
                             .Where(p => !Outside(BodyOps.AnyBounds(p), partLimit)).ToList();
                         if (insides.Count == 0)
                             continue;
-                        bodies.AddRange(insides);
                         cups++;
+                        if (options.ForceSingleBody)
+                        {
+                            bodies.AddRange(insides);
+                            continue;
+                        }
+                        // Without the union of all bodies an inside is united with its own part only.
+                        var filled = bodies[i];
+                        foreach (var inside in insides)
+                        {
+                            var united = ops.Union(filled, inside);
+                            if (united != null) filled = united;
+                            else bodies.Add(inside);
+                        }
+                        bodies[i] = filled;
                     }
                     result.Log.Add($"Kap içi dolgusu: {cups} parça.");
                     UI.PageLog.Write($"  kap içi dolgusu: {cups} parça");
@@ -592,11 +682,26 @@ namespace GeoSimplifier.SolidWorks
                     : null;
                 if (bagOnly)
                     original = bodies;
+                else if (!options.ForceSingleBody && !options.Preview)
+                {
+                    result.ManyBodiesWanted = true;
+                    // "Tek gövdeye zorla" off: the bodies are not united with each other (much faster on a large
+                    // assembly); each keeps its own plugs and filled insides, and the result has many bodies.
+                    original = bodies.Concat(insideBoxes).ToList();
+                }
                 else if (unionKey != null && unionKey == _unionKey)
                     original = _union;
                 else
                 {
                     original = ops.UnionAll(bodies, tolerance, (done, total) => Report("birleştiriliyor", 40, 60, done, total));
+                    if (insideBoxes.Count > 0)
+                    {
+                        // The boxes of the hidden parts: united with each other first (boxes unite quickly), then
+                        // the few blocks that leaves with the rest.
+                        var blocks = ops.UnionMany(insideBoxes);
+                        UI.PageLog.Write($"  iç kutular: {insideBoxes.Count} → {blocks.Count} blok");
+                        original = ops.UnionAll(original.Concat(blocks), tolerance, (done, total) => Report("iç bloklar ekleniyor", 55, 60, done, total));
+                    }
                     if (unionKey != null) { _unionKey = unionKey; _union = original; }
                 }
                 var lumps = new List<IBody2>(original);
@@ -606,7 +711,7 @@ namespace GeoSimplifier.SolidWorks
                 // (the offset bridge), and then it is found by subtracting the union, which is slow on large models.
                 var filledIn = new List<IBody2>();
 
-                if (options.GapWidth > 0 && lumps.Count > 1 && !bagOnly)
+                if (options.GapWidth > 0 && lumps.Count > 1 && !bagOnly && (options.ForceSingleBody || options.Preview))
                 {
                     progress.UpdateTitle("Shrink wrap: köprüler kuruluyor");
                     progress.UpdateProgress(60);
@@ -821,7 +926,9 @@ namespace GeoSimplifier.SolidWorks
                         visibility.AddFace(i, faces[i].GetTessTriangles(true) as float[] ?? new float[0], faces[i].GetTessNorms() as float[], samples: 4);
                     var box = BodyOps.Bounds(placed);
                     var visible = visibility.Visible(Math.Max(1e-5, (box.Max - box.Min).Length * 2e-5));
-                    ConnectIslands(faces, visible);
+                    // Islands of visible faces are joined into one surface only when one body is wanted.
+                    if (!result.ManyBodiesWanted)
+                        ConnectIslands(faces, visible);
                     total += faces.Count;
                     var sheets = new List<IBody2>();
                     for (int i = 0; i < faces.Count; i++)

@@ -37,6 +37,7 @@ namespace GeoSimplifier.SolidWorks.UI
         private const int SmallPartsId = 19;
         private const int SmallShellLabelId = 20;
         private const int SmallShellId = 21;
+        private const int SingleBodyId = 22;
 
         // Selection mark of the exclusion box, so its items are told apart from other selections.
         private const int ExcludeMark = 2;
@@ -51,6 +52,7 @@ namespace GeoSimplifier.SolidWorks.UI
         private static string _configurationName = "Simple";
         private static bool _surfaceShell;
         private static double _smallShellPercent = 14;
+        private static bool _forceSingleBody;
 
         private readonly ISldWorks _swApp;
         private readonly ShrinkWrapService _service;
@@ -82,6 +84,7 @@ namespace GeoSimplifier.SolidWorks.UI
         private IPropertyManagerPageLabel _smallShellLabel;
         private IPropertyManagerPageNumberbox _smallShellBox;
         private double _smallShellValue;
+        private IPropertyManagerPageCheckbox _singleBodyBox;
         private bool _ok;
         private IModelDoc2 _source;
         private WrapResult _preview;
@@ -154,6 +157,11 @@ namespace GeoSimplifier.SolidWorks.UI
             _smallPartsBox.SetRange2((int)swNumberboxUnitType_e.swNumberBox_Length, 0, 1, true, 0.001, 0.005, 0.0005);
             _smallPartsBox.Value = _smallParts;
             _smallPartsValue = _smallParts;
+
+            _singleBodyBox = (IPropertyManagerPageCheckbox)AddControl(group, SingleBodyId, swPropertyManagerPageControlType_e.swControlType_Checkbox,
+                "Tek gövdeye zorla",
+                "İşaretliyse bütün gövdeler birleştirilip tek gövde yapılmaya çalışılır (büyük montajlarda uzun sürer). İşaretsizse her gövde kendi delikleri ve iç dolgusuyla kalır, birbiriyle birleştirilmez: çok gövdeli ama çok daha hızlı.");
+            _singleBodyBox.Checked = _forceSingleBody;
 
             _excludeGroup = (IPropertyManagerPageGroup)_page.AddGroupBox(ExcludeGroupId, "Hariç tut",
                 (int)(swAddGroupBoxOptions_e.swGroupBoxOptions_Visible | swAddGroupBoxOptions_e.swGroupBoxOptions_Expanded));
@@ -273,6 +281,7 @@ namespace GeoSimplifier.SolidWorks.UI
             FillCavities = _fillCavitiesBox.Checked,
             MaxEmbossHeight = _embossValue,
             MinPartSize = _smallPartsValue,
+            ForceSingleBody = _singleBodyBox.Checked,
             SurfaceShell = _surfaceShellBox.Checked,
         };
 
@@ -475,6 +484,7 @@ namespace GeoSimplifier.SolidWorks.UI
             _fillCavities = _fillCavitiesBox.Checked;
             _embossHeight = _embossValue;
             _smallParts = _smallPartsValue;
+            _forceSingleBody = _singleBodyBox.Checked;
             // The preview is only a quick, rough result; OK computes the real one.
             _preview = null;
         }
@@ -510,6 +520,7 @@ namespace GeoSimplifier.SolidWorks.UI
             FillCavities = _fillCavities,
             MaxEmbossHeight = _embossHeight,
             MinPartSize = _smallParts,
+            ForceSingleBody = _forceSingleBody,
             SurfaceShell = _surfaceShell,
         };
 
@@ -558,6 +569,9 @@ namespace GeoSimplifier.SolidWorks.UI
         }
         /// <summary>Test hook: ticks "Yüzey gövde (dış kabuk)".</summary>
         public void ShellForTest() => _surfaceShellBox.Checked = true;
+
+        /// <summary>Test hook: ticks "Tek gövdeye zorla".</summary>
+        public void SingleBodyForTest() => _singleBodyBox.Checked = true;
 
         /// <summary>Test hook: sets "Bundan küçük parçaları çıkar" (meters).</summary>
         public void SmallPartsForTest(double size)

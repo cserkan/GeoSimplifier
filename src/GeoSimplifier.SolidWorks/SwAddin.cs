@@ -156,6 +156,9 @@ namespace GeoSimplifier.SolidWorks
             bool forceGc = !limitsMm.StartsWith("nogc:");
             limitsMm = limitsMm.Replace("nogc:", "");
             // A leading "shell:" ticks "Yüzey gövde (dış kabuk)".
+            // "single:" ticks "Tek gövdeye zorla".
+            bool single = limitsMm.Contains("single:");
+            limitsMm = limitsMm.Replace("single:", "");
             bool shell = limitsMm.Contains("shell:");
             limitsMm = limitsMm.Replace("shell:", "");
             // A leading "small<mm>:" sets "Bundan küçük parçaları çıkar".
@@ -178,6 +181,8 @@ namespace GeoSimplifier.SolidWorks
                     _page.OutputForTest(configurationName);
                 if (shell)
                     _page.ShellForTest();
+                if (single)
+                    _page.SingleBodyForTest();
                 if (small > 0)
                     _page.SmallPartsForTest(small);
                 _page.Simulate(limits, ok, forceGc);
