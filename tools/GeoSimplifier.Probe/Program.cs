@@ -136,6 +136,76 @@ namespace GeoSimplifier.Probe
                 Console.WriteLine($"Açıldı: {path} (hata {errors}, uyarı {warnings})");
                 return 0;
             }
+            if (Array.IndexOf(args, "--hidden") >= 0)
+            {
+                // Counts faces of the active part's first solid body from which no ray escapes: rays leave a few
+                // points of each face (tessellation triangle centres) in directions around the face normal.
+                var pd = (IPartDoc)swApp.ActiveDoc;
+                var ext = ((IModelDoc2)pd).Extension;
+                var body = (IBody2)((object[])pd.GetBodies2(0, true))[0];
+                bool temp = Array.IndexOf(args, "--temp") >= 0;
+                var target = temp ? (IBody2)body.Copy() : body;
+                var faces = ((object[])target.GetFaces()).Cast<IFace2>().ToList();
+                var pts = new System.Collections.Generic.List<double>();
+                var dirs = new System.Collections.Generic.List<double>();
+                var owner = new System.Collections.Generic.List<int>();
+                var watch = System.Diagnostics.Stopwatch.StartNew();
+                for (int fi = 0; fi < faces.Count; fi++)
+                {
+                    var tri = (float[])faces[fi].GetTessTriangles(true);
+                    var nrm = (float[])faces[fi].GetTessNorms();
+                    if (tri == null || nrm == null) continue;
+                    int count = tri.Length / 9;
+                    for (int k = 0; k < Math.Min(count, 3); k++)
+                    {
+                        int t = k * Math.Max(1, count / 3);
+                        double cx = (tri[9 * t] + tri[9 * t + 3] + tri[9 * t + 6]) / 3, cy = (tri[9 * t + 1] + tri[9 * t + 4] + tri[9 * t + 7]) / 3, cz = (tri[9 * t + 2] + tri[9 * t + 5] + tri[9 * t + 8]) / 3;
+                        double nx = nrm[9 * t], ny = nrm[9 * t + 1], nz = nrm[9 * t + 2];
+                        // the normal and 8 directions 60 degrees off it
+                        var (ux, uy, uz) = Math.Abs(nx) < 0.9 ? (0.0, -nz, ny) : (nz, 0.0, -nx);
+                        double ul = Math.Sqrt(ux * ux + uy * uy + uz * uz); ux /= ul; uy /= ul; uz /= ul;
+                        double vx = ny * uz - nz * uy, vy = nz * ux - nx * uz, vz = nx * uy - ny * ux;
+                        for (int d = -1; d < 8; d++)
+                        {
+                            double a = d * Math.PI / 4, s = d < 0 ? 0 : Math.Sin(Math.PI / 3), c = d < 0 ? 1 : Math.Cos(Math.PI / 3);
+                            double dx = c * nx + s * (Math.Cos(a) * ux + Math.Sin(a) * vx), dy = c * ny + s * (Math.Cos(a) * uy + Math.Sin(a) * vy), dz = c * nz + s * (Math.Cos(a) * uz + Math.Sin(a) * vz);
+                            pts.AddRange(new[] { cx + nx * 2e-5, cy + ny * 2e-5, cz + nz * 2e-5 });
+                            dirs.AddRange(new[] { dx, dy, dz });
+                            owner.Add(fi);
+                        }
+                    }
+                }
+                Console.WriteLine($"Işın: {owner.Count}, hazırlık {watch.Elapsed.TotalSeconds:F1} sn");
+                watch.Restart();
+                {
+                    var bb = (double[])target.GetBodyBox();
+                    double cx = (bb[0] + bb[3]) / 2, cy = (bb[1] + bb[4]) / 2;
+                    foreach (int opt in new[] { 1, 7, 0 })
+                    {
+                        try { int h = ext.RayIntersections(new object[] { new DispatchWrapper(target) }, new double[] { cx, cy, bb[5] + 0.1 }, new double[] { 0, 0, -1 }, opt, 1e-6, 0, false); Console.WriteLine($"tek ışın seçenek {opt}: {h} kesişim, {((double[])((IModelDoc2)pd).GetRayIntersectionsPoints())?.Length} veri"); }
+                        catch (Exception ex) { Console.WriteLine($"tek ışın seçenek {opt}: {ex.Message}"); }
+                    }
+                }
+                var blocked = new bool[owner.Count];
+                int batch = 2000, hits = 0;
+                for (int first = 0; first < owner.Count; first += batch)
+                {
+                    int n = Math.Min(batch, owner.Count - first);
+                    hits += ext.RayIntersections(new object[] { new DispatchWrapper(target) }, pts.Skip(3 * first).Take(3 * n).ToArray(), dirs.Skip(3 * first).Take(3 * n).ToArray(), 1, 1e-7, 0, false);
+                    var data = (double[])((IModelDoc2)pd).GetRayIntersectionsPoints();
+                    if (data != null)
+                        for (int i = 0; i + 8 < data.Length; i += 9)
+                            blocked[first + (int)data[i + 1]] = true;
+                    if (first == 0) Console.WriteLine($"ilk parti: {watch.Elapsed.TotalSeconds:F1} sn, veri {data?.Length}");
+                }
+                Console.WriteLine($"Kesişim: {hits}, {watch.Elapsed.TotalSeconds:F1} sn");
+                var visible = new bool[faces.Count];
+                for (int r = 0; r < owner.Count; r++)
+                    if (!blocked[r]) visible[owner[r]] = true;
+                int seen = visible.Count(v => v);
+                Console.WriteLine($"Yüz {faces.Count}: görünen {seen}, gizli {faces.Count - seen}");
+                return 0;
+            }
             if (Array.IndexOf(args, "--sheettest") >= 0)
             {
                 // Tries ways of turning the active part's first solid body into one surface body.

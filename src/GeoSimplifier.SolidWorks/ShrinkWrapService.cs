@@ -539,56 +539,81 @@ namespace GeoSimplifier.SolidWorks
         }
 
         /// <summary>
-        /// One surface body per result body, from all its faces; a body that cannot be turned into one stays solid.
-        /// Each face is copied as a surface and the copies are knitted back together without forming a solid
-        /// (IModeler.CreateSheetFromFaces returned nothing for these bodies).
+        /// The outer skin of each result body as surface bodies: only the faces that can be seen from outside (the
+        /// floors of deep slots, faces pressed against each other and the like are left out), copied as surfaces
+        /// and knitted together without forming a solid. A body that cannot be turned into surfaces stays solid.
+        /// The visibility is worked out on the tessellation, which needs the bodies in a document; they are put in
+        /// a hidden part that is closed afterwards.
         /// </summary>
-        // CreateBodiesFromSheets2 option that knits into sheet bodies instead of closing them into solids
-        // (found by trying: 0 and 2 gave solids).
-        private const int SheetBodiesOnly = 1;
-
         private List<IBody2> Shells(WrapResult result)
         {
             var modeler = (IModeler)_swApp.GetModeler();
             var shells = new List<IBody2>();
             var watch = Stopwatch.StartNew();
             var progress = new Progress(_swApp, "Shrink wrap: dış kabuk çıkarılıyor");
+            IModelDoc2 temp = null;
+            int kept = 0, total = 0;
             try
             {
-                int total = result.Bodies.Sum(b => ((object[])b.GetFaces())?.Length ?? 0), done = 0;
+                _swApp.DocumentVisible(false, (int)swDocumentTypes_e.swDocPART);
+                try { temp = (IModelDoc2)NewPart(); }
+                finally { _swApp.DocumentVisible(true, (int)swDocumentTypes_e.swDocPART); }
                 foreach (var body in result.Bodies)
                 {
-                    var faces = (object[])body.GetFaces() ?? new object[0];
+                    progress.UpdateTitle("Shrink wrap: dış kabuk: görünen yüzler bulunuyor");
+                    progress.UpdateProgress(10);
+                    var feature = ((IPartDoc)temp).CreateFeatureFromBody3((IBody2)body.Copy(), false, 0) as IFeature;
+                    var placed = (((IPartDoc)temp).GetBodies2((int)swBodyType_e.swSolidBody, true) as object[])?.OfType<IBody2>().LastOrDefault();
+                    var faces = ((placed?.GetFaces() as object[]) ?? new object[0]).OfType<IFace2>().ToList();
+                    var visibility = new Core.Geometry.FaceVisibility();
+                    for (int i = 0; i < faces.Count; i++)
+                        visibility.AddFace(i, (float[])faces[i].GetTessTriangles(true) ?? new float[0], (float[])faces[i].GetTessNorms(), samples: 4);
+                    var box = BodyOps.Bounds(placed);
+                    var visible = visibility.Visible(Math.Max(1e-5, (box.Max - box.Min).Length * 2e-5));
+                    total += faces.Count;
                     var sheets = new List<IBody2>();
-                    foreach (IFace2 face in faces)
+                    for (int i = 0; i < faces.Count; i++)
                     {
-                        if (done++ % 100 == 0)
+                        if (i % 100 == 0)
                         {
-                            progress.UpdateProgress(100 * done / Math.Max(1, total));
-                            progress.UpdateTitle($"Shrink wrap: dış kabuk çıkarılıyor ({done}/{total} yüz)");
+                            progress.UpdateProgress(20 + 70 * i / Math.Max(1, faces.Count));
+                            progress.UpdateTitle($"Shrink wrap: dış kabuk ({i}/{faces.Count} yüz)");
                         }
-                        if (face.CreateSheetBody() is IBody2 sheet)
+                        if (visible.Contains(i) && faces[i].CreateSheetBody() is IBody2 sheet)
                             sheets.Add(sheet);
                     }
+                    kept += sheets.Count;
                     int error = 0;
                     var knitted = sheets.Count == 0 ? null
                         : ((object[])modeler.CreateBodiesFromSheets2(sheets.ToArray(), SheetBodiesOnly, 1e-5, ref error))?.OfType<IBody2>().ToList();
-                    if (knitted == null || knitted.Count == 0 || sheets.Count < faces.Length)
+                    if (knitted == null || knitted.Count == 0)
                     {
                         result.Notes.Add("Bir gövde yüzey gövdesine çevrilemedi; katı olarak bırakıldı.");
                         shells.Add(body);
                         continue;
                     }
                     shells.AddRange(knitted);
+                    // The next body is measured alone.
+                    if (feature != null)
+                    {
+                        feature.Select2(false, 0);
+                        temp.EditDelete();
+                    }
                 }
             }
             finally
             {
+                if (temp != null)
+                    _swApp.CloseDoc(temp.GetTitle());
                 progress.End();
             }
-            UI.PageLog.Write($"  dış kabuk: {result.Bodies.Count} gövde → {shells.Count(s => s.GetType() == (int)swBodyType_e.swSheetBody)} yüzey gövdesi ({watch.Elapsed.TotalSeconds:F1} sn)");
+            UI.PageLog.Write($"  dış kabuk: {result.Bodies.Count} gövde → {shells.Count(s => s.GetType() == (int)swBodyType_e.swSheetBody)} yüzey gövdesi, " +
+                             $"{kept}/{total} yüz görünüyor ({watch.Elapsed.TotalSeconds:F1} sn)");
             return shells;
         }
+        // CreateBodiesFromSheets2 option that knits into sheet bodies instead of closing them into solids
+        // (found by trying: 0 and 2 gave solids).
+        private const int SheetBodiesOnly = 1;
 
         private IPartDoc NewPart()
         {
