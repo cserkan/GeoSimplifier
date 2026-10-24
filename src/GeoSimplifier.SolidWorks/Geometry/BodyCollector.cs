@@ -1,4 +1,4 @@
-using System;
+﻿using System;
 using System.Collections.Generic;
 using SolidWorks.Interop.sldworks;
 using SolidWorks.Interop.swconst;
@@ -54,7 +54,16 @@ namespace GeoSimplifier.SolidWorks.Geometry
         }
 
         /// <summary>As <see cref="CopyBodies(IModelDoc2)"/>; bodies matched by <paramref name="exclusions"/> go to <paramref name="excluded"/>.</summary>
-        public static List<IBody2> CopyBodies(IModelDoc2 doc, Exclusions exclusions, out List<IBody2> excluded)
+        public static List<IBody2> CopyBodies(IModelDoc2 doc, Exclusions exclusions, out List<IBody2> excluded) =>
+            CopyBodies(doc, exclusions, out excluded, null);
+
+        /// <summary>
+        /// As above; <paramref name="instances"/>, when given, receives for each copy which body of which part (and
+        /// configuration) it is and the component's transform (SOLIDWORKS' 16 numbers), so repeated instances of a
+        /// part can share work. Bodies of a part document get a null entry.
+        /// </summary>
+        public static List<IBody2> CopyBodies(IModelDoc2 doc, Exclusions exclusions, out List<IBody2> excluded,
+                                              List<(string key, double[] transform)> instances)
         {
             var copies = new List<IBody2>();
             excluded = new List<IBody2>();
@@ -64,7 +73,11 @@ namespace GeoSimplifier.SolidWorks.Geometry
                     var bodies = (object[])((IPartDoc)doc).GetBodies2((int)swBodyType_e.swSolidBody, true);
                     if (bodies != null)
                         foreach (IBody2 body in bodies)
-                            (exclusions != null && exclusions.Contains(body, null) ? excluded : copies).Add((IBody2)body.Copy());
+                        {
+                            bool skip = exclusions != null && exclusions.Contains(body, null);
+                            (skip ? excluded : copies).Add((IBody2)body.Copy());
+                            if (!skip) instances?.Add((null, null));
+                        }
                     break;
 
                 case swDocumentTypes_e.swDocASSEMBLY:
@@ -86,12 +99,16 @@ namespace GeoSimplifier.SolidWorks.Geometry
                             continue;
                         var transform = comp.Transform2;
                         bool wholeComponent = exclusions != null && exclusions.Contains(comp);
-                        foreach (IBody2 body in compBodies)
+                        string part = instances == null ? null : $"{comp.GetPathName()}|{comp.ReferencedConfiguration}";
+                        for (int i = 0; i < compBodies.Length; i++)
                         {
+                            var body = (IBody2)compBodies[i];
                             var copy = (IBody2)body.Copy();
                             if (transform != null)
                                 copy.ApplyTransform(transform);
-                            (wholeComponent || (exclusions != null && exclusions.Contains(body, comp)) ? excluded : copies).Add(copy);
+                            bool skip = wholeComponent || (exclusions != null && exclusions.Contains(body, comp));
+                            (skip ? excluded : copies).Add(copy);
+                            if (!skip) instances?.Add(($"{part}|{i}", (double[])((IMathTransform)transform)?.ArrayData));
                         }
                     }
                     break;

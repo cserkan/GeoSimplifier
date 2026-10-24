@@ -136,6 +136,72 @@ namespace GeoSimplifier.Probe
                 Console.WriteLine($"Açıldı: {path} (hata {errors}, uyarı {warnings})");
                 return 0;
             }
+            if (Array.IndexOf(args, "--sheettest") >= 0)
+            {
+                // Tries ways of turning the active part's first solid body into one surface body.
+                var pd = (IPartDoc)swApp.ActiveDoc;
+                var solid = (IBody2)((object[])pd.GetBodies2(0, true))[0];
+                var faces = (object[])solid.GetFaces();
+                var modeler = (IModeler)swApp.GetModeler();
+                var watch = System.Diagnostics.Stopwatch.StartNew();
+                var a = modeler.CreateSheetFromFaces(faces) as IBody2;
+                Console.WriteLine($"CreateSheetFromFaces (belgedeki gövde): {(a == null ? "null" : $"tür {a.GetType()}, {((object[])a.GetFaces()).Length} yüz")} {watch.Elapsed.TotalSeconds:F1} sn");
+                var copy = (IBody2)solid.Copy();
+                var b = modeler.CreateSheetFromFaces((object[])copy.GetFaces()) as IBody2;
+                Console.WriteLine($"CreateSheetFromFaces (kopya): {(b == null ? "null" : $"tür {b.GetType()}, {((object[])b.GetFaces()).Length} yüz")}");
+                watch.Restart();
+                var sheets = faces.Cast<IFace2>().Select(f => f.CreateSheetBody() as IBody2).Where(s => s != null).ToArray();
+                Console.WriteLine($"Yüz başına yüzey: {sheets.Length}/{faces.Length} {watch.Elapsed.TotalSeconds:F1} sn");
+                foreach (int opt in new[] { 0, 1, 2 })
+                {
+                    watch.Restart();
+                    int err = 0;
+                    var knit = (object[])modeler.CreateBodiesFromSheets2(sheets, opt, 1e-5, ref err);
+                    Console.WriteLine($"CreateBodiesFromSheets2 seçenek {opt}: hata {err}, {(knit == null ? "null" : string.Join(", ", knit.Cast<IBody2>().Select(k => $"tür {k.GetType()} {((object[])k.GetFaces()).Length} yüz")))} {watch.Elapsed.TotalSeconds:F1} sn");
+                }
+                return 0;
+            }
+            int saveAs = Array.IndexOf(args, "--saveas");
+            if (saveAs >= 0 && saveAs + 1 < args.Length)
+            {
+                // Saves the active document under a new name (never over an existing file): --saveas <path>.
+                string target = args[saveAs + 1];
+                if (System.IO.File.Exists(target)) { Console.Error.WriteLine("Dosya zaten var: " + target); return 1; }
+                // --saveas <path> <title>: activates the open document with that title first.
+                if (saveAs + 2 < args.Length && !args[saveAs + 2].StartsWith("--"))
+                {
+                    int activateErrors = 0;
+                    swApp.ActivateDoc3(args[saveAs + 2], false, 0, ref activateErrors);
+                }
+                var active = (IModelDoc2)swApp.ActiveDoc;
+                int e = 0, w = 0;
+                bool ok = active.Extension.SaveAs3(target, 0, 1, null, null, ref e, ref w);
+                Console.WriteLine($"Kaydedildi: {ok} ({active.GetTitle()} → {target}, hata {e})");
+                return ok ? 0 : 1;
+            }
+            int pattern = Array.IndexOf(args, "--pattern");
+            if (pattern >= 0 && pattern + 5 < args.Length)
+            {
+                // Builds a large test assembly: --pattern <assembly> <count> <columns> <dx;dz mm> <save as>.
+                // The assembly is placed count times on a grid in X and Z, so the copies stand a few mm apart.
+                string src = args[pattern + 1];
+                int count = int.Parse(args[pattern + 2]), columns = int.Parse(args[pattern + 3]);
+                var step = args[pattern + 4].Split(';').Select(s => double.Parse(s, CultureInfo.InvariantCulture) / 1000).ToArray();
+                int e1 = 0, w1 = 0;
+                swApp.OpenDoc6(src, 2, 0, "", ref e1, ref w1);
+                string template = swApp.GetUserPreferenceStringValue((int)global::SolidWorks.Interop.swconst.swUserPreferenceStringValue_e.swDefaultTemplateAssembly);
+                var grid = (IAssemblyDoc)swApp.NewDocument(template, 0, 0, 0);
+                int added = 0;
+                for (int i = 0; i < count; i++)
+                {
+                    var comp = grid.AddComponent5(src, 0, "", false, "", (i % columns) * step[0], 0, (i / columns) * step[1]);
+                    if (comp != null) added++;
+                }
+                int e = 0, w = 0;
+                bool saved = ((IModelDoc2)grid).Extension.SaveAs3(args[pattern + 5], 0, 1, null, null, ref e, ref w);
+                Console.WriteLine($"Desen: {added}/{count} kopya, kaydedildi {saved} ({args[pattern + 5]})");
+                return 0;
+            }
             var doc = (IModelDoc2)swApp?.ActiveDoc;
             if (doc == null)
             {

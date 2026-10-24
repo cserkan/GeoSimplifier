@@ -1,4 +1,4 @@
-using System;
+﻿using System;
 using System.Runtime.InteropServices;
 using GeoSimplifier.SolidWorks.UI;
 using Microsoft.Win32;
@@ -155,6 +155,9 @@ namespace GeoSimplifier.SolidWorks
             // A leading "nogc:" runs the steps without forcing garbage collections.
             bool forceGc = !limitsMm.StartsWith("nogc:");
             limitsMm = limitsMm.Replace("nogc:", "");
+            // A leading "shell:" ticks "Yüzey gövde (dış kabuk)".
+            bool shell = limitsMm.StartsWith("shell:");
+            limitsMm = limitsMm.Replace("shell:", "");
             var limits = Array.ConvertAll(limitsMm.Split(';'),
                 v => double.Parse(v, System.Globalization.CultureInfo.InvariantCulture) / 1000);
             _mainThread.BeginInvoke(new Action(() =>
@@ -165,6 +168,8 @@ namespace GeoSimplifier.SolidWorks
                     _page.ExcludeForTest(excludeNames.Split(';'));
                 if (!string.IsNullOrEmpty(configurationName))
                     _page.OutputForTest(configurationName);
+                if (shell)
+                    _page.ShellForTest();
                 _page.Simulate(limits, ok, forceGc);
             }));
             return "başladı";

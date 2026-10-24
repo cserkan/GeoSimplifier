@@ -1,4 +1,4 @@
-using System;
+﻿using System;
 using System.Runtime.InteropServices;
 using System.Windows.Forms;
 using GeoSimplifier.Core.Wrap;
@@ -32,6 +32,7 @@ namespace GeoSimplifier.SolidWorks.UI
         private const int ConfigNameLabelId = 14;
         private const int ConfigNameId = 15;
         private const int PreviewId = 16;
+        private const int SurfaceShellId = 17;
 
         // Selection mark of the exclusion box, so its items are told apart from other selections.
         private const int ExcludeMark = 2;
@@ -43,6 +44,7 @@ namespace GeoSimplifier.SolidWorks.UI
         private static double _embossHeight = 0; // meters; 0 keeps embossed details
         private static bool _newConfiguration;
         private static string _configurationName = "Simple";
+        private static bool _surfaceShell;
 
         private readonly ISldWorks _swApp;
         private readonly ShrinkWrapService _service;
@@ -67,6 +69,7 @@ namespace GeoSimplifier.SolidWorks.UI
         private IPropertyManagerPageLabel _configNameLabel;
         private IPropertyManagerPageTextbox _configNameBox;
         private IPropertyManagerPageCheckbox _previewBox;
+        private IPropertyManagerPageCheckbox _surfaceShellBox;
         private bool _ok;
         private IModelDoc2 _source;
         private WrapResult _preview;
@@ -156,6 +159,10 @@ namespace GeoSimplifier.SolidWorks.UI
             _configNameBox = (IPropertyManagerPageTextbox)AddControl(_outputGroup, ConfigNameId, swPropertyManagerPageControlType_e.swControlType_Textbox,
                 "Konfigürasyon adı", "Bu ad varsa sonuna numara eklenir.");
             _configNameBox.Text = _configurationName;
+            _surfaceShellBox = (IPropertyManagerPageCheckbox)AddControl(_outputGroup, SurfaceShellId, swPropertyManagerPageControlType_e.swControlType_Checkbox,
+                "Yüzey gövde (dış kabuk)",
+                "Katı yerine yalnız dış yüzler: her ayrı sonuç gövdesi tek bir yüzey gövdesi olur. Daha hafif bir model için.");
+            _surfaceShellBox.Checked = _surfaceShell;
             (_newConfiguration ? _newConfigOption : _newPartOption).Checked = true;
             _outputNewConfig = _newConfiguration;
             _outputName = _configurationName;
@@ -414,6 +421,7 @@ namespace GeoSimplifier.SolidWorks.UI
                 return;
             _closeHoles = _closeHolesBox.Checked;
             _newConfiguration = _outputNewConfig;
+            _surfaceShell = _surfaceShellBox.Checked;
             _configurationName = string.IsNullOrWhiteSpace(_outputName) ? "Simple" : _outputName.Trim();
             _gapWidth = _gapValue;
             _fillCavities = _fillCavitiesBox.Checked;
@@ -434,8 +442,8 @@ namespace GeoSimplifier.SolidWorks.UI
             {
                 var result = _preview ?? _service.Compute(_source, CurrentOptionsFromSettings(), _exclusions);
                 string message = _outputNewConfig
-                    ? _service.Commit(result, _source, string.IsNullOrWhiteSpace(_outputName) ? "Simple" : _outputName.Trim())
-                    : _service.Commit(result);
+                    ? _service.Commit(result, _source, string.IsNullOrWhiteSpace(_outputName) ? "Simple" : _outputName.Trim(), _surfaceShell)
+                    : _service.Commit(result, null, null, _surfaceShell);
                 // No message box on success: it only gets in the way. The summary goes to the log.
                 PageLog.Write("Tamam: " + message);
             }
@@ -497,6 +505,9 @@ namespace GeoSimplifier.SolidWorks.UI
             OnOptionCheck(NewConfigId);
             _outputName = configurationName;
         }
+        /// <summary>Test hook: ticks "Yüzey gövde (dış kabuk)".</summary>
+        public void ShellForTest() => _surfaceShellBox.Checked = true;
+
         public void OnComboboxEditChanged(int Id, string Text) { }
         public void OnComboboxSelectionChanged(int Id, int Item) { }
         public void OnListboxSelectionChanged(int Id, int Item) { }

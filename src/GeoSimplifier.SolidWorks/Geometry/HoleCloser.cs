@@ -29,6 +29,13 @@ namespace GeoSimplifier.SolidWorks.Geometry
         public int Closed { get; private set; }
         public int Failed { get; private set; }
 
+        /// <summary>Counts the holes of a body that repeats one already closed; the caller adds its plugs.</summary>
+        public void CountRepeat(int closed, int failed)
+        {
+            Closed += closed;
+            Failed += failed;
+        }
+
         /// <summary>Raised details (embossed text, symbols) flattened by <see cref="RemoveBosses"/>.</summary>
         public int BossesRemoved { get; private set; }
 

@@ -1,6 +1,7 @@
 ﻿using System;
 using System.Collections.Generic;
 using System.Linq;
+using System.Runtime.InteropServices;
 using GeoSimplifier.Core.Geometry;
 using SolidWorks.Interop.sldworks;
 using SolidWorks.Interop.swconst;
@@ -97,11 +98,12 @@ namespace GeoSimplifier.SolidWorks.Geometry
         /// Unites many bodies (e.g. touching boxes) in pairs, round after round, so each boolean stays small;
         /// returns the separate lumps that remain.
         /// </summary>
-        public List<IBody2> UnionMany(List<IBody2> bodies)
+        /// <param name="progress">When given, called for each body of a round with its index and the round's size.</param>
+        public List<IBody2> UnionMany(List<IBody2> bodies, Action<int, int> progress = null)
         {
             // Neighbours in space are next to each other in Morton (Z-curve) order of the box centres, so most
             // pairs touch; each body is united with the first of the next few whose box touches its own.
-            var all = bodies.Where(b => b != null).Select(b => (body: b, box: Bounds(b))).Where(e => !e.box.IsEmpty).ToList();
+            var all = bodies.Where(b => b != null).Select(b => (body: b, box: AnyBounds(b))).Where(e => !e.box.IsEmpty).ToList();
             if (all.Count == 0)
                 return new List<IBody2>();
             var extent = all.Select(e => e.box).Aggregate((a, b) => a.Union(b));
@@ -126,19 +128,22 @@ namespace GeoSimplifier.SolidWorks.Geometry
                 {
                     if (taken[i]) continue;
                     taken[i] = true;
+                    progress?.Invoke(i, current.Count);
                     int partner = -1;
                     for (int j = i + 1; j < Math.Min(current.Count, i + 8) && partner < 0; j++)
                         if (!taken[j] && Overlaps(current[i].box, current[j].box, 1e-7))
                             partner = j;
                     if (partner < 0) { next.Add(current[i]); continue; }
                     taken[partner] = true;
-                    var output = Boolean(swBodyOperationType_e.SWBODYADD, current[i].body, current[partner].body)?.OfType<IBody2>().ToList();
-                    if (output == null || output.Count == 0) { next.Add(current[i]); next.Add(current[partner]); continue; }
-                    next.AddRange(output.Select(o => (o, Bounds(o))).Where(e => !e.Item2.IsEmpty));
+                    // A union that leaves two bodies hands back altered copies (their faces imprinted where they
+                    // touch), which later unions failed on (43 lumps instead of 9 on a motor); the originals are kept.
+                    var merged = Union(current[i].body, current[partner].body);
+                    if (merged == null) { next.Add(current[i]); next.Add(current[partner]); continue; }
+                    next.Add((merged, AnyBounds(merged)));
                 }
-                bool progress = next.Count < current.Count;
+                bool shrank = next.Count < current.Count;
                 current = next.OrderBy(e => Morton(e.box)).ToList();
-                if (!progress)
+                if (!shrank)
                     break;
             }
             return current.Select(e => e.body).ToList();
@@ -157,6 +162,16 @@ namespace GeoSimplifier.SolidWorks.Geometry
             if (bb == null || bb.Length < 6)
                 return Aabb.Empty;
             return new Aabb(new Vec3(bb[0], bb[1], bb[2]), new Vec3(bb[3], bb[4], bb[5]));
+        }
+
+        /// <summary>
+        /// The body's box, or when SOLIDWORKS gives none (some boolean results have none), its extents from its
+        /// extreme points; empty only when neither is known.
+        /// </summary>
+        public static Aabb AnyBounds(IBody2 body)
+        {
+            var box = Bounds(body);
+            return box.IsEmpty && body != null ? TightBounds(body) : box;
         }
 
         /// <summary>
@@ -383,7 +398,9 @@ namespace GeoSimplifier.SolidWorks.Geometry
         /// <summary>The air within the box [min, max] between a and b, as far as it touches both of them.</summary>
         private IBody2 BridgeIn(IBody2 a, IBody2 b, double[] min, double[] max)
         {
-            var region = Box(new Aabb(new Vec3(min[0], min[1], min[2]), new Vec3(max[0], max[1], max[2])));
+            IBody2 region;
+            try { region = Box(new Aabb(new Vec3(min[0], min[1], min[2]), new Vec3(max[0], max[1], max[2]))); }
+            catch (InvalidOperationException) { return null; } // a box SOLIDWORKS cannot make (too thin) bridges nothing
             if (region == null)
                 return null;
             var pieces = new List<IBody2> { region };
@@ -409,55 +426,92 @@ namespace GeoSimplifier.SolidWorks.Geometry
             return bridge;
         }
 
-        /// <summary>Unions every pair of bodies that touch or overlap. Returns one body per separate lump.</summary>
-        /// <param name="progress">When given, called before each body with the number done and the total.</param>
-        public List<IBody2> UnionAll(IEnumerable<IBody2> bodies, double tolerance, Action<int, int> progress = null)
+        /// <summary>
+        /// Unites bodies whose boxes overlap, round after round: in each round every body is united with at most
+        /// one other (pairs with the smallest boxes first), so the lumps grow like a tree. A pair that does not
+        /// unite is not tried again. Every round unites at least one pair or ends the loop.
+        /// </summary>
+        private List<IBody2> UnionByRounds(List<IBody2> bodies, double tolerance, Action<int, int> progress)
         {
-            var lumps = new List<IBody2>();
-            var boxes = new List<Aabb>();
-            var all = bodies.ToList();
-            for (int i = 0; i < all.Count; i++)
+            var items = bodies.Select(b => (body: b, box: AnyBounds(b))).ToList();
+            var failed = new HashSet<(IBody2, IBody2)>();
+            int total = items.Count, done = 0;
+            while (items.Count > 1)
             {
-                progress?.Invoke(i, all.Count);
-                var body = all[i];
-                var current = body;
-                var box = Bounds(body);
-                if (box.IsEmpty)
+                // Overlapping pairs by a sweep along x.
+                var order = Enumerable.Range(0, items.Count).OrderBy(i => items[i].box.Min.X).ToList();
+                var pairs = new List<(int a, int b, double size)>();
+                for (int s = 0; s < order.Count; s++)
                 {
-                    // No box to compare: keep the body as it is rather than lose it (this once dropped a whole model).
-                    if (body != null)
+                    var bi = items[order[s]].box;
+                    for (int t = s + 1; t < order.Count && items[order[t]].box.Min.X <= bi.Max.X + tolerance; t++)
                     {
-                        lumps.Add(body);
-                        boxes.Add(Aabb.Empty);
-                        if (Trace) UI.PageLog.Write("  kutusu olmayan gövde ayrı tutuldu");
+                        int a = order[s], b = order[t];
+                        if (!Overlaps(bi, items[b].box, tolerance) || failed.Contains((items[a].body, items[b].body)))
+                            continue;
+                        pairs.Add((a, b, Volume(bi) + Volume(items[b].box)));
                     }
-                    continue;
                 }
-                for (int n = lumps.Count - 1; n >= 0; n--)
+                if (pairs.Count == 0)
+                    break;
+                var taken = new bool[items.Count];
+                var next = new List<(IBody2 body, Aabb box)>();
+                foreach (var (a, b, _) in pairs.OrderBy(p => p.size))
                 {
-                    if (!Overlaps(boxes[n], box, tolerance))
+                    if (taken[a] || taken[b])
                         continue;
-                    var merged = Union(lumps[n], current);
-                    if (merged == null)
+                    progress?.Invoke(Math.Min(done++, total - 1), total);
+                    var u = Union(items[a].body, items[b].body);
+                    if (u == null)
+                    {
+                        failed.Add((items[a].body, items[b].body));
+                        failed.Add((items[b].body, items[a].body));
                         continue;
-                    current = merged;
-                    box = box.Union(boxes[n]);
-                    lumps.RemoveAt(n);
-                    boxes.RemoveAt(n);
+                    }
+                    taken[a] = taken[b] = true;
+                    next.Add((u, AnyBounds(u)));
                 }
-                lumps.Add(current);
-                boxes.Add(box);
+                bool merged = taken.Any(x => x);
+                for (int i = 0; i < items.Count; i++)
+                    if (!taken[i])
+                        next.Add(items[i]);
+                items = next;
+                if (!merged)
+                    break;
             }
-            return lumps;
+            return items.Select(e => e.body).ToList();
         }
 
-        /// <returns>The single merged body, or null when the bodies stay separate or the union fails.</returns>
+        private static double Volume(Aabb b) => b.Size.X * b.Size.Y * b.Size.Z;
+
+
+        /// <summary>Unions every pair of bodies that touch or overlap. Returns one body per separate lump.</summary>
+        /// <param name="progress">When given, called before each union with the number done and the total.</param>
+        public List<IBody2> UnionAll(IEnumerable<IBody2> bodies, double tolerance, Action<int, int> progress = null)
+        {
+            var all = bodies.Where(b => b != null).ToList();
+            // Uniting each body with the lump that grows from them made every boolean as large as the whole model
+            // (223 s and 20 GB for 117 bodies). They are united in rounds instead, like a tree, so most booleans
+            // stay small. Two lumps SOLIDWORKS cannot unite stay separate bodies (Serkan: a second body is fine
+            // where the geometry does not unite); trying to force them (taking one apart, adding its bodies one by
+            // one) took far longer and once crashed SOLIDWORKS. Bodies without a box are kept as they are rather
+            // than lost (this once dropped a whole model).
+            var boxed = all.Where(b => !AnyBounds(b).IsEmpty).ToList();
+            var united = UnionByRounds(boxed, tolerance, progress);
+            UI.PageLog.Write($"  turlar: {boxed.Count} gövde → {united.Count}");
+            return united.Concat(all.Where(b => AnyBounds(b).IsEmpty)).ToList();
+        }
         /// <summary>Logs failing booleans to the page log (for finding why bodies stay apart).</summary>
         public bool Trace;
 
         private static double Volume(IBody2 b) => (((double[])b?.GetMassProperties(1))?[3] ?? 0) * 1e9;
 
-                public IBody2 Union(IBody2 a, IBody2 b)
+        /// <returns>The single merged body, or null when the bodies stay separate or the union fails.</returns>
+        public IBody2 Union(IBody2 a, IBody2 b) => Union(a, b, out _);
+
+        /// <param name="apart">True when SOLIDWORKS united them but they stayed separate bodies (they do not touch),
+        /// false when the union itself failed.</param>
+        public IBody2 Union(IBody2 a, IBody2 b, out bool apart)
         {
             var output = Boolean(swBodyOperationType_e.SWBODYADD, a, b);
             if (output == null && _math != null)
@@ -472,6 +526,7 @@ namespace GeoSimplifier.SolidWorks.Geometry
             if (Trace && (output == null || output.Length != 1))
                 UI.PageLog.Write($"  birleşim: {(output == null ? "hata" : output.Length + " gövde")} " +
                                  $"(a {Volume(a):F0}, b {Volume(b):F0} mm³ → {(output == null ? "-" : string.Join(", ", output.OfType<IBody2>().Select(o => Volume(o).ToString("F0"))))})");
+            apart = output != null && output.Length > 1;
             return output != null && output.Length == 1 ? (IBody2)output[0] : null;
         }
 
@@ -525,7 +580,9 @@ namespace GeoSimplifier.SolidWorks.Geometry
         /// <param name="added">When given, receives the cavity pieces that were filled.</param>
         public IBody2 FillCavities(IBody2 body, List<IBody2> added = null)
         {
-            var bounds = Bounds(body);
+            var bounds = AnyBounds(body);
+            if (bounds.IsEmpty)
+                return body;
             double margin = Math.Max(bounds.LongestSide * 0.1, 1e-3);
             var grow = new Vec3(margin, margin, margin);
             var box = _boxes.Create(new Aabb(bounds.Min - grow, bounds.Max + grow));

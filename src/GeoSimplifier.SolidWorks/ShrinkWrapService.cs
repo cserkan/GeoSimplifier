@@ -112,6 +112,53 @@ namespace GeoSimplifier.SolidWorks
             _swApp = swApp;
         }
 
+        /// <summary>
+        /// Closes the holes of each body. A body that is another instance of a part body already closed, placed
+        /// with the same rotation (a row of screws), gets that body's result and plugs moved into place instead of
+        /// finding its holes again; the result is the same, since only the position differs.
+        /// </summary>
+        private void CloseHolesPerInstance(HoleCloser closer, List<IBody2> bodies, List<(string key, double[] transform)> instances,
+                                           double width, Action<int, int> report)
+        {
+            var math = (IMathUtility)_swApp.GetMathUtility();
+            var done = new Dictionary<string, (double[] t, IBody2 result, int plugs0, int plugs1, int wide0, int wide1, int closed, int failed)>();
+            int reused = 0;
+            for (int i = 0; i < bodies.Count; i++)
+            {
+                report(i, bodies.Count);
+                var (key, t) = i < instances.Count ? instances[i] : (null, null);
+                string k = key == null || t == null || t.Length < 13 ? null
+                    : key + "|" + string.Join(",", t.Take(9).Concat(new[] { t[12] }).Select(v => Math.Round(v, 9).ToString("R")));
+                if (k != null && done.TryGetValue(k, out var d) &&
+                    math.CreateTransform(new double[] { 1, 0, 0, 0, 1, 0, 0, 0, 1, t[9] - d.t[9], t[10] - d.t[10], t[11] - d.t[11], 1, 0, 0, 0 }) is MathTransform shift)
+                {
+                    if (!closer.PlugsOnly)
+                    {
+                        var moved = (IBody2)d.result.Copy();
+                        moved.ApplyTransform(shift);
+                        bodies[i] = moved;
+                    }
+                    for (int p = d.plugs0; p < d.plugs1; p++)
+                    {
+                        var plug = (IBody2)closer.Plugs[p].Copy();
+                        plug.ApplyTransform(shift);
+                        closer.Plugs.Add(plug);
+                        closer.PlugWidths.Add(closer.PlugWidths[p]);
+                    }
+                    for (int w = d.wide0; w < d.wide1; w++)
+                        closer.TooWide.Add(closer.TooWide[w]);
+                    closer.CountRepeat(d.closed, d.failed);
+                    reused++;
+                    continue;
+                }
+                int p0 = closer.Plugs.Count, w0 = closer.TooWide.Count, c0 = closer.Closed, f0 = closer.Failed;
+                bodies[i] = closer.CloseHoles(bodies[i], width);
+                if (k != null)
+                    done[k] = (t, bodies[i], p0, closer.Plugs.Count, w0, closer.TooWide.Count, closer.Closed - c0, closer.Failed - f0);
+            }
+            UI.PageLog.Write($"  delikler: {bodies.Count} gövde, {reused} tanesi tekrar eden parçadan taşındı");
+        }
+
         /// <summary>The status bar's progress bar and, in the middle of the SOLIDWORKS window, a progress window.</summary>
         private sealed class Progress
         {
@@ -176,15 +223,24 @@ namespace GeoSimplifier.SolidWorks
             var progress = new Progress(_swApp, "Shrink wrap: gövdeler toplanıyor");
             // Progress within a long step, from one percentage to the next: once per body, which costs nothing next
             // to the booleans.
+            int reports = 0;
             void Report(string title, int from, int to, int done, int total)
             {
+                // The booleans leave temporary bodies behind that SOLIDWORKS keeps until their COM objects are
+                // released (19.7 GB on a 117-body motor); collecting now and then releases them on the way.
+                if (++reports % 20 == 0)
+                {
+                    GC.Collect();
+                    GC.WaitForPendingFinalizers();
+                }
                 progress.UpdateProgress(from + (to - from) * done / Math.Max(1, total));
                 progress.UpdateTitle($"Shrink wrap: {title} ({done}/{total})");
             }
             try
             {
-                var bodies = BodyCollector.CopyBodies(source, exclusions, out var excluded);
-                var ops = new BodyOps(_swApp);
+                var instances = new List<(string key, double[] transform)>();
+                var bodies = BodyCollector.CopyBodies(source, exclusions, out var excluded, instances);
+                var ops = new BodyOps(_swApp) { Trace = System.Environment.GetEnvironmentVariable("GEOSIMPLIFIER_TRACE") == "1" };
 
                 // Surface bodies are wrapped as they are, as thin solids (0.1 mm); they are not sewn together.
                 var sheets = BodyCollector.CopySheets(source, exclusions);
@@ -247,11 +303,9 @@ namespace GeoSimplifier.SolidWorks
                     if (!_plugsByLimit.TryGetValue(options.GapWidth, out var cached))
                     {
                         var exact = new HoleCloser(ops) { PlugsOnly = true };
-                        for (int i = 0; i < bodies.Count; i++)
-                        {
-                            Report("delikler kapatılıyor", 10, 25, i, bodies.Count);
-                            exact.CloseHoles(bodies[i], options.GapWidth);
-                        }
+                        // The preview leaves the bodies as they are, so the closer works on a list of its own.
+                        CloseHolesPerInstance(exact, new List<IBody2>(bodies), instances, options.GapWidth,
+                            (i, n) => Report("delikler kapatılıyor", 10, 25, i, n));
                         cached = (exact.Plugs.ToList(), exact.TooWide.ToList());
                         _plugsByLimit[options.GapWidth] = cached;
                     }
@@ -261,11 +315,8 @@ namespace GeoSimplifier.SolidWorks
                 }
                 else if (options.GapWidth > 0 && !bagOnly)
                 {
-                    for (int i = 0; i < bodies.Count; i++)
-                    {
-                        Report("delikler kapatılıyor", 10, 25, i, bodies.Count);
-                        bodies[i] = closer.CloseHoles(bodies[i], options.GapWidth);
-                    }
+                    CloseHolesPerInstance(closer, bodies, instances, options.GapWidth,
+                        (i, n) => Report("delikler kapatılıyor", 10, 25, i, n));
                     Lap("delik");
                 }
                 var plugs = previewPlugs ?? closer.Plugs;
@@ -308,6 +359,7 @@ namespace GeoSimplifier.SolidWorks
                 }
                 var lumps = new List<IBody2>(original);
                 Lap("birleştirme");
+                UI.PageLog.Write($"  birleşim: {bodies.Count} gövde → {lumps.Count} parça");
                 // What the bridges and cavity fills add, for the preview to draw; null when it is not known exactly
                 // (the offset bridge), and then it is found by subtracting the union, which is slow on large models.
                 var filledIn = new List<IBody2>();
@@ -443,6 +495,8 @@ namespace GeoSimplifier.SolidWorks
                 result.Seconds = watch.Elapsed.TotalSeconds;
                 result.Timings = string.Join(", ", laps);
                 UI.PageLog.Write($"Süreler ({bodies.Count} gövde): {result.Timings}");
+                using (var self = Process.GetCurrentProcess())
+                    UI.PageLog.Write($"  bellek: şu an {self.WorkingSet64 / 1e9:F1} GB, en çok {self.PeakWorkingSet64 / 1e9:F1} GB");
                 return result;
             }
             finally
@@ -458,24 +512,82 @@ namespace GeoSimplifier.SolidWorks
         /// With <paramref name="configurationName"/>, puts the result into a new configuration of
         /// <paramref name="source"/> (see <see cref="ConfigurationOutput"/>) instead of a new part.
         /// </summary>
-        public string Commit(WrapResult result, IModelDoc2 source, string configurationName)
+        public string Commit(WrapResult result, IModelDoc2 source, string configurationName) =>
+            Commit(result, source, configurationName, surfaceShell: false);
+
+        /// <param name="surfaceShell">Put in only the outer skin: each result body becomes one surface body made of
+        /// its faces (the insides are filled, so all of them are outer faces), and no solid.</param>
+        public string Commit(WrapResult result, IModelDoc2 source, string configurationName, bool surfaceShell)
         {
+            var bodies = surfaceShell ? Shells(result) : result.Bodies;
             if (source != null && configurationName != null)
                 return "Tamamlandı: " + result.Summary() + " " +
-                       new ConfigurationOutput(_swApp).Create(source, result.Bodies, configurationName, NewPart);
+                       new ConfigurationOutput(_swApp).Create(source, bodies, configurationName, NewPart);
 
             var part = NewPart();
             int created = 0;
             int featureOptions = (int)(swCreateFeatureBodyOpts_e.swCreateFeatureBodyCheck | swCreateFeatureBodyOpts_e.swCreateFeatureBodySimplify);
-            foreach (var body in result.Bodies)
+            foreach (var body in bodies)
             {
                 if (part.CreateFeatureFromBody3((IBody2)body.Copy(), false, featureOptions) != null)
                     created++;
             }
             ((IModelDoc2)part).ViewZoomtofit2();
-            if (created < result.Bodies.Count)
+            if (created < bodies.Count)
                 result.Notes.Add("Bazı gövdeler parçaya eklenemedi, sonuç eksik olabilir.");
             return "Tamamlandı: " + result.Summary();
+        }
+
+        /// <summary>
+        /// One surface body per result body, from all its faces; a body that cannot be turned into one stays solid.
+        /// Each face is copied as a surface and the copies are knitted back together without forming a solid
+        /// (IModeler.CreateSheetFromFaces returned nothing for these bodies).
+        /// </summary>
+        // CreateBodiesFromSheets2 option that knits into sheet bodies instead of closing them into solids
+        // (found by trying: 0 and 2 gave solids).
+        private const int SheetBodiesOnly = 1;
+
+        private List<IBody2> Shells(WrapResult result)
+        {
+            var modeler = (IModeler)_swApp.GetModeler();
+            var shells = new List<IBody2>();
+            var watch = Stopwatch.StartNew();
+            var progress = new Progress(_swApp, "Shrink wrap: dış kabuk çıkarılıyor");
+            try
+            {
+                int total = result.Bodies.Sum(b => ((object[])b.GetFaces())?.Length ?? 0), done = 0;
+                foreach (var body in result.Bodies)
+                {
+                    var faces = (object[])body.GetFaces() ?? new object[0];
+                    var sheets = new List<IBody2>();
+                    foreach (IFace2 face in faces)
+                    {
+                        if (done++ % 100 == 0)
+                        {
+                            progress.UpdateProgress(100 * done / Math.Max(1, total));
+                            progress.UpdateTitle($"Shrink wrap: dış kabuk çıkarılıyor ({done}/{total} yüz)");
+                        }
+                        if (face.CreateSheetBody() is IBody2 sheet)
+                            sheets.Add(sheet);
+                    }
+                    int error = 0;
+                    var knitted = sheets.Count == 0 ? null
+                        : ((object[])modeler.CreateBodiesFromSheets2(sheets.ToArray(), SheetBodiesOnly, 1e-5, ref error))?.OfType<IBody2>().ToList();
+                    if (knitted == null || knitted.Count == 0 || sheets.Count < faces.Length)
+                    {
+                        result.Notes.Add("Bir gövde yüzey gövdesine çevrilemedi; katı olarak bırakıldı.");
+                        shells.Add(body);
+                        continue;
+                    }
+                    shells.AddRange(knitted);
+                }
+            }
+            finally
+            {
+                progress.End();
+            }
+            UI.PageLog.Write($"  dış kabuk: {result.Bodies.Count} gövde → {shells.Count(s => s.GetType() == (int)swBodyType_e.swSheetBody)} yüzey gövdesi ({watch.Elapsed.TotalSeconds:F1} sn)");
+            return shells;
         }
 
         private IPartDoc NewPart()
