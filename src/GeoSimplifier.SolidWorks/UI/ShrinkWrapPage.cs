@@ -335,6 +335,8 @@ namespace GeoSimplifier.SolidWorks.UI
                     text += " Bu belgede önizleme çizilemiyor; sonuç Tamam ile yeni parça olarak oluşturulur.";
                 else if (!shown)
                     text += " (Önizleme bu belgede çizilemedi.)";
+                else if (_preview.IsSkin)
+                    text += "";
                 else if (_preview.EnvelopeLeftOut)
                     text += " Büyük model: önizlemede zarf çizilmiyor, eklenecek malzeme turuncu gösteriliyor.";
                 else

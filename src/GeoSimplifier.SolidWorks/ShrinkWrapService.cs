@@ -810,27 +810,19 @@ namespace GeoSimplifier.SolidWorks
                     // First of all, small parts (screws, nuts, washers, small fittings) are left out, wherever they
                     // are, even on the outside: below MinPartPercent of the model's size (the diagonal of its box,
                     // as for the shell's small surfaces). They get no work at all; holes they sat in close as usual.
-                    // A part is measured as a whole (all its bodies together): an imported part made of hundreds
-                    // of small surface patches is still a large part.
+                    // Each body is measured alone here, as before. (Measuring whole parts kept a 974-patch surface
+                    // part of 7300002 that used to drop out, and made its shell 2.7 times slower; the surface path,
+                    // Skin, measures whole parts.)
                     var boxes = bodies.Select(BodyOps.AnyBounds).ToList();
                     var model = boxes.Aggregate(Core.Geometry.Aabb.Empty, (a, b) => a.Union(b));
                     double limit = options.MinPartPercent / 100 * (model.Max - model.Min).Length;
-                    var partBoxes = new Dictionary<string, Core.Geometry.Aabb>();
-                    for (int i = 0; i < bodies.Count; i++)
-                        if (i < bodyOwners.Count && !string.IsNullOrEmpty(bodyOwners[i]))
-                            partBoxes[bodyOwners[i]] = partBoxes.TryGetValue(bodyOwners[i], out var pb) ? pb.Union(boxes[i]) : boxes[i];
-                    Core.Geometry.Aabb PartBox(int i) =>
-                        i < bodyOwners.Count && !string.IsNullOrEmpty(bodyOwners[i]) ? partBoxes[bodyOwners[i]] : boxes[i];
                     int before = bodies.Count;
                     for (int i = bodies.Count - 1; i >= 0; i--)
-                    {
-                        var box = PartBox(i);
-                        if (!box.IsEmpty && (box.Max - box.Min).Length < limit && bodies.Count > 1)
+                        if (!boxes[i].IsEmpty && (boxes[i].Max - boxes[i].Min).Length < limit && bodies.Count > 1)
                         {
                             bodies.RemoveAt(i);
                             if (i < instances.Count) instances.RemoveAt(i);
                         }
-                    }
                     result.SmallPartsRemoved = before - bodies.Count;
                     UI.PageLog.Write($"  küçük parçalar: {before - bodies.Count} gövde çıkarıldı (%{options.MinPartPercent:0.#} = {limit * 1000:F0} mm altı)");
                 }                if (options.SurfaceShell && !options.Preview && instances.Count > 1)
