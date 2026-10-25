@@ -768,6 +768,7 @@ namespace GeoSimplifier.SolidWorks
                 // Which component each body comes from, so small parts are judged as whole parts.
                 var bodyOwners = new List<string>();
                 var bodies = BodyCollector.CopyBodies(source, exclusions, out var excluded, instances, bodyOwners);
+                UI.PageLog.Write($"  katı gövdeler toplandı: {bodies.Count} ({watch.Elapsed.TotalSeconds:F1} sn)");
                 var ops = new BodyOps(_swApp) { Trace = System.Environment.GetEnvironmentVariable("GEOSIMPLIFIER_TRACE") == "1" };
 
                 // Surface bodies are wrapped as thin solids (0.1 mm). Knitting those of each component first
@@ -779,6 +780,7 @@ namespace GeoSimplifier.SolidWorks
                 var excludedSheets = new List<IBody2>();
                 var sheetInstances = new List<(string key, double[] transform)>();
                 var sheets = lidPreview ? new List<IBody2>() : BodyCollector.CopySheets(source, exclusions, owners, excludedSheets, sheetInstances);
+                UI.PageLog.Write($"  yüzey gövdeleri toplandı: {sheets.Count} ({watch.Elapsed.TotalSeconds:F1} sn)");
                 if (lidPreview)
                 {
                     // The preview of a surface model's outer skin: which parts go as small (red). Seeing which
@@ -830,6 +832,7 @@ namespace GeoSimplifier.SolidWorks
                     }
                     result.Sheets = sheets.Count - failed;
                     result.FailedSheets = failed;
+                    UI.PageLog.Write($"  yüzeyler kalınlaştırıldı ({watch.Elapsed.TotalSeconds:F1} sn)");
                     if (failed > 0)
                         UI.PageLog.Write($"  kalınlaşmayan yüzeyler: {failed}/{sheets.Count}, en çok: " +
                                          string.Join(", ", failedBy.OrderByDescending(kv => kv.Value).Take(8).Select(kv => $"{kv.Key} {kv.Value}")));

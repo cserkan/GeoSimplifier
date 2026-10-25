@@ -262,14 +262,9 @@ namespace GeoSimplifier.SolidWorks.Geometry
             failed = 0;
             foreach (var sheet in sheets)
             {
-                // Imported patches that will not thicken both ways often do one way, or thinner.
-                IBody2 solid = null;
-                foreach (var (t, side) in new[] { (thickness, swThickenDirection_e.swThickenDirection_Both),
-                                                  (thickness, swThickenDirection_e.swThickenDirection_Side1),
-                                                  (thickness, swThickenDirection_e.swThickenDirection_Side2),
-                                                  (thickness / 10, swThickenDirection_e.swThickenDirection_Both) })
-                    if ((solid = _modeler.ThickenSheet((Body2)sheet, t, (int)side)) != null)
-                        break;
+                // (Retrying one-sided and thinner saved 18 of 26 failing surfaces on 7300002 but made gathering
+                // 12 s slower, and those surfaces were then left out as small anyway.)
+                var solid = _modeler.ThickenSheet((Body2)sheet, thickness, (int)swThickenDirection_e.swThickenDirection_Both);
                 if (solid != null)
                     solids.Add(solid);
                 else
