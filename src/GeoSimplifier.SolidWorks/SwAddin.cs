@@ -169,6 +169,9 @@ namespace GeoSimplifier.SolidWorks
             ShrinkWrapService.MaxSheetsPerPart = maxSheets.Success ? int.Parse(maxSheets.Groups[1].Value) : 150;
             if (maxSheets.Success)
                 limitsMm = limitsMm.Remove(maxSheets.Index, maxSheets.Length);
+            // "nozoom:" leaves the result's view unfitted (a trial).
+            ShrinkWrapService.SkipZoom = limitsMm.Contains("nozoom:");
+            limitsMm = limitsMm.Replace("nozoom:", "");
             // "wizard:" clicks through the two pages first.
             bool wizard = limitsMm.Contains("wizard:");
             limitsMm = limitsMm.Replace("wizard:", "");

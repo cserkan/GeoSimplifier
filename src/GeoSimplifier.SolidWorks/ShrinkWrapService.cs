@@ -130,6 +130,9 @@ namespace GeoSimplifier.SolidWorks
         // 5,843 surface bodies and looked complete; Serkan took that.
         public static double SkinMinArea { get; set; } = 1e-6;
 
+        /// <summary>A trial: leave the new part's view as it is instead of zooming to fit.</summary>
+        public static bool SkipZoom { get; set; }
+
         /// <summary>Whether surface bodies are knitted per component before wrapping (for trials; see Compute).</summary>
         public static bool KnitSheets { get; set; }
 
@@ -817,25 +820,15 @@ namespace GeoSimplifier.SolidWorks
                     UI.PageLog.Write($"  yüzey dikme: {sheets.Count} yüzey → {closed} kapalı katı + {knitted} dikili yüzey + " +
                                      $"{thick.Count - closed - knitted} tek yüzey, {failed} kalınlaşmadı ({knitWatch.Elapsed.TotalSeconds:F1} sn)");
                 }
-                else if (sheets.Count > 0)
+                // Otherwise surface bodies are not thickened (Serkan: no thickening attempts): they skip the wrap
+                // and come through as they are, apart from small ones (same limit as for parts, below).
+                var asIs = KnitSheets ? new List<IBody2>() : sheets;
+                if (bodies.Count == 0 && asIs.Count > 0)
                 {
-                    int failed = 0;
-                    var failedBy = new Dictionary<string, int>();
-                    for (int i = 0; i < sheets.Count; i++)
-                    {
-                        var thick = ops.ThickenSheets(new List<IBody2> { sheets[i] }, 1e-4, out int f);
-                        failed += f;
-                        if (f > 0)
-                            failedBy[owners[i]] = (failedBy.TryGetValue(owners[i], out int n) ? n : 0) + f;
-                        bodies.AddRange(thick);
-                        bodyOwners.AddRange(thick.Select(t => owners[i]));
-                    }
-                    result.Sheets = sheets.Count - failed;
-                    result.FailedSheets = failed;
-                    UI.PageLog.Write($"  yüzeyler kalınlaştırıldı ({watch.Elapsed.TotalSeconds:F1} sn)");
-                    if (failed > 0)
-                        UI.PageLog.Write($"  kalınlaşmayan yüzeyler: {failed}/{sheets.Count}, en çok: " +
-                                         string.Join(", ", failedBy.OrderByDescending(kv => kv.Value).Take(8).Select(kv => $"{kv.Key} {kv.Value}")));
+                    result.Bodies = asIs;
+                    result.Sheets = asIs.Count;
+                    result.Seconds = watch.Elapsed.TotalSeconds;
+                    return result;
                 }
                 if (bodies.Count == 0)
                     throw new InvalidOperationException(excluded.Count > 0
@@ -843,7 +836,7 @@ namespace GeoSimplifier.SolidWorks
                         : result.FailedSheets > 0
                             ? "Katı gövde yok; yüzeyler kalınlaştırılamadı."
                             : "Görünür katı veya yüzey gövdesi bulunamadı.");
-                if (options.MinPartPercent > 0 && bodies.Count > 1)
+                if (options.MinPartPercent > 0 && bodies.Count + asIs.Count > 1)
                 {
                     // First of all, small parts (screws, nuts, washers, small fittings) are left out, wherever they
                     // are, even on the outside: below MinPartPercent of the model's size (the diagonal of its box,
@@ -852,18 +845,23 @@ namespace GeoSimplifier.SolidWorks
                     // part of 7300002 that used to drop out, and made its shell 2.7 times slower; the surface path,
                     // Skin, measures whole parts.)
                     var boxes = bodies.Select(BodyOps.AnyBounds).ToList();
-                    var model = boxes.Aggregate(Core.Geometry.Aabb.Empty, (a, b) => a.Union(b));
+                    var sheetBoxes = asIs.Select(BodyOps.AnyBounds).ToList();
+                    var model = boxes.Concat(sheetBoxes).Aggregate(Core.Geometry.Aabb.Empty, (a, b) => a.Union(b));
                     double limit = options.MinPartPercent / 100 * (model.Max - model.Min).Length;
-                    int before = bodies.Count;
+                    int before = bodies.Count + asIs.Count;
                     for (int i = bodies.Count - 1; i >= 0; i--)
                         if (!boxes[i].IsEmpty && (boxes[i].Max - boxes[i].Min).Length < limit && bodies.Count > 1)
                         {
                             bodies.RemoveAt(i);
                             if (i < instances.Count) instances.RemoveAt(i);
                         }
-                    result.SmallPartsRemoved = before - bodies.Count;
-                    UI.PageLog.Write($"  küçük parçalar: {before - bodies.Count} gövde çıkarıldı (%{options.MinPartPercent:0.#} = {limit * 1000:F0} mm altı)");
-                }                if (options.SurfaceShell && !options.Preview && instances.Count > 1)
+                    asIs = asIs.Where((s, i) => sheetBoxes[i].IsEmpty || (sheetBoxes[i].Max - sheetBoxes[i].Min).Length >= limit).ToList();
+                    result.SmallPartsRemoved = before - bodies.Count - asIs.Count;
+                    UI.PageLog.Write($"  küçük parçalar: {result.SmallPartsRemoved} gövde çıkarıldı (%{options.MinPartPercent:0.#} = {limit * 1000:F0} mm altı)");
+                }
+                if (asIs.Count > 0)
+                    UI.PageLog.Write($"  yüzey gövdeleri kalınlaştırılmadan olduğu gibi kalıyor: {asIs.Count}");
+                result.Sheets = asIs.Count;                if (options.SurfaceShell && !options.Preview && instances.Count > 1)
                 {
                     // For the outer skin, parts the wrap never touches (no ray from outside reaches them: bearings,
                     // a rotor) are left out of hole closing and uniting. Not for a solid result: where the housing is
@@ -1201,7 +1199,7 @@ namespace GeoSimplifier.SolidWorks
                     UI.PageLog.Write($"  UYARI: {outside.Count} sonuç gövdesi modelin kutusunun dışına taşıyor");
                     result.Notes.Add("Uyarı: sonuç modelin dışına taşıyor; lütfen kontrol edin.");
                 }
-                result.Bodies = lumps;
+                result.Bodies = lumps.Concat(asIs).ToList();
                 // The translucent envelope is lifted off the model's faces when MakeOffset works. On installations where
                 // it fails a plain copy is drawn on the faces; it shows streaks, but the envelope stays visible.
                 // A translucent envelope of a large model takes SOLIDWORKS seconds to redraw (3.5 s for a motor of
@@ -1289,7 +1287,9 @@ namespace GeoSimplifier.SolidWorks
             double beforeZoom = commitWatch.Elapsed.TotalSeconds;
             // Most of this is SOLIDWORKS drawing the new part for the first time: zooming to the bodies' known box
             // instead took as long (26 s on V12).
-            partDoc.ViewZoomtofit2();
+            // With SOLIDWORKS hidden (batch runs) nobody looks at the view, so it is not fitted.
+            if (!SkipZoom && _swApp.Visible)
+                partDoc.ViewZoomtofit2();
             UI.PageLog.Write($"  sığdırma {commitWatch.Elapsed.TotalSeconds - beforeZoom:F1} sn");
             if (created < bodies.Count)
                 result.Notes.Add("Bazı gövdeler parçaya eklenemedi, sonuç eksik olabilir.");
@@ -1318,6 +1318,12 @@ namespace GeoSimplifier.SolidWorks
                 finally { _swApp.DocumentVisible(true, (int)swDocumentTypes_e.swDocPART); }
                 foreach (var body in result.Bodies)
                 {
+                    // Surface bodies of the model came through the wrap as they are; they are already surfaces.
+                    if (body.GetType() == (int)swBodyType_e.swSheetBody)
+                    {
+                        shells.Add(body);
+                        continue;
+                    }
                     progress.UpdateTitle("Shrink wrap: dış kabuk: görünen yüzler bulunuyor");
                     progress.UpdateProgress(10);
                     var feature = ((IPartDoc)temp).CreateFeatureFromBody3((IBody2)body.Copy(), false, 0) as IFeature;
