@@ -45,25 +45,117 @@ namespace GeoSimplifier.Probe
                 Console.WriteLine($"Görüntü: {saved} ({args[image + 1]})");
                 return 0;
             }
+            int sewAt = Array.IndexOf(args, "--sew");
+            if (sewAt >= 0 && sewAt + 1 < args.Length)
+            {
+                // --sew <part> [tol mm]: puts copies of the part's surface bodies into a new hidden part and knits
+                // them with the Knit Surface feature (try to form solid); prints what comes out. Nothing is saved.
+                double tol = sewAt + 2 < args.Length ? double.Parse(args[sewAt + 2], CultureInfo.InvariantCulture) / 1000 : 1e-4;
+                int oe = 0, ow = 0;
+                var src = (IPartDoc)swApp.OpenDoc6(args[sewAt + 1], 1, 1, "", ref oe, ref ow);
+                var sheets = ((object[])src.GetBodies2(1, true) ?? new object[0]).Cast<IBody2>().ToList();
+                var watch = System.Diagnostics.Stopwatch.StartNew();
+                string template = swApp.GetUserPreferenceStringValue(8);
+                swApp.DocumentVisible(false, 1);
+                var temp = (IPartDoc)swApp.NewDocument(template, 0, 0, 0);
+                swApp.DocumentVisible(true, 1);
+                var md = (IModelDoc2)temp;
+                md.FeatureManager.EnableFeatureTree = false;
+                foreach (var s in sheets)
+                    temp.CreateFeatureFromBody3((IBody2)s.Copy(), false, 0);
+                double tPut = watch.Elapsed.TotalSeconds;
+                md.ClearSelection2(true);
+                int picked = 0;
+                foreach (IBody2 b in (object[])temp.GetBodies2(1, true) ?? new object[0])
+                    foreach (IFace2 face in (object[])b.GetFaces())
+                        if (((IEntity)face).Select4(true, null)) picked++;
+                Console.WriteLine($"seçilen yüz {picked}, seçim {((ISelectionMgr)md.SelectionManager).GetSelectedObjectCount2(-1)}");
+                var feat = md.FeatureManager.InsertSewRefSurface(false, true, false, tol, tol);
+                var solids = ((object[])temp.GetBodies2(0, true) ?? new object[0]).Cast<IBody2>().ToList();
+                var rest = ((object[])temp.GetBodies2(1, true) ?? new object[0]).Cast<IBody2>().ToList();
+                Console.WriteLine($"{sheets.Count} yüzey → dikme {(feat != null ? "oldu" : "OLMADI")}: {solids.Count} katı, {rest.Count} yüzey " +
+                                  $"({rest.Sum(b => ((object[])b.GetFaces()).Length)} yüz); koyma {tPut:F1} sn, toplam {watch.Elapsed.TotalSeconds:F1} sn");
+                swApp.CloseDoc(md.GetTitle());
+                return 0;
+            }
+            int knitAt = Array.IndexOf(args, "--knit");
+            if (knitAt >= 0 && knitAt + 1 < args.Length)
+            {
+                // --knit <part>: knits the part's surface bodies with CreateBodiesFromSheets2 for some options and
+                // tolerances and prints what comes out (kind, faces, open edges) and whether it thickens.
+                int oe = 0, ow = 0;
+                var pd = (IPartDoc)swApp.OpenDoc6(args[knitAt + 1], 1, 1, "", ref oe, ref ow);
+                var sheets = ((object[])pd.GetBodies2(1, true) ?? new object[0]).Cast<IBody2>().ToList();
+                var modeler = (IModeler)swApp.GetModeler();
+                Console.WriteLine($"{sheets.Count} yüzey gövdesi, {sheets.Sum(b => ((object[])b.GetFaces()).Length)} yüz");
+                {
+                    // Each sheet alone: open edges, and whether it becomes a solid by itself.
+                    int closedSheets = 0, alone = 0, aloneSolid = 0;
+                    foreach (var s in sheets)
+                    {
+                        int openCount = ((object[])s.GetEdges() ?? new object[0]).Cast<IEdge>().Count(e => ((object[])e.GetTwoAdjacentFaces2()).Count(f => f != null) < 2);
+                        if (openCount == 0) closedSheets++;
+                        int err = 0;
+                        var one = ((object[])modeler.CreateBodiesFromSheets2(new object[] { s.Copy() }, 0, 1e-4, ref err))?.Cast<IBody2>().ToList();
+                        if (one != null) { alone++; if (one.Any(b => b.GetType() == 0)) aloneSolid++; }
+                    }
+                    Console.WriteLine($"  tek tek: {closedSheets} kapalı (açık kenarsız) yüzey, {alone} tanesi tek başına işlendi, {aloneSolid} tanesi katı oldu");
+                    var first = sheets[0];
+                    Console.WriteLine($"  ilk yüzey: {((object[])first.GetFaces()).Length} yüz, {((object[])first.GetEdges() ?? new object[0]).Length} kenar, kutu {Box((double[])first.GetBodyBox())}");
+                }
+                foreach (int option in new[] { 0, 1, 2 })
+                    foreach (double tol in new[] { 1e-5, 1e-4, 1e-3, 3e-3 })
+                    {
+                        int error = 0;
+                        var watch = System.Diagnostics.Stopwatch.StartNew();
+                        var res = ((object[])modeler.CreateBodiesFromSheets2(sheets.Select(s => (object)s.Copy()).ToArray(), option, tol, ref error))?.Cast<IBody2>().ToList();
+                        if (res == null) { Console.WriteLine($"  seçenek {option}, tol {tol * 1000} mm: sonuç yok (hata {error})"); continue; }
+                        int solids = res.Count(b => b.GetType() == 0);
+                        int thick = res.Where(b => b.GetType() != 0).Count(b => modeler.ThickenSheet((Body2)b, 1e-4, 0) != null);
+                        int openEdges = res.Sum(b => ((object[])b.GetEdges() ?? new object[0]).Cast<IEdge>().Count(e => ((object[])e.GetTwoAdjacentFaces2()).Count(f => f != null) < 2));
+                        Console.WriteLine($"  seçenek {option}, tol {tol * 1000} mm: {res.Count} gövde ({solids} katı), {res.Sum(b => ((object[])b.GetFaces()).Length)} yüz, " +
+                                          $"{openEdges} açık kenar, kalınlaşan yüzey {thick}/{res.Count - solids}, hata {error}, {watch.Elapsed.TotalSeconds:F1} sn");
+                    }
+                return 0;
+            }
             if (Array.IndexOf(args, "--sheets-by-part") >= 0)
             {
-                // Which parts of the active assembly hold surface (sheet) bodies: per part file, instances and bodies.
-                var asmDoc = (IAssemblyDoc)swApp.ActiveDoc;
+                // Which parts of the active assembly (or the open one named after the option) hold surface (sheet)
+                // bodies: per part file, instances and bodies. Bodies with boxes over 100 m are listed too.
+                int sbp = Array.IndexOf(args, "--sheets-by-part");
+                var asmDoc = (IAssemblyDoc)(sbp + 1 < args.Length ? swApp.GetOpenDocumentByName(args[sbp + 1]) : swApp.ActiveDoc);
                 var rows = new System.Collections.Generic.Dictionary<string, (int instances, int sheets, int solids)>();
-                int leaves = 0, solidTotal = 0, sheetTotal = 0;
+                int leaves = 0, solidTotal = 0, sheetTotal = 0, noBodies = 0;
                 foreach (IComponent2 comp in (object[])asmDoc.GetComponents(false) ?? new object[0])
                 {
                     if (comp.GetSuppression2() == 0 || ((object[])comp.GetChildren())?.Length > 0) continue;
                     leaves++;
-                    int sh = ((object[])comp.GetBodies3(1, out _))?.Length ?? 0;
-                    int so = ((object[])comp.GetBodies3(0, out _))?.Length ?? 0;
+                    var shb = (object[])comp.GetBodies3(1, out _);
+                    var sob = (object[])comp.GetBodies3(0, out _);
+                    int sh = shb?.Length ?? 0;
+                    int so = sob?.Length ?? 0;
+                    if (sh + so == 0) noBodies++;
+                    foreach (IBody2 b in sob ?? new object[0])
+                    {
+                        var t = (double[])((IMathTransform)comp.Transform2)?.ArrayData;
+                        var copy = (IBody2)b.Copy();
+                        if (comp.Transform2 != null) copy.ApplyTransform((MathTransform)comp.Transform2);
+                        Console.WriteLine($"  KATI: {comp.Name2} kutu {Box((double[])b.GetBodyBox())} → montajda {Box((double[])copy.GetBodyBox())}" +
+                                          (t == null ? "" : $", öteleme {t[9] * 1000:F0};{t[10] * 1000:F0};{t[11] * 1000:F0} mm, ölçek {t[12]:G4}"));
+                    }
+                    foreach (IBody2 b in (shb ?? new object[0]).Concat(sob ?? new object[0]))
+                    {
+                        var bb = (double[])b.GetBodyBox();
+                        if (bb != null && Math.Max(bb[3] - bb[0], Math.Max(bb[4] - bb[1], bb[5] - bb[2])) > 100)
+                            Console.WriteLine($"  DEV KUTU: {comp.Name2} {(b.GetType() == 0 ? "katı" : "yüzey")} {Box(bb)}");
+                    }
                     solidTotal += so; sheetTotal += sh;
                     if (sh == 0) continue;
                     string key = System.IO.Path.GetFileName(comp.GetPathName());
                     rows.TryGetValue(key, out var r);
                     rows[key] = (r.instances + 1, r.sheets + sh, r.solids + so);
                 }
-                Console.WriteLine($"Yaprak bileşen {leaves}, katı gövde {solidTotal}, yüzey gövdesi {sheetTotal}, yüzeyli parça dosyası {rows.Count}");
+                Console.WriteLine($"Yaprak bileşen {leaves} ({noBodies} gövdesiz), katı gövde {solidTotal}, yüzey gövdesi {sheetTotal}, yüzeyli parça dosyası {rows.Count}");
                 foreach (var kv in rows.OrderByDescending(r => r.Value.sheets).Take(20))
                     Console.WriteLine($"  {kv.Key}: {kv.Value.instances} adet, {kv.Value.sheets} yüzey gövdesi, {kv.Value.solids} katı gövde");
                 return 0;

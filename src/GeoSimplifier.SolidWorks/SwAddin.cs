@@ -161,6 +161,17 @@ namespace GeoSimplifier.SolidWorks
             limitsMm = limitsMm.Replace("single:", "");
             bool shell = limitsMm.Contains("shell:");
             limitsMm = limitsMm.Replace("shell:", "");
+            // "knit:" knits surface bodies per component first (a trial).
+            ShrinkWrapService.KnitSheets = limitsMm.Contains("knit:");
+            limitsMm = limitsMm.Replace("knit:", "");
+            // "emboss<mm>:" sets the emboss height.
+            var embossMatch = System.Text.RegularExpressions.Regex.Match(limitsMm, @"emboss([0-9.]+):");
+            double emboss = -1;
+            if (embossMatch.Success)
+            {
+                emboss = double.Parse(embossMatch.Groups[1].Value, System.Globalization.CultureInfo.InvariantCulture) / 1000;
+                limitsMm = limitsMm.Remove(embossMatch.Index, embossMatch.Length);
+            }
             // A leading "small<mm>:" sets "Bundan küçük parçaları çıkar".
             double small = 0;
             var smallMatch = System.Text.RegularExpressions.Regex.Match(limitsMm, @"^small([0-9.]+):");
@@ -185,6 +196,8 @@ namespace GeoSimplifier.SolidWorks
                     _page.SingleBodyForTest();
                 if (small > 0)
                     _page.SmallPartsForTest(small);
+                if (emboss >= 0)
+                    _page.EmbossForTest(emboss);
                 _page.Simulate(limits, ok, forceGc);
             }));
             return "başladı";

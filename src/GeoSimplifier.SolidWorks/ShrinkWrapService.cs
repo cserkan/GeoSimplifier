@@ -44,6 +44,9 @@ namespace GeoSimplifier.SolidWorks
         /// <summary>Small parts left out (<see cref="ShrinkWrapOptions.MinPartPercent"/>).</summary>
         public int SmallPartsRemoved;
 
+        /// <summary>The bodies already are the outer skin of a surface model (see Skin); Commit puts them in as they are.</summary>
+        public bool IsSkin;
+
         /// <summary>"Tek gövdeye zorla" was off: many bodies are expected.</summary>
         public bool ManyBodiesWanted;
 
@@ -108,6 +111,9 @@ namespace GeoSimplifier.SolidWorks
         // Above this many faces the quick preview draws no translucent envelope: on a 43-body motor (about 5000
         // faces) redrawing it took 5 s of a preview's 11.
         private const int LargeModelFaces = 3000;
+
+        /// <summary>Whether surface bodies are knitted per component before wrapping (for trials; see Compute).</summary>
+        public static bool KnitSheets { get; set; }
 
         // Lids the preview draws at most (the largest ones).
         private const int MaxPreviewLids = 800;
@@ -299,6 +305,114 @@ namespace GeoSimplifier.SolidWorks
             return rays.Seen(directions: 32, spacing: Math.Max(extent.LongestSide / 250, 5e-4), maxRaysPerSide: 250);
         }
 
+        /// <summary>
+        /// The outer skin of a model made mostly of surface bodies, without making solids: small parts are left
+        /// out (each part measured as a whole), then every face of every body, solid or surface, is tested with
+        /// rays from outside. Surface bodies with a face seen from outside are kept as they are; of the solids only
+        /// the faces seen are kept, copied as surfaces. With "Tek gövdeye zorla" each part's kept surfaces are knitted
+        /// where SOLIDWORKS manages to.
+        /// </summary>
+        private void Skin(WrapResult result, ShrinkWrapOptions options, List<IBody2> solids, List<string> solidOwners,
+                          List<IBody2> sheets, List<string> sheetOwners, Action<int, int> report)
+        {
+            var watch = Stopwatch.StartNew();
+            var bodies = solids.Concat(sheets).ToList();
+            var owners = solidOwners.Take(solids.Count).Concat(sheetOwners).ToList();
+            int solidCount = solids.Count;
+            result.SourceBodies = bodies.Count;
+            result.IsSkin = true;
+            result.ManyBodiesWanted = !options.ForceSingleBody;
+
+            var boxes = bodies.Select(BodyOps.AnyBounds).ToList();
+            var model = boxes.Aggregate(Core.Geometry.Aabb.Empty, (a, b) => a.Union(b));
+            var keep = Enumerable.Range(0, bodies.Count).ToList();
+            if (options.MinPartPercent > 0)
+            {
+                double limit = options.MinPartPercent / 100 * (model.Max - model.Min).Length;
+                var partBoxes = new Dictionary<string, Core.Geometry.Aabb>();
+                for (int i = 0; i < bodies.Count; i++)
+                    partBoxes[owners[i] ?? ""] = partBoxes.TryGetValue(owners[i] ?? "", out var pb) ? pb.Union(boxes[i]) : boxes[i];
+                var small = new HashSet<string>(partBoxes.Where(kv => kv.Key != "" && (kv.Value.Max - kv.Value.Min).Length < limit).Select(kv => kv.Key));
+                keep = keep.Where(i => !small.Contains(owners[i] ?? "")).ToList();
+                result.SmallPartsRemoved = small.Count;
+                UI.PageLog.Write($"  küçük parçalar: {small.Count} parça ({bodies.Count - keep.Count} gövde) çıkarıldı (%{options.MinPartPercent:0.#} = {limit * 1000:F0} mm altı)");
+            }
+
+            // Every face of the kept bodies goes into one ray caster; surfaces have no inside, so rays leave them
+            // on both sides.
+            var visibility = new Core.Geometry.FaceVisibility();
+            var faceOf = new List<(int body, IFace2 face)>();
+            int done = 0;
+            foreach (int i in keep)
+            {
+                report(done++, keep.Count);
+                bool sheet = i >= solidCount;
+                foreach (IFace2 face in (object[])bodies[i].GetFaces() ?? new object[0])
+                {
+                    var triangles = face.GetTessTriangles(true) as float[];
+                    if (triangles == null || triangles.Length == 0)
+                        continue;
+                    var normals = face.GetTessNorms() as float[];
+                    visibility.AddFace(faceOf.Count, triangles, normals, samples: 4, twoSided: sheet);
+                    faceOf.Add((i, face));
+                }
+            }
+            double size = (model.Max - model.Min).Length;
+            var visible = visibility.Visible(Math.Max(1e-5, size * 2e-5));
+            UI.PageLog.Write($"  dış yüzler: {visible.Count}/{faceOf.Count} yüz görünüyor, {visibility.Triangles} üçgen ({watch.Elapsed.TotalSeconds:F1} sn)");
+
+            var seenBodies = new HashSet<int>();
+            var seenSolidFaces = new List<(int body, IFace2 face)>();
+            foreach (int f in visible)
+            {
+                var (b, face) = faceOf[f];
+                if (b >= solidCount) seenBodies.Add(b);
+                else seenSolidFaces.Add((b, face));
+            }
+            var output = new List<(string owner, IBody2 body)>();
+            foreach (int b in seenBodies.OrderBy(b => b))
+                output.Add((owners[b], bodies[b]));
+            int solidFailed = 0;
+            foreach (var (b, face) in seenSolidFaces)
+            {
+                if (face.CreateSheetBody() is IBody2 copy) output.Add((owners[b], copy));
+                else solidFailed++;
+            }
+            if (solidFailed > 0)
+                result.Notes.Add($"{solidFailed} katı yüzü yüzeye çevrilemedi.");
+
+            if (options.ForceSingleBody)
+            {
+                var modeler = (IModeler)_swApp.GetModeler();
+                var knitted = new List<(string, IBody2)>();
+                int joined = 0;
+                foreach (var group in output.GroupBy(o => o.owner ?? ""))
+                {
+                    var parts = group.Select(g => g.body).ToList();
+                    int error = 0;
+                    List<IBody2> sewn = null;
+                    if (parts.Count > 1)
+                    {
+                        try { sewn = ((object[])modeler.CreateBodiesFromSheets2(parts.Select(p => (object)p.Copy()).ToArray(), SheetBodiesOnly, 1e-4, ref error))?.OfType<IBody2>().ToList(); }
+                        catch (System.Runtime.InteropServices.COMException) { }
+                    }
+                    if (sewn != null && sewn.Count > 0 && sewn.Count < parts.Count)
+                    {
+                        joined += parts.Count - sewn.Count;
+                        knitted.AddRange(sewn.Select(s => (group.Key, s)));
+                    }
+                    else
+                        knitted.AddRange(parts.Select(p => (group.Key, p)));
+                }
+                UI.PageLog.Write($"  dikme: {output.Count} yüzey → {knitted.Count} ({joined} birleşti)");
+                output = knitted;
+            }
+            result.Bodies = output.Select(o => o.body).ToList();
+            result.Sheets = seenBodies.Count;
+            UI.PageLog.Write($"  dış kabuk (yüzey modeli): {keep.Count} gövde → {result.Bodies.Count} yüzey gövdesi, " +
+                             $"{result.Bodies.Sum(b => b.GetFaceCount())} yüz ({watch.Elapsed.TotalSeconds:F1} sn)");
+        }
+
         /// <summary>The twelve triangles of a box's faces.</summary>
         private static List<Core.Geometry.Vec3> BoxTriangles(Core.Geometry.Aabb b)
         {
@@ -459,19 +573,55 @@ namespace GeoSimplifier.SolidWorks
             try
             {
                 var instances = new List<(string key, double[] transform)>();
-                var bodies = BodyCollector.CopyBodies(source, exclusions, out var excluded, instances);
+                // Which component each body comes from, so small parts are judged as whole parts.
+                var bodyOwners = new List<string>();
+                var bodies = BodyCollector.CopyBodies(source, exclusions, out var excluded, instances, bodyOwners);
                 var ops = new BodyOps(_swApp) { Trace = System.Environment.GetEnvironmentVariable("GEOSIMPLIFIER_TRACE") == "1" };
 
-                // Surface bodies are wrapped as they are, as thin solids (0.1 mm); they are not sewn together.
-                // The lid preview does not use them, so it leaves them out (1015 surfaces took seconds to thicken).
+                // Surface bodies are wrapped as thin solids (0.1 mm). Knitting those of each component first
+                // (KnitSheets) closed nothing on the STEP imports tried (V12, 3300155310: SOLIDWORKS refuses to knit
+                // them, in memory and as a Knit feature alike), so it is only done when asked for.
+                // The lid preview does not use them, so it leaves them out (1015 surfaces took seconds).
                 bool lidPreview = options.Preview && options.GapWidth > 0 && !options.Bag;
-                var sheets = lidPreview ? new List<IBody2>() : BodyCollector.CopySheets(source, exclusions);
-                if (sheets.Count > 0)
+                var owners = new List<string>();
+                var sheets = lidPreview ? new List<IBody2>() : BodyCollector.CopySheets(source, exclusions, owners);
+                if (options.SurfaceShell && !options.Preview && sheets.Count > bodies.Count)
                 {
-                    var thick = ops.ThickenSheets(sheets, 1e-4, out int failed);
+                    // A model made of surfaces (STEP imports): its outer skin is taken from the surfaces as they
+                    // are, with no solids made.
+                    Skin(result, options, bodies, bodyOwners, sheets, owners, (d, t) => Report("dış yüzler", 10, 90, d, t));
+                    result.Seconds = watch.Elapsed.TotalSeconds;
+                    return result;
+                }
+                if (sheets.Count > 0 && KnitSheets)
+                {
+                    var knitWatch = System.Diagnostics.Stopwatch.StartNew();
+                    var thick = ops.KnitSheets(sheets, owners, 1e-4, out int closed, out int knitted, out int failed);
                     bodies.AddRange(thick);
+                    bodyOwners.AddRange(thick.Select(t => (string)null));
                     result.Sheets = thick.Count;
                     result.FailedSheets = failed;
+                    UI.PageLog.Write($"  yüzey dikme: {sheets.Count} yüzey → {closed} kapalı katı + {knitted} dikili yüzey + " +
+                                     $"{thick.Count - closed - knitted} tek yüzey, {failed} kalınlaşmadı ({knitWatch.Elapsed.TotalSeconds:F1} sn)");
+                }
+                else if (sheets.Count > 0)
+                {
+                    int failed = 0;
+                    var failedBy = new Dictionary<string, int>();
+                    for (int i = 0; i < sheets.Count; i++)
+                    {
+                        var thick = ops.ThickenSheets(new List<IBody2> { sheets[i] }, 1e-4, out int f);
+                        failed += f;
+                        if (f > 0)
+                            failedBy[owners[i]] = (failedBy.TryGetValue(owners[i], out int n) ? n : 0) + f;
+                        bodies.AddRange(thick);
+                        bodyOwners.AddRange(thick.Select(t => owners[i]));
+                    }
+                    result.Sheets = sheets.Count - failed;
+                    result.FailedSheets = failed;
+                    if (failed > 0)
+                        UI.PageLog.Write($"  kalınlaşmayan yüzeyler: {failed}/{sheets.Count}, en çok: " +
+                                         string.Join(", ", failedBy.OrderByDescending(kv => kv.Value).Take(8).Select(kv => $"{kv.Key} {kv.Value}")));
                 }
                 if (bodies.Count == 0)
                     throw new InvalidOperationException(excluded.Count > 0
@@ -484,16 +634,27 @@ namespace GeoSimplifier.SolidWorks
                     // First of all, small parts (screws, nuts, washers, small fittings) are left out, wherever they
                     // are, even on the outside: below MinPartPercent of the model's size (the diagonal of its box,
                     // as for the shell's small surfaces). They get no work at all; holes they sat in close as usual.
+                    // A part is measured as a whole (all its bodies together): an imported part made of hundreds
+                    // of small surface patches is still a large part.
                     var boxes = bodies.Select(BodyOps.AnyBounds).ToList();
                     var model = boxes.Aggregate(Core.Geometry.Aabb.Empty, (a, b) => a.Union(b));
                     double limit = options.MinPartPercent / 100 * (model.Max - model.Min).Length;
+                    var partBoxes = new Dictionary<string, Core.Geometry.Aabb>();
+                    for (int i = 0; i < bodies.Count; i++)
+                        if (i < bodyOwners.Count && !string.IsNullOrEmpty(bodyOwners[i]))
+                            partBoxes[bodyOwners[i]] = partBoxes.TryGetValue(bodyOwners[i], out var pb) ? pb.Union(boxes[i]) : boxes[i];
+                    Core.Geometry.Aabb PartBox(int i) =>
+                        i < bodyOwners.Count && !string.IsNullOrEmpty(bodyOwners[i]) ? partBoxes[bodyOwners[i]] : boxes[i];
                     int before = bodies.Count;
                     for (int i = bodies.Count - 1; i >= 0; i--)
-                        if (!boxes[i].IsEmpty && (boxes[i].Max - boxes[i].Min).Length < limit && bodies.Count > 1)
+                    {
+                        var box = PartBox(i);
+                        if (!box.IsEmpty && (box.Max - box.Min).Length < limit && bodies.Count > 1)
                         {
                             bodies.RemoveAt(i);
                             if (i < instances.Count) instances.RemoveAt(i);
                         }
+                    }
                     result.SmallPartsRemoved = before - bodies.Count;
                     UI.PageLog.Write($"  küçük parçalar: {before - bodies.Count} gövde çıkarıldı (%{options.MinPartPercent:0.#} = {limit * 1000:F0} mm altı)");
                 }                if (options.SurfaceShell && !options.Preview && instances.Count > 1)
@@ -884,7 +1045,7 @@ namespace GeoSimplifier.SolidWorks
         /// size are deleted; 0 keeps them all.</param>
         public string Commit(WrapResult result, IModelDoc2 source, string configurationName, bool surfaceShell, double smallShellPercent)
         {
-            var bodies = surfaceShell ? Shells(result, smallShellPercent / 100) : result.Bodies;
+            var bodies = surfaceShell && !result.IsSkin ? Shells(result, smallShellPercent / 100) : result.Bodies;
             if (source != null && configurationName != null)
                 return "Tamamlandı: " + result.Summary() + " " +
                        new ConfigurationOutput(_swApp).Create(source, bodies, configurationName, NewPart);

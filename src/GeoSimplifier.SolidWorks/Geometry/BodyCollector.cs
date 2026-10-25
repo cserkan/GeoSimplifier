@@ -10,8 +10,13 @@ namespace GeoSimplifier.SolidWorks.Geometry
     {
         public static List<IBody2> CopyBodies(IModelDoc2 doc) => CopyBodies(doc, null, out _);
 
+        private static bool IsEmpty(IBody2 body) => body.GetBodyBox() == null || body.GetFaceCount() == 0;
+
         /// <summary>Copies of the visible surface (sheet) bodies, in model coordinates, skipping excluded ones.</summary>
-        public static List<IBody2> CopySheets(IModelDoc2 doc, Exclusions exclusions)
+        public static List<IBody2> CopySheets(IModelDoc2 doc, Exclusions exclusions) => CopySheets(doc, exclusions, null);
+
+        /// <summary>As above; <paramref name="owners"/>, when given, receives for each copy the component it came from.</summary>
+        public static List<IBody2> CopySheets(IModelDoc2 doc, Exclusions exclusions, List<string> owners)
         {
             var copies = new List<IBody2>();
             switch ((swDocumentTypes_e)doc.GetType())
@@ -20,8 +25,11 @@ namespace GeoSimplifier.SolidWorks.Geometry
                     var bodies = (object[])((IPartDoc)doc).GetBodies2((int)swBodyType_e.swSheetBody, true);
                     if (bodies != null)
                         foreach (IBody2 body in bodies)
-                            if (exclusions == null || !exclusions.Contains(body, null))
+                            if (!IsEmpty(body) && (exclusions == null || !exclusions.Contains(body, null)))
+                            {
                                 copies.Add((IBody2)body.Copy());
+                                owners?.Add("");
+                            }
                     break;
 
                 case swDocumentTypes_e.swDocASSEMBLY:
@@ -40,12 +48,13 @@ namespace GeoSimplifier.SolidWorks.Geometry
                         var transform = comp.Transform2;
                         foreach (IBody2 body in sheets)
                         {
-                            if (exclusions != null && exclusions.Contains(body, comp))
+                            if (IsEmpty(body) || (exclusions != null && exclusions.Contains(body, comp)))
                                 continue;
                             var copy = (IBody2)body.Copy();
                             if (transform != null)
                                 copy.ApplyTransform(transform);
                             copies.Add(copy);
+                            owners?.Add(comp.Name2);
                         }
                     }
                     break;
@@ -63,7 +72,7 @@ namespace GeoSimplifier.SolidWorks.Geometry
         /// part can share work. Bodies of a part document get a null entry.
         /// </summary>
         public static List<IBody2> CopyBodies(IModelDoc2 doc, Exclusions exclusions, out List<IBody2> excluded,
-                                              List<(string key, double[] transform)> instances)
+                                              List<(string key, double[] transform)> instances, List<string> owners = null)
         {
             var copies = new List<IBody2>();
             excluded = new List<IBody2>();
@@ -74,9 +83,12 @@ namespace GeoSimplifier.SolidWorks.Geometry
                     if (bodies != null)
                         foreach (IBody2 body in bodies)
                         {
+                            if (IsEmpty(body))
+                                continue;
                             bool skip = exclusions != null && exclusions.Contains(body, null);
                             (skip ? excluded : copies).Add((IBody2)body.Copy());
                             if (!skip) instances?.Add((null, null));
+                            if (!skip) owners?.Add("");
                         }
                     break;
 
@@ -103,12 +115,16 @@ namespace GeoSimplifier.SolidWorks.Geometry
                         for (int i = 0; i < compBodies.Length; i++)
                         {
                             var body = (IBody2)compBodies[i];
+                            // Empty bodies (from STEP imports: no faces, no box) would give a box of 10^15 mm.
+                            if (IsEmpty(body))
+                                continue;
                             var copy = (IBody2)body.Copy();
                             if (transform != null)
                                 copy.ApplyTransform(transform);
                             bool skip = wholeComponent || (exclusions != null && exclusions.Contains(body, comp));
                             (skip ? excluded : copies).Add(copy);
                             if (!skip) instances?.Add(($"{part}|{i}", (double[])((IMathTransform)transform)?.ArrayData));
+                            if (!skip) owners?.Add(comp.Name2);
                         }
                     }
                     break;

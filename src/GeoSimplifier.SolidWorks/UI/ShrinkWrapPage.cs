@@ -586,6 +586,12 @@ namespace GeoSimplifier.SolidWorks.UI
             _smallPartsCheck.Checked = size > 0;
         }
 
+        public void EmbossForTest(double height)
+        {
+            _embossBox.Value = height;
+            _embossValue = height;
+        }
+
         public void OnComboboxEditChanged(int Id, string Text) { }
         public void OnComboboxSelectionChanged(int Id, int Item) { }
         public void OnListboxSelectionChanged(int Id, int Item) { }

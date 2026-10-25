@@ -177,6 +177,82 @@ namespace GeoSimplifier.SolidWorks.Geometry
         }
 
         /// <summary>
+        /// Wraps surface bodies as solids, knitting those of each component together in memory first (parts
+        /// imported from STEP often hold hundreds of patches). Shells that close (within 0.1 mm, else 1 mm) become
+        /// real solids (<paramref name="closed"/>); open knitted sheets are thickened like single surfaces. A
+        /// component whose knit fails, lands outside its own box or cannot be thickened has its surfaces thickened
+        /// one by one as before; those that still fail are counted in <paramref name="failed"/>.
+        /// </summary>
+        public List<IBody2> KnitSheets(List<IBody2> sheets, List<string> owners, double thickness,
+                                       out int closed, out int knittedSheets, out int failed)
+        {
+            var solids = new List<IBody2>();
+            closed = knittedSheets = failed = 0;
+            foreach (var group in Enumerable.Range(0, sheets.Count).GroupBy(i => owners[i]))
+            {
+                var parts = group.Select(i => sheets[i]).ToList();
+                List<IBody2> knitted = parts.Count < 2 ? null : Knit(parts, 1e-4);
+                if (knitted != null && knitted.Any(k => k.GetType() != (int)swBodyType_e.swSolidBody))
+                {
+                    var wider = Knit(parts, 1e-3);
+                    if (wider != null && wider.All(k => k.GetType() == (int)swBodyType_e.swSolidBody))
+                        knitted = wider;
+                }
+                var made = new List<IBody2>();
+                int shells = 0, sheetCount = 0;
+                foreach (var k in knitted ?? new List<IBody2>())
+                {
+                    if (k.GetType() == (int)swBodyType_e.swSolidBody)
+                    {
+                        made.Add(k);
+                        shells++;
+                        continue;
+                    }
+                    var thick = _modeler.ThickenSheet((Body2)k, thickness, (int)swThickenDirection_e.swThickenDirection_Both);
+                    if (thick == null)
+                    {
+                        made = null;
+                        break;
+                    }
+                    made.Add(thick);
+                    sheetCount++;
+                }
+                if (knitted == null || made == null)
+                {
+                    solids.AddRange(ThickenSheets(parts, thickness, out int f));
+                    failed += f;
+                    continue;
+                }
+                solids.AddRange(made);
+                closed += shells;
+                knittedSheets += sheetCount;
+            }
+            return solids;
+        }
+
+        // Knits copies of the sheets with the tolerance; null when that fails or gives something outside their box.
+        private List<IBody2> Knit(List<IBody2> parts, double tolerance)
+        {
+            var box = parts.Aggregate(Aabb.Empty, (b, s) => b.Union(AnyBounds(s)));
+            double slack = Math.Max(5e-4, 0.02 * (box.Max - box.Min).Length);
+            int error = 0;
+            List<IBody2> knitted = null;
+            try
+            {
+                var copies = parts.Select(p => (object)p.Copy()).ToArray();
+                knitted = ((object[])_modeler.CreateBodiesFromSheets2(copies, 0, tolerance, ref error))?.OfType<IBody2>().ToList();
+            }
+            catch (COMException) { }
+            bool inside = knitted != null && knitted.Count > 0 && knitted.All(k =>
+            {
+                var b = AnyBounds(k);
+                return !b.IsEmpty && b.Min.X >= box.Min.X - slack && b.Min.Y >= box.Min.Y - slack && b.Min.Z >= box.Min.Z - slack &&
+                       b.Max.X <= box.Max.X + slack && b.Max.Y <= box.Max.Y + slack && b.Max.Z <= box.Max.Z + slack;
+            });
+            return inside ? knitted : null;
+        }
+
+        /// <summary>
         /// Turns open surface bodies into thin solids so the wrap goes over them like any other part; they are
         /// not sewn. Surfaces SOLIDWORKS cannot thicken are counted in <paramref name="failed"/>.
         /// </summary>
@@ -186,7 +262,14 @@ namespace GeoSimplifier.SolidWorks.Geometry
             failed = 0;
             foreach (var sheet in sheets)
             {
-                var solid = _modeler.ThickenSheet((Body2)sheet, thickness, (int)swThickenDirection_e.swThickenDirection_Both);
+                // Imported patches that will not thicken both ways often do one way, or thinner.
+                IBody2 solid = null;
+                foreach (var (t, side) in new[] { (thickness, swThickenDirection_e.swThickenDirection_Both),
+                                                  (thickness, swThickenDirection_e.swThickenDirection_Side1),
+                                                  (thickness, swThickenDirection_e.swThickenDirection_Side2),
+                                                  (thickness / 10, swThickenDirection_e.swThickenDirection_Both) })
+                    if ((solid = _modeler.ThickenSheet((Body2)sheet, t, (int)side)) != null)
+                        break;
                 if (solid != null)
                     solids.Add(solid);
                 else

@@ -29,7 +29,8 @@ namespace GeoSimplifier.Core.Geometry
         /// <param name="triangles">Nine numbers per triangle.</param>
         /// <param name="normals">Nine numbers per triangle: the normal at each corner, pointing out of the model.</param>
         /// <param name="samples">How many of the face's triangles rays are sent from (spread over the face).</param>
-        public void AddFace(int face, IReadOnlyList<float> triangles, IReadOnlyList<float> normals, int samples)
+        /// <param name="twoSided">Rays leave on both sides (a surface body has no inside).</param>
+        public void AddFace(int face, IReadOnlyList<float> triangles, IReadOnlyList<float> normals, int samples, bool twoSided = false)
         {
             int count = triangles.Count / 9;
             for (int t = 0; t < count; t++)
@@ -56,7 +57,11 @@ namespace GeoSimplifier.Core.Geometry
                                       normals[9 * t + 1] + normals[9 * t + 4] + normals[9 * t + 7],
                                       normals[9 * t + 2] + normals[9 * t + 5] + normals[9 * t + 8]);
                 if (normal.Length > 1e-12)
+                {
                     _samples.Add((centre, normal * (1 / normal.Length), face));
+                    if (twoSided)
+                        _samples.Add((centre, normal * (-1 / normal.Length), face));
+                }
             }
         }
 
