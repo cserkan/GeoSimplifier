@@ -1,4 +1,5 @@
 ﻿using System;
+using System.Linq;
 using System.Runtime.InteropServices;
 using System.Windows.Forms;
 using GeoSimplifier.Core.Wrap;
@@ -40,6 +41,7 @@ namespace GeoSimplifier.SolidWorks.UI
         private const int TypeGroupId = 23;
         private const int SolidOptionId = 24;
         private const int ShellOptionId = 25;
+        private const int SmallListId = 26;
 
         // Selection mark of the exclusion box, so its items are told apart from other selections.
         private const int ExcludeMark = 2;
@@ -179,6 +181,15 @@ namespace GeoSimplifier.SolidWorks.UI
             _smallPartsBox.SetRange2((int)swNumberboxUnitType_e.swNumberBox_UnitlessDouble, 0, 100, true, 1, 5, 0.5);
             _smallPartsBox.Value = _smallParts;
             _smallPartsValue = _smallParts;
+            // The parts that will go, listed and highlighted (selected) as the percentage changes. A box of its own:
+            // selections made while "Hariç tut" has the focus would land in that box.
+            _smallListBox = (IPropertyManagerPageSelectionbox)AddControl(group, SmallListId, swPropertyManagerPageControlType_e.swControlType_Selectionbox,
+                "Çıkarılacak küçük parçalar", "Yüzde değişince, sarmaya alınmayacak küçük parçalar burada listelenir ve modelde vurgulanır.");
+            _smallListBox.SingleEntityOnly = false;
+            _smallListBox.AllowMultipleSelectOfSameEntity = false;
+            _smallListBox.Height = 30;
+            _smallListBox.Mark = HighlightMark;
+            _smallListBox.SetSelectionFilters(new[] { (int)swSelectType_e.swSelCOMPONENTS });
 
             _singleBodyBox = (IPropertyManagerPageCheckbox)AddControl(group, SingleBodyId, swPropertyManagerPageControlType_e.swControlType_Checkbox,
                 "Tek gövdeye zorla",
@@ -226,6 +237,107 @@ namespace GeoSimplifier.SolidWorks.UI
             UpdateEnabled();
             _page.Show2(0);
             ShowStep();
+        }
+
+        // Highlighting the parts "Bundan küçük parçaları çıkar" will leave out, as soon as the percentage changes:
+        // no wrap is computed, only the components' boxes (read once) are compared with the limit, and the small
+        // ones are shown with SOLIDWORKS' own selection highlight in one call (drawing temporary bodies costs
+        // about 25 ms a body).
+        private const int HighlightMark = 4;
+        private Timer _highlightTimer;
+        private bool _highlighting;
+        private IPropertyManagerPageSelectionbox _smallListBox;
+        private System.Collections.Generic.List<(IComponent2 component, Core.Geometry.Aabb box)> _componentBoxes;
+        private Core.Geometry.Aabb _modelBox;
+        private System.Collections.Generic.List<IComponent2> _highlighted = new System.Collections.Generic.List<IComponent2>();
+
+        private void ScheduleHighlight()
+        {
+            if (_highlightTimer == null)
+            {
+                _highlightTimer = new Timer { Interval = 250 };
+                _highlightTimer.Tick += (s, e) =>
+                {
+                    _highlightTimer.Stop();
+                    HighlightSmallParts();
+                };
+            }
+            _highlightTimer.Stop();
+            _highlightTimer.Start();
+        }
+
+        private void HighlightSmallParts()
+        {
+            if (!(_source is IAssemblyDoc assembly))
+                return;
+            try
+            {
+                var watch = System.Diagnostics.Stopwatch.StartNew();
+                if (_componentBoxes == null)
+                {
+                    _componentBoxes = new System.Collections.Generic.List<(IComponent2, Core.Geometry.Aabb)>();
+                    _modelBox = Core.Geometry.Aabb.Empty;
+                    foreach (IComponent2 comp in (object[])assembly.GetComponents(false) ?? new object[0])
+                    {
+                        if (comp.GetSuppression2() == (int)swComponentSuppressionState_e.swComponentSuppressed ||
+                            comp.Visible == (int)swComponentVisibilityState_e.swComponentHidden ||
+                            ((object[])comp.GetChildren())?.Length > 0)
+                            continue;
+                        if (!(comp.GetBox(false, false) is double[] b) || b.Length < 6)
+                            continue;
+                        var box = new Core.Geometry.Aabb(new Core.Geometry.Vec3(b[0], b[1], b[2]), new Core.Geometry.Vec3(b[3], b[4], b[5]));
+                        _componentBoxes.Add((comp, box));
+                        _modelBox = _modelBox.Union(box);
+                    }
+                }
+                double limit = _smallPartsCheck.Checked ? _smallPartsValue / 100 * (_modelBox.Max - _modelBox.Min).Length : 0;
+                var small = _componentBoxes.Where(c => (c.box.Max - c.box.Min).Length < limit).Select(c => c.component).ToList();
+                // The list box takes the selections; "Hariç tut" gets the focus back afterwards. Taking selections off
+                // one by one is slow (DeSelect2 of 3684 took 16 minutes on V12): the whole selection is cleared and the
+                // exclusion box's own items are selected again.
+                _highlighting = true;
+                try
+                {
+                    var manager = (ISelectionMgr)_source.SelectionManager;
+                    var kept = Enumerable.Range(1, manager.GetSelectedObjectCount2(ExcludeMark))
+                        .Select(i => manager.GetSelectedObject6(i, ExcludeMark)).Where(o => o != null).ToList();
+                    _smallListBox.SetSelectionFocus();
+                    _source.ClearSelection2(true);
+                    _highlighted = new System.Collections.Generic.List<IComponent2>();
+                    if (small.Count > 0)
+                    {
+                        var data = manager.CreateSelectData();
+                        data.Mark = HighlightMark;
+                        _source.Extension.MultiSelect2(small.Select(c => new DispatchWrapper(c)).ToArray(), true, data);
+                        _highlighted = small;
+                    }
+                    _excludeBox.SetSelectionFocus();
+                    if (kept.Count > 0)
+                    {
+                        var data = manager.CreateSelectData();
+                        data.Mark = ExcludeMark;
+                        _source.Extension.MultiSelect2(kept.Select(o => new DispatchWrapper(o)).ToArray(), true, data);
+                    }
+                }
+                finally { _highlighting = false; }
+                PageLog.Write($"Küçük parça vurgusu: {small.Count}/{_componentBoxes.Count} bileşen ({watch.Elapsed.TotalSeconds:F2} sn)");
+            }
+            catch (Exception ex)
+            {
+                PageLog.Write("Küçük parça vurgusu hatası: " + ex.Message);
+            }
+        }
+
+        private void ClearHighlight()
+        {
+            if (_highlighted.Count == 0)
+                return;
+            // On closing: the whole selection goes (the page and its boxes go with it).
+            bool was = _highlighting;
+            _highlighting = true;
+            try { _source.ClearSelection2(true); }
+            finally { _highlighting = was; }
+            _highlighted = new System.Collections.Generic.List<IComponent2>();
         }
 
         /// <summary>Shows page 1 (the kind of result) or page 2 (its settings).</summary>
@@ -456,6 +568,36 @@ namespace GeoSimplifier.SolidWorks.UI
             timer.Start();
         }
 
+        /// <summary>Test hook: picks one large component into "Hariç tut", as a click with that box active would.</summary>
+        public void ExcludeSelectForTest()
+        {
+            var pick = _componentBoxes?.OrderByDescending(c => (c.box.Max - c.box.Min).Length).Select(c => c.component).FirstOrDefault();
+            if (pick == null) return;
+            _excludeBox.SetSelectionFocus();
+            var data = ((ISelectionMgr)_source.SelectionManager).CreateSelectData();
+            data.Mark = ExcludeMark;
+            pick.Select4(true, data, false);
+            var manager = (ISelectionMgr)_source.SelectionManager;
+            PageLog.Write($"Simülasyon: hariç tutmaya seçildi {pick.Name2}; işaret 4: {manager.GetSelectedObjectCount2(HighlightMark)}, " +
+                          $"işaret 2: {manager.GetSelectedObjectCount2(ExcludeMark)}, hariç tutulanlar '{_exclusions.Key}'");
+        }
+
+        /// <summary>Test hook: unticks "Bundan küçük parçaları çıkar".</summary>
+        public void UntickSmallForTest()
+        {
+            _smallPartsCheck.Checked = false;
+            HighlightSmallParts();
+            var manager = (ISelectionMgr)_source.SelectionManager;
+            PageLog.Write($"Simülasyon: küçük parça kutusu işaretsiz; işaret 4: {manager.GetSelectedObjectCount2(HighlightMark)}, hariç tutulanlar '{_exclusions.Key}'");
+        }
+
+        /// <summary>Test hook: closes the page with Cancel.</summary>
+        public void CloseForTest()
+        {
+            _page.Close(false);
+            PageLog.Write($"Simülasyon: sayfa kapandı; seçili {((ISelectionMgr)_source.SelectionManager).GetSelectedObjectCount2(-1)}");
+        }
+
         /// <summary>Test hook: excludes components by name (Name2) as if they were picked in the selection box.</summary>
         public void ExcludeForTest(string[] componentNames)
         {
@@ -489,7 +631,10 @@ namespace GeoSimplifier.SolidWorks.UI
             else if (id == EmbossHeightId)
                 _embossValue = value;
             else if (id == SmallPartsId)
+            {
                 _smallPartsValue = value;
+                ScheduleHighlight();
+            }
             else if (id == SmallShellId)
                 _smallShellValue = value;
             else
@@ -508,6 +653,8 @@ namespace GeoSimplifier.SolidWorks.UI
         public void OnClose(int Reason)
         {
             _debounce?.Stop();
+            _highlightTimer?.Stop();
+            ClearHighlight();
             SyncGapFromBox("OnClose");
             _ok = Reason == (int)swPropertyManagerPageCloseReasons_e.swPropertyManagerPageClose_Okay;
             if (!_ok)
@@ -566,6 +713,8 @@ namespace GeoSimplifier.SolidWorks.UI
         {
             if (Id == CloseHolesId || Id == SmallPartsLabelId)
                 UpdateEnabled();
+            if (Id == SmallPartsLabelId)
+                ScheduleHighlight();
             SchedulePreview(50);
         }
 
@@ -626,6 +775,18 @@ namespace GeoSimplifier.SolidWorks.UI
         /// <summary>Test hook: ticks "Yüzey gövde (dış kabuk)".</summary>
         public void ShellForTest() => KindForTest(true);
 
+        /// <summary>Test hook: types a percentage into "Bundan küçük parçaları çıkar" and highlights at once.</summary>
+        public void HighlightForTest(double percent)
+        {
+            _smallPartsBox.Value = percent;
+            _smallPartsValue = percent;
+            _smallPartsCheck.Checked = true;
+            HighlightSmallParts();
+            var manager = (ISelectionMgr)_source.SelectionManager;
+            PageLog.Write($"Simülasyon: %{percent} vurgusu, işaret 4: {manager.GetSelectedObjectCount2(HighlightMark)}, işaret 2: {manager.GetSelectedObjectCount2(ExcludeMark)}, " +
+                          $"hepsi: {manager.GetSelectedObjectCount2(-1)}, kutuya sunulan {_submitted}, hariç tutulanlar '{Exclusions.FromSelection(_source, ExcludeMark).Key}'");
+        }
+
         /// <summary>Test hook: chooses "Yüzey kabuk" or "Katı" on page 1.</summary>
         public void KindForTest(bool shell)
         {
@@ -666,7 +827,7 @@ namespace GeoSimplifier.SolidWorks.UI
         public void OnSelectionboxFocusChanged(int Id) { }
         public void OnSelectionboxListChanged(int Id, int Count)
         {
-            if (Id != ExcludeId)
+            if (Id != ExcludeId || _highlighting)
                 return;
             _exclusions = Exclusions.FromSelection(_source, ExcludeMark);
             PageLog.Write($"Hariç tutulanlar: {Count} seçim, {_exclusions.Key}");
@@ -674,7 +835,14 @@ namespace GeoSimplifier.SolidWorks.UI
         }
         public void OnSelectionboxCalloutCreated(int Id) { }
         public void OnSelectionboxCalloutDestroyed(int Id) { }
-        public bool OnSubmitSelection(int Id, object Selection, int SelType, ref string ItemText) => true;
+        // The highlight of small parts is made of selections; the exclusion box must not take them.
+        public bool OnSubmitSelection(int Id, object Selection, int SelType, ref string ItemText)
+        {
+            if (_highlighting && Id == ExcludeId) _submitted++;
+            return true;
+        }
+
+        private int _submitted;
         public int OnActiveXControlCreated(int Id, bool Status) => 0;
         public int OnWindowFromHandleControlCreated(int Id, bool Status) => 0;
         public void OnSliderPositionChanged(int Id, double Value) { }

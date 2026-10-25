@@ -172,6 +172,9 @@ namespace GeoSimplifier.SolidWorks
             // "nozoom:" leaves the result's view unfitted (a trial).
             ShrinkWrapService.SkipZoom = limitsMm.Contains("nozoom:");
             limitsMm = limitsMm.Replace("nozoom:", "");
+            // "hlshow:" runs the timed highlight sequence instead of the simulation.
+            bool highlightShow = limitsMm.Contains("hlshow:");
+            limitsMm = limitsMm.Replace("hlshow:", "");
             // "wizard:" clicks through the two pages first.
             bool wizard = limitsMm.Contains("wizard:");
             limitsMm = limitsMm.Replace("wizard:", "");
@@ -231,6 +234,32 @@ namespace GeoSimplifier.SolidWorks
                     _page.KindForTest(shell); Gc();
                     _page.StepForTest(true); Gc();
                     UI.PageLog.Write("Simülasyon: sayfa adımları tamam");
+                    foreach (var percent in new[] { 5.0, 10.0, 3.0, 5.0 })
+                    {
+                        _page.HighlightForTest(percent);
+                        Gc();
+                    }
+                }
+                if (highlightShow)
+                {
+                    // For watching (and screenshots): page 2, then 5 %, 2 %, 10 %, one excluded part, the box
+                    // unticked, and the page closed, 8 s apart.
+                    _page.StepForTest(true);
+                    var steps = new Action[]
+                    {
+                        () => _page.HighlightForTest(5), () => _page.HighlightForTest(2), () => _page.HighlightForTest(10),
+                        () => _page.ExcludeSelectForTest(), () => _page.UntickSmallForTest(), () => _page.CloseForTest(),
+                    };
+                    int step = 0;
+                    var timer = new System.Windows.Forms.Timer { Interval = 8000 };
+                    timer.Tick += (s, e) =>
+                    {
+                        UI.PageLog.Write($"Görsel test adımı {step + 1}");
+                        steps[step++]();
+                        if (step >= steps.Length) timer.Stop();
+                    };
+                    timer.Start();
+                    return;
                 }
                 _page.Simulate(limits, ok, forceGc);
             }));
