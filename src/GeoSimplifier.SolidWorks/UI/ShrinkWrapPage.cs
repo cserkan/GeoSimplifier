@@ -22,7 +22,6 @@ namespace GeoSimplifier.SolidWorks.UI
         private const int CloseHolesId = 3;
         private const int GapLabelId = 4;
         private const int GapWidthId = 5;
-        private const int FillCavitiesId = 6;
         private const int EmbossLabelId = 9;
         private const int EmbossHeightId = 10;
         private const int ExcludeGroupId = 7;
@@ -49,7 +48,6 @@ namespace GeoSimplifier.SolidWorks.UI
         // Remembered between runs within a SOLIDWORKS session.
         private static bool _closeHoles = true;
         private static double _gapWidth = 0.01; // meters
-        private static bool _fillCavities = true;
         private static double _embossHeight = 0; // meters; 0 keeps embossed details
         private static double _smallParts = 5;   // percent of the model's size (Serkan: 5 by default)
         private static bool _removeSmallParts = true;
@@ -69,7 +67,6 @@ namespace GeoSimplifier.SolidWorks.UI
         private IPropertyManagerPageLabel _gapLabel;
         private IPropertyManagerPageCheckbox _closeHolesBox;
         private IPropertyManagerPageNumberbox _gapWidthBox;
-        private IPropertyManagerPageCheckbox _fillCavitiesBox;
         private IPropertyManagerPageLabel _embossLabel;
         private IPropertyManagerPageNumberbox _embossBox;
         private double _embossValue;
@@ -159,9 +156,7 @@ namespace GeoSimplifier.SolidWorks.UI
             _gapWidthBox.Value = _gapWidth;
             _gapValue = _gapWidth;
 
-            _fillCavitiesBox = (IPropertyManagerPageCheckbox)AddControl(group, FillCavitiesId, swPropertyManagerPageControlType_e.swControlType_Checkbox,
-                "İç boşlukları doldur", "Dışarıdan görünmeyen kapalı iç boşluklar dolu hale getirilir.");
-            _fillCavitiesBox.Checked = _fillCavities;
+            // Closed insides are always filled (Serkan: no option for it).
 
             _embossLabel = (IPropertyManagerPageLabel)AddControl(group, EmbossLabelId, swPropertyManagerPageControlType_e.swControlType_Label,
                 "Yok sayılacak kabartma yüksekliği", null);
@@ -348,8 +343,7 @@ namespace GeoSimplifier.SolidWorks.UI
             _group.Visible = settings;
             _excludeGroup.Visible = settings;
             _outputGroup.Visible = settings;
-            // Settings of one kind only: filling insides for the solid, deleting small surfaces for the skin.
-            ((IPropertyManagerPageControl)_fillCavitiesBox).Visible = !_shellOutput;
+            // Settings of one kind only: deleting small surfaces for the skin.
             ((IPropertyManagerPageControl)_smallShellLabel).Visible = _shellOutput;
             ((IPropertyManagerPageControl)_smallShellBox).Visible = _shellOutput;
             _group.Caption = _shellOutput ? "Ayarlar: yüzey kabuk" : "Ayarlar: katı";
@@ -425,7 +419,7 @@ namespace GeoSimplifier.SolidWorks.UI
         private ShrinkWrapOptions CurrentOptions() => new ShrinkWrapOptions
         {
             GapWidth = _closeHolesBox.Checked ? _gapValue : 0,
-            FillCavities = _fillCavitiesBox.Checked,
+            FillCavities = true,
             MaxEmbossHeight = _embossValue,
             MinPartPercent = _smallPartsCheck.Checked ? _smallPartsValue : 0,
             ForceSingleBody = _singleBodyBox.Checked,
@@ -665,7 +659,6 @@ namespace GeoSimplifier.SolidWorks.UI
             _smallShellPercent = _smallShellValue;
             _configurationName = string.IsNullOrWhiteSpace(_outputName) ? "Simple" : _outputName.Trim();
             _gapWidth = _gapValue;
-            _fillCavities = _fillCavitiesBox.Checked;
             _embossHeight = _embossValue;
             _smallParts = _smallPartsValue;
             _removeSmallParts = _smallPartsCheck.Checked;
@@ -702,7 +695,7 @@ namespace GeoSimplifier.SolidWorks.UI
         private static ShrinkWrapOptions CurrentOptionsFromSettings() => new ShrinkWrapOptions
         {
             GapWidth = _closeHoles ? _gapWidth : 0,
-            FillCavities = _fillCavities,
+            FillCavities = true,
             MaxEmbossHeight = _embossHeight,
             MinPartPercent = _removeSmallParts ? _smallParts : 0,
             ForceSingleBody = _forceSingleBody,
