@@ -78,6 +78,52 @@ namespace GeoSimplifier.Probe
                 swApp.CloseDoc(md.GetTitle());
                 return 0;
             }
+            int tessAt = Array.IndexOf(args, "--tess-speed");
+            if (tessAt >= 0 && tessAt + 1 < args.Length)
+            {
+                // --tess-speed <open assembly path>: how long reading face triangles takes on the components' own
+                // bodies and on transformed copies, and whether the coordinates agree.
+                var tAsm = (IAssemblyDoc)swApp.GetOpenDocumentByName(args[tessAt + 1]);
+                var comps = ((object[])tAsm.GetComponents(false) ?? new object[0]).Cast<IComponent2>()
+                    .Where(c => c.GetSuppression2() != 0 && !(((object[])c.GetChildren())?.Length > 0)).Take(400).ToList();
+                var w = System.Diagnostics.Stopwatch.StartNew();
+                int faces = 0; long tris = 0;
+                float[] firstOrig = null, firstCopy = null;
+                foreach (var c in comps)
+                    foreach (IBody2 b in (object[])c.GetBodies3(1, out _) ?? new object[0])
+                        foreach (IFace2 f in (object[])b.GetFaces() ?? new object[0])
+                        {
+                            var t = f.GetTessTriangles(true) as float[];
+                            var n = f.GetTessNorms() as float[];
+                            faces++; tris += (t?.Length ?? 0) / 9;
+                            if (firstOrig == null && t != null && t.Length > 0) firstOrig = t;
+                        }
+                double orig = w.Elapsed.TotalSeconds;
+                Console.WriteLine($"Asıl gövdeler: {faces} yüz, {tris} üçgen, {orig:F1} sn ({orig * 1000 / Math.Max(1, faces):F2} ms/yüz)");
+                w.Restart(); faces = 0; tris = 0;
+                double copyOnly = 0;
+                foreach (var c in comps)
+                    foreach (IBody2 b in (object[])c.GetBodies3(1, out _) ?? new object[0])
+                    {
+                        var cw = System.Diagnostics.Stopwatch.StartNew();
+                        var copy = (IBody2)b.Copy();
+                        if (c.Transform2 != null) copy.ApplyTransform((MathTransform)c.Transform2);
+                        copyOnly += cw.Elapsed.TotalSeconds;
+                        foreach (IFace2 f in (object[])copy.GetFaces() ?? new object[0])
+                        {
+                            var t = f.GetTessTriangles(true) as float[];
+                            var n = f.GetTessNorms() as float[];
+                            faces++; tris += (t?.Length ?? 0) / 9;
+                            if (firstCopy == null && t != null && t.Length > 0) firstCopy = t;
+                        }
+                    }
+                double copies = w.Elapsed.TotalSeconds;
+                Console.WriteLine($"Kopyalar: {faces} yüz, {tris} üçgen, {copies:F1} sn (kopyalama {copyOnly:F1} sn)");
+                if (firstOrig != null && firstCopy != null)
+                    Console.WriteLine($"İlk üçgen: asıl {firstOrig[0] * 1000:F1};{firstOrig[1] * 1000:F1};{firstOrig[2] * 1000:F1}, kopya {firstCopy[0] * 1000:F1};{firstCopy[1] * 1000:F1};{firstCopy[2] * 1000:F1} mm, " +
+                                      $"bileşen öteleme {((double[])((IMathTransform)comps[0].Transform2).ArrayData)[9] * 1000:F1} mm");
+                return 0;
+            }
             int lowAt = Array.IndexOf(args, "--lowest");
             if (lowAt >= 0 && lowAt + 1 < args.Length)
             {

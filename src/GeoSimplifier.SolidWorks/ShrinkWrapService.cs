@@ -358,8 +358,12 @@ namespace GeoSimplifier.SolidWorks
         /// where SOLIDWORKS manages to.
         /// </summary>
         private void Skin(WrapResult result, ShrinkWrapOptions options, List<IBody2> solids, List<string> solidOwners,
-                          List<IBody2> sheets, List<string> sheetOwners, Action<int, int> report)
+                          List<IBody2> sheets, List<string> sheetOwners, Action<int, int> report,
+                          List<(string key, double[] transform)> solidInstances, List<(string key, double[] transform)> sheetInstances)
         {
+            // Which part body each body is and where it sits, for reusing the triangles of repeated parts.
+            var instances = solidInstances.Take(solids.Count).Concat(Enumerable.Repeat(((string)null, (double[])null), Math.Max(0, solids.Count - solidInstances.Count)))
+                .Concat(sheetInstances.Count == sheets.Count ? sheetInstances : Enumerable.Repeat(((string)null, (double[])null), sheets.Count)).ToList();
             var watch = Stopwatch.StartNew();
             var bodies = solids.Concat(sheets).ToList();
             var owners = solidOwners.Take(solids.Count).Concat(sheetOwners).ToList();
@@ -387,6 +391,10 @@ namespace GeoSimplifier.SolidWorks
             // on both sides.
             var visibility = new Core.Geometry.FaceVisibility();
             var faceOf = new List<(int body, IFace2 face)>();
+            // The area of each face from its triangles (asking SOLIDWORKS for 60,000 face areas took 26 s on V12).
+            var faceArea = new List<double>();
+            // (Reusing the triangles of repeated parts, moved into place, saved little and changed the result by
+            // one surface on V12: each copy is tessellated a little differently. Each body is read itself.)
             int done = 0;
             foreach (int i in keep)
             {
@@ -400,8 +408,10 @@ namespace GeoSimplifier.SolidWorks
                     var normals = face.GetTessNorms() as float[];
                     visibility.AddFace(faceOf.Count, triangles, normals, samples: 4, twoSided: sheet);
                     faceOf.Add((i, face));
+                    faceArea.Add(TriangleArea(triangles));
                 }
             }
+            double readSeconds = watch.Elapsed.TotalSeconds;
             // Lids on the holes of the surfaces (at most the gap width across). They go into the ray test too,
             // so the walls of a closed hole are no longer seen, and are kept where they are seen themselves.
             var lids = new List<(string owner, IBody2 lid)>();
@@ -435,7 +445,8 @@ namespace GeoSimplifier.SolidWorks
             double size = (model.Max - model.Min).Length;
             var escapes = visibility.Escapes(Math.Max(1e-5, size * 2e-5));
             var visible = new HashSet<int>(visibility.Unsampled.Concat(escapes.Where(kv => kv.Value.escaped > 0).Select(kv => kv.Key)));
-            UI.PageLog.Write($"  dış yüzler: {visible.Count}/{faceOf.Count} yüz görünüyor, {visibility.Triangles} üçgen ({watch.Elapsed.TotalSeconds:F1} sn)");
+            UI.PageLog.Write($"  dış yüzler: {visible.Count}/{faceOf.Count} yüz görünüyor, {visibility.Triangles} üçgen " +
+                             $"(okuma {readSeconds:F1} sn, ışınlar {watch.Elapsed.TotalSeconds - readSeconds:F1} sn)");
 
             // Per surface body: the share of its sample points seen from outside, and its area. A surface seen
             // only at a point or two through a gap, or a tiny one, is dropped (SkinMinSeen, SkinMinArea).
@@ -446,13 +457,22 @@ namespace GeoSimplifier.SolidWorks
                 if (b < solidCount) continue;
                 seenShare.TryGetValue(b, out var c);
                 var e = escapes.TryGetValue(f, out var x) ? x : (visibility.Unsampled.Contains(f) ? (1, 1) : (0, 0));
-                seenShare[b] = (c.escaped + e.Item1, c.samples + e.Item2, c.area + face.GetArea());
+                seenShare[b] = (c.escaped + e.Item1, c.samples + e.Item2, c.area + faceArea[f]);
             }
             double modelArea = size * size;
-            foreach (var share in new[] { 0.0, 0.2, 0.4 })
-                foreach (var area in new[] { 0.0, 1e-6, 1e-5 })
-                    UI.PageLog.Write($"  kural: görünen pay > %{share * 100:F0}, alan > {area * modelArea * 1e6:F0} mm² → " +
-                                     $"{seenShare.Values.Count(v => v.escaped > 0 && v.escaped > share * v.samples && v.area > area * modelArea)} yüzey");
+            // The triangles' area is a little less than the true one on curved faces; near the limit SOLIDWORKS is
+            // asked for the exact area, so the choice is the same as with exact areas everywhere.
+            double areaLimit = SkinMinArea * modelArea;
+            var near = new HashSet<int>(seenShare.Where(kv => kv.Value.area > 0.7 * areaLimit && kv.Value.area < 1.5 * areaLimit).Select(kv => kv.Key));
+            var exact = new Dictionary<int, double>();
+            for (int f = 0; f < faceOf.Count; f++)
+                if (near.Contains(faceOf[f].body))
+                    exact[faceOf[f].body] = (exact.TryGetValue(faceOf[f].body, out var a) ? a : 0) + faceOf[f].face.GetArea();
+            foreach (var kv in exact)
+                seenShare[kv.Key] = (seenShare[kv.Key].escaped, seenShare[kv.Key].samples, kv.Value);
+            int asked = near.Count;
+            UI.PageLog.Write($"  seyrek kural: {seenShare.Values.Count(v => v.escaped > 0 && v.escaped > SkinMinSeen * v.samples && v.area > areaLimit)} yüzey kalıyor " +
+                             $"({asked} yüzeyin alanı SOLIDWORKS'e soruldu, {watch.Elapsed.TotalSeconds:F1} sn)");
 
             var seenBodies = new HashSet<int>();
             var seenSolidFaces = new List<(int body, IFace2 face)>();
@@ -569,6 +589,20 @@ namespace GeoSimplifier.SolidWorks
             result.Sheets = seenBodies.Count;
             UI.PageLog.Write($"  dış kabuk (yüzey modeli): {keep.Count} gövde → {result.Bodies.Count} yüzey gövdesi, " +
                              $"{result.Bodies.Sum(b => b.GetFaceCount())} yüz ({watch.Elapsed.TotalSeconds:F1} sn)");
+        }
+
+        /// <summary>The area of triangles given as nine numbers each.</summary>
+        private static double TriangleArea(float[] t)
+        {
+            double area = 0;
+            for (int i = 0; i + 8 < t.Length; i += 9)
+            {
+                double ux = t[i + 3] - t[i], uy = t[i + 4] - t[i + 1], uz = t[i + 5] - t[i + 2];
+                double vx = t[i + 6] - t[i], vy = t[i + 7] - t[i + 1], vz = t[i + 8] - t[i + 2];
+                double cx = uy * vz - uz * vy, cy = uz * vx - ux * vz, cz = ux * vy - uy * vx;
+                area += 0.5 * Math.Sqrt(cx * cx + cy * cy + cz * cz);
+            }
+            return area;
         }
 
         /// <summary>The twelve triangles of a box's faces.</summary>
@@ -743,7 +777,8 @@ namespace GeoSimplifier.SolidWorks
                 bool lidPreview = options.Preview && options.GapWidth > 0 && !options.Bag;
                 var owners = new List<string>();
                 var excludedSheets = new List<IBody2>();
-                var sheets = lidPreview ? new List<IBody2>() : BodyCollector.CopySheets(source, exclusions, owners, excludedSheets);
+                var sheetInstances = new List<(string key, double[] transform)>();
+                var sheets = lidPreview ? new List<IBody2>() : BodyCollector.CopySheets(source, exclusions, owners, excludedSheets, sheetInstances);
                 if (lidPreview)
                 {
                     // The preview of a surface model's outer skin: which parts go as small (red). Seeing which
@@ -760,7 +795,7 @@ namespace GeoSimplifier.SolidWorks
                 {
                     // A model made of surfaces (STEP imports): its outer skin is taken from the surfaces as they
                     // are, with no solids made.
-                    Skin(result, options, bodies, bodyOwners, sheets, owners, (d, t) => Report("dış yüzler", 10, 90, d, t));
+                    Skin(result, options, bodies, bodyOwners, sheets, owners, (d, t) => Report("dış yüzler", 10, 90, d, t), instances, sheetInstances);
                     // Excluded parts come through whole, with every face ("Hariç tut": keep these as they are).
                     result.Bodies.AddRange(excluded.Concat(excludedSheets));
                     result.ExcludedBodies = excluded.Count + excludedSheets.Count;
@@ -1218,7 +1253,9 @@ namespace GeoSimplifier.SolidWorks
                 return "Tamamlandı: " + result.Summary() + " " +
                        new ConfigurationOutput(_swApp).Create(source, bodies, configurationName, NewPart);
 
+            var commitWatch = Stopwatch.StartNew();
             var part = NewPart();
+            double newPart = commitWatch.Elapsed.TotalSeconds;
             int created = 0;
             // Checking and simplifying each body took most of the 8.5 minutes 1753 bodies needed; with many bodies
             // they are put in as they are.
@@ -1239,10 +1276,18 @@ namespace GeoSimplifier.SolidWorks
             }
             finally
             {
+                double inserted = commitWatch.Elapsed.TotalSeconds;
                 partDoc.FeatureManager.EnableFeatureTree = true;
+                double tree = commitWatch.Elapsed.TotalSeconds;
                 if (view != null) view.EnableGraphicsUpdate = true;
+                UI.PageLog.Write($"  ekleme: yeni parça {newPart:F1}, {bodies.Count} gövde {inserted - newPart:F1}, ağaç {tree - inserted:F1}, " +
+                                 $"görüntü {commitWatch.Elapsed.TotalSeconds - tree:F1} sn");
             }
+            double beforeZoom = commitWatch.Elapsed.TotalSeconds;
+            // Most of this is SOLIDWORKS drawing the new part for the first time: zooming to the bodies' known box
+            // instead took as long (26 s on V12).
             partDoc.ViewZoomtofit2();
+            UI.PageLog.Write($"  sığdırma {commitWatch.Elapsed.TotalSeconds - beforeZoom:F1} sn");
             if (created < bodies.Count)
                 result.Notes.Add("Bazı gövdeler parçaya eklenemedi, sonuç eksik olabilir.");
             return "Tamamlandı: " + result.Summary();

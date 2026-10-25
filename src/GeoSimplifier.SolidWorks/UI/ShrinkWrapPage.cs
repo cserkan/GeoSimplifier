@@ -32,12 +32,14 @@ namespace GeoSimplifier.SolidWorks.UI
         private const int ConfigNameLabelId = 14;
         private const int ConfigNameId = 15;
         private const int PreviewId = 16;
-        private const int SurfaceShellId = 17;
         private const int SmallPartsLabelId = 18;
         private const int SmallPartsId = 19;
         private const int SmallShellLabelId = 20;
         private const int SmallShellId = 21;
         private const int SingleBodyId = 22;
+        private const int TypeGroupId = 23;
+        private const int SolidOptionId = 24;
+        private const int ShellOptionId = 25;
 
         // Selection mark of the exclusion box, so its items are told apart from other selections.
         private const int ExcludeMark = 2;
@@ -81,7 +83,12 @@ namespace GeoSimplifier.SolidWorks.UI
         private IPropertyManagerPageLabel _configNameLabel;
         private IPropertyManagerPageTextbox _configNameBox;
         private IPropertyManagerPageCheckbox _previewBox;
-        private IPropertyManagerPageCheckbox _surfaceShellBox;
+        // Page 1 asks only for the kind of result; Next shows page 2 with the settings for that kind.
+        private IPropertyManagerPageGroup _typeGroup;
+        private IPropertyManagerPageOption _solidOption;
+        private IPropertyManagerPageOption _shellOption;
+        private bool _shellOutput;
+        private int _step = 1;
         private IPropertyManagerPageLabel _smallShellLabel;
         private IPropertyManagerPageNumberbox _smallShellBox;
         private double _smallShellValue;
@@ -110,10 +117,23 @@ namespace GeoSimplifier.SolidWorks.UI
             int errors = 0;
             _source = _swApp.IActiveDoc2;
             int options = (int)(swPropertyManagerPageOptions_e.swPropertyManagerOptions_OkayButton |
-                                swPropertyManagerPageOptions_e.swPropertyManagerOptions_CancelButton);
+                                swPropertyManagerPageOptions_e.swPropertyManagerOptions_CancelButton |
+                                swPropertyManagerPageOptions_e.swPropertyManagerOptions_MultiplePages);
             _page = (IPropertyManagerPage2)_swApp.CreatePropertyManagerPage("Shrink Wrap", options, this, ref errors);
             if (_page == null)
                 throw new InvalidOperationException("Could not create the PropertyManager page (error " + errors + ").");
+
+            // Page 1: solid or outer skin. The PropertyManager has a single page, so Next and Back show and hide
+            // the groups.
+            _typeGroup = (IPropertyManagerPageGroup)_page.AddGroupBox(TypeGroupId, "Sonuç türü",
+                (int)(swAddGroupBoxOptions_e.swGroupBoxOptions_Visible | swAddGroupBoxOptions_e.swGroupBoxOptions_Expanded));
+            _solidOption = (IPropertyManagerPageOption)AddControl(_typeGroup, SolidOptionId, swPropertyManagerPageControlType_e.swControlType_Option,
+                "Katı", "İçi dolu, delikleri kapalı katı gövde(ler). Ardından İleri ile ayarlara geçin.");
+            _shellOption = (IPropertyManagerPageOption)AddControl(_typeGroup, ShellOptionId, swPropertyManagerPageControlType_e.swControlType_Option,
+                "Yüzey kabuk (yalnız dış yüzler)",
+                "Yalnız dışarıdan görünen yüzler, yüzey gövdesi olarak. En hafif sonuç; yüzeylerden oluşan (STEP) modeller için de. Ardından İleri ile ayarlara geçin.");
+            _shellOutput = _surfaceShell;
+            (_shellOutput ? _shellOption : _solidOption).Checked = true;
 
             var group = _group = (IPropertyManagerPageGroup)_page.AddGroupBox(GroupId, "Ayarlar",
                 (int)(swAddGroupBoxOptions_e.swGroupBoxOptions_Visible | swAddGroupBoxOptions_e.swGroupBoxOptions_Expanded));
@@ -191,10 +211,6 @@ namespace GeoSimplifier.SolidWorks.UI
             _configNameBox = (IPropertyManagerPageTextbox)AddControl(_outputGroup, ConfigNameId, swPropertyManagerPageControlType_e.swControlType_Textbox,
                 "Konfigürasyon adı", "Bu ad varsa sonuna numara eklenir.");
             _configNameBox.Text = _configurationName;
-            _surfaceShellBox = (IPropertyManagerPageCheckbox)AddControl(_outputGroup, SurfaceShellId, swPropertyManagerPageControlType_e.swControlType_Checkbox,
-                "Yüzey gövde (dış kabuk)",
-                "Katı yerine yalnız dış yüzler: her ayrı sonuç gövdesi tek bir yüzey gövdesi olur. Daha hafif bir model için.");
-            _surfaceShellBox.Checked = _surfaceShell;
             _smallShellLabel = (IPropertyManagerPageLabel)AddControl(_outputGroup, SmallShellLabelId, swPropertyManagerPageControlType_e.swControlType_Label,
                 "Küçük yüzey gövdelerini sil (%)", null);
             _smallShellBox = (IPropertyManagerPageNumberbox)AddControl(_outputGroup, SmallShellId, swPropertyManagerPageControlType_e.swControlType_Numberbox,
@@ -209,6 +225,22 @@ namespace GeoSimplifier.SolidWorks.UI
 
             UpdateEnabled();
             _page.Show2(0);
+            ShowStep();
+        }
+
+        /// <summary>Shows page 1 (the kind of result) or page 2 (its settings).</summary>
+        private void ShowStep()
+        {
+            bool settings = _step == 2;
+            _typeGroup.Visible = !settings;
+            _group.Visible = settings;
+            _excludeGroup.Visible = settings;
+            _outputGroup.Visible = settings;
+            // Settings of one kind only: filling insides for the solid, deleting small surfaces for the skin.
+            ((IPropertyManagerPageControl)_fillCavitiesBox).Visible = !_shellOutput;
+            ((IPropertyManagerPageControl)_smallShellLabel).Visible = _shellOutput;
+            ((IPropertyManagerPageControl)_smallShellBox).Visible = _shellOutput;
+            _group.Caption = _shellOutput ? "Ayarlar: yüzey kabuk" : "Ayarlar: katı";
         }
 
         private static object AddControl(IPropertyManagerPageGroup group, int id, swPropertyManagerPageControlType_e type, string caption, string tip)
@@ -227,8 +259,6 @@ namespace GeoSimplifier.SolidWorks.UI
                 ((IPropertyManagerPageControl)_configNameBox).Enabled = _outputNewConfig;
             if (_smallPartsBox != null)
                 ((IPropertyManagerPageControl)_smallPartsBox).Enabled = _smallPartsCheck.Checked;
-            if (_smallShellBox != null)
-                ((IPropertyManagerPageControl)_smallShellBox).Enabled = _surfaceShellBox.Checked;
         }
 
         // The number box's Value still holds the old number while OnNumberboxChanged runs, so the new one is kept here.
@@ -287,7 +317,7 @@ namespace GeoSimplifier.SolidWorks.UI
             MaxEmbossHeight = _embossValue,
             MinPartPercent = _smallPartsCheck.Checked ? _smallPartsValue : 0,
             ForceSingleBody = _singleBodyBox.Checked,
-            SurfaceShell = _surfaceShellBox.Checked,
+            SurfaceShell = _shellOutput,
         };
 
         private string Key(ShrinkWrapOptions o) => $"{o.GapWidth:R}|{o.FillCavities}|{o.MaxEmbossHeight:R}|{o.MinPartPercent:R}|{o.SurfaceShell}|{_exclusions.Key}";
@@ -484,7 +514,7 @@ namespace GeoSimplifier.SolidWorks.UI
                 return;
             _closeHoles = _closeHolesBox.Checked;
             _newConfiguration = _outputNewConfig;
-            _surfaceShell = _surfaceShellBox.Checked;
+            _surfaceShell = _shellOutput;
             _smallShellPercent = _smallShellValue;
             _configurationName = string.IsNullOrWhiteSpace(_outputName) ? "Simple" : _outputName.Trim();
             _gapWidth = _gapValue;
@@ -534,15 +564,26 @@ namespace GeoSimplifier.SolidWorks.UI
 
         public void OnCheckboxCheck(int Id, bool Checked)
         {
-            if (Id == CloseHolesId || Id == SurfaceShellId || Id == SmallPartsLabelId)
+            if (Id == CloseHolesId || Id == SmallPartsLabelId)
                 UpdateEnabled();
             SchedulePreview(50);
         }
 
         // Unused PropertyManager callbacks.
         public bool OnHelp() => false;
-        public bool OnPreviousPage() => false;
-        public bool OnNextPage() => false;
+        public bool OnPreviousPage()
+        {
+            _step = 1;
+            ShowStep();
+            return false;
+        }
+
+        public bool OnNextPage()
+        {
+            _step = 2;
+            ShowStep();
+            return false;
+        }
         public bool OnPreview() => false;
         public void OnWhatsNew() { }
         public void OnUndo() { }
@@ -552,6 +593,13 @@ namespace GeoSimplifier.SolidWorks.UI
         public void OnGroupCheck(int Id, bool Checked) { }
         public void OnOptionCheck(int Id)
         {
+            if (Id == SolidOptionId || Id == ShellOptionId)
+            {
+                _shellOutput = Id == ShellOptionId;
+                ShowStep();
+                SchedulePreview(50);
+                return;
+            }
             if (Id != NewPartId && Id != NewConfigId)
                 return;
             _outputNewConfig = Id == NewConfigId;
@@ -576,7 +624,23 @@ namespace GeoSimplifier.SolidWorks.UI
             _outputName = configurationName;
         }
         /// <summary>Test hook: ticks "Yüzey gövde (dış kabuk)".</summary>
-        public void ShellForTest() => _surfaceShellBox.Checked = true;
+        public void ShellForTest() => KindForTest(true);
+
+        /// <summary>Test hook: chooses "Yüzey kabuk" or "Katı" on page 1.</summary>
+        public void KindForTest(bool shell)
+        {
+            (shell ? _shellOption : _solidOption).Checked = true;
+            OnOptionCheck(shell ? ShellOptionId : SolidOptionId);
+            PageLog.Write($"Simülasyon: tür {(shell ? "yüzey kabuk" : "katı")}, sayfa {_step}");
+        }
+
+        /// <summary>Test hook: Next or Back, as the user would click them.</summary>
+        public void StepForTest(bool next)
+        {
+            if (next) OnNextPage();
+            else OnPreviousPage();
+            PageLog.Write($"Simülasyon: {(next ? "İleri" : "Geri")} → sayfa {_step} (tür grubu {(_typeGroup.Visible ? "görünür" : "gizli")}, ayarlar {(_group.Visible ? "görünür" : "gizli")})");
+        }
 
         /// <summary>Test hook: ticks "Tek gövdeye zorla".</summary>
         public void SingleBodyForTest() => _singleBodyBox.Checked = true;

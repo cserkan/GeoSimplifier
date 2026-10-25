@@ -169,6 +169,9 @@ namespace GeoSimplifier.SolidWorks
             ShrinkWrapService.MaxSheetsPerPart = maxSheets.Success ? int.Parse(maxSheets.Groups[1].Value) : 150;
             if (maxSheets.Success)
                 limitsMm = limitsMm.Remove(maxSheets.Index, maxSheets.Length);
+            // "wizard:" clicks through the two pages first.
+            bool wizard = limitsMm.Contains("wizard:");
+            limitsMm = limitsMm.Replace("wizard:", "");
             // "lids:" puts lids on the holes of surface models' skins.
             ShrinkWrapService.SkinLids = limitsMm.Contains("lids:");
             limitsMm = limitsMm.Replace("lids:", "");
@@ -212,6 +215,20 @@ namespace GeoSimplifier.SolidWorks
                     _page.SmallPartsForTest(small);
                 if (emboss >= 0)
                     _page.EmbossForTest(emboss);
+                if (wizard)
+                {
+                    // Next, Back, the other kind of result, the original kind again and Next, collecting garbage
+                    // after each click (a dropped page object crashes SOLIDWORKS on the next call).
+                    void Gc() { GC.Collect(); GC.WaitForPendingFinalizers(); }
+                    _page.StepForTest(true); Gc();
+                    _page.StepForTest(false); Gc();
+                    _page.KindForTest(!shell); Gc();
+                    _page.StepForTest(true); Gc();
+                    _page.StepForTest(false); Gc();
+                    _page.KindForTest(shell); Gc();
+                    _page.StepForTest(true); Gc();
+                    UI.PageLog.Write("Simülasyon: sayfa adımları tamam");
+                }
                 _page.Simulate(limits, ok, forceGc);
             }));
             return "başladı";

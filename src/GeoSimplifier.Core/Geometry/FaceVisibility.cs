@@ -88,8 +88,9 @@ namespace GeoSimplifier.Core.Geometry
             {
                 var (p, n, _) = _samples[s];
                 var start = p + n * offset;
+                var stack = new int[128];
                 foreach (var dir in Directions(n))
-                    if (!Blocked(start, dir))
+                    if (!Blocked(start, dir, stack))
                     {
                         escaped[s] = true;
                         return;
@@ -142,7 +143,19 @@ namespace GeoSimplifier.Core.Geometry
             var nodes = new List<Node>();
             Split(nodes, boxes, centres, 0, count);
             _nodes = nodes.ToArray();
+            // The triangles in tree order, side by side in memory for the leaves.
+            _sa = new Vec3[count];
+            _sb = new Vec3[count];
+            _sc = new Vec3[count];
+            for (int i = 0; i < count; i++)
+            {
+                _sa[i] = _a[_order[i]];
+                _sb[i] = _b[_order[i]];
+                _sc[i] = _c[_order[i]];
+            }
         }
+
+        private Vec3[] _sa, _sb, _sc;
 
         private int Split(List<Node> nodes, Aabb[] boxes, Vec3[] centres, int first, int count)
         {
@@ -155,36 +168,66 @@ namespace GeoSimplifier.Core.Geometry
                 return index;
             var size = box.Size;
             int axis = size.X >= size.Y && size.X >= size.Z ? 0 : size.Y >= size.Z ? 1 : 2;
-            Array.Sort(_order, first, count, Comparer<int>.Create((p, q) => centres[p][axis].CompareTo(centres[q][axis])));
+            // Only the median is needed, not a full sort (sorting at every level took most of a minute on V12's
+            // 6.6 million triangles).
             int half = count / 2;
+            Select(centres, axis, first, first + count - 1, first + half);
             int left = Split(nodes, boxes, centres, first, half);
             int right = Split(nodes, boxes, centres, first + half, count - half);
             nodes[index] = new Node { Box = box, Left = left, Right = right, First = first, Count = count };
             return index;
         }
 
-        private bool Blocked(Vec3 origin, Vec3 dir)
+        /// <summary>
+        /// Reorders _order[lo..hi] so that position k holds the triangle that would be there if sorted by its
+        /// centre along the axis, with none greater before it and none smaller after it (quickselect).
+        /// </summary>
+        private void Select(Vec3[] centres, int axis, int lo, int hi, int k)
         {
-            var stack = new Stack<int>();
-            stack.Push(0);
-            var inv = new Vec3(1 / dir.X, 1 / dir.Y, 1 / dir.Z);
-            while (stack.Count > 0)
+            while (hi > lo)
             {
-                var node = _nodes[stack.Pop()];
+                int mid = lo + (hi - lo) / 2;
+                double a = centres[_order[lo]][axis], b = centres[_order[mid]][axis], c = centres[_order[hi]][axis];
+                double pivot = Math.Max(Math.Min(a, b), Math.Min(Math.Max(a, b), c));
+                int i = lo, j = hi;
+                while (i <= j)
+                {
+                    while (centres[_order[i]][axis] < pivot) i++;
+                    while (centres[_order[j]][axis] > pivot) j--;
+                    if (i <= j)
+                    {
+                        (_order[i], _order[j]) = (_order[j], _order[i]);
+                        i++;
+                        j--;
+                    }
+                }
+                if (k <= j) hi = j;
+                else if (k >= i) lo = i;
+                else return;
+            }
+        }
+
+        private bool Blocked(Vec3 origin, Vec3 dir, int[] stack)
+        {
+            // A plain array as the stack (a Stack<int> per ray was millions of allocations on V12); the tree is
+            // balanced, so its depth stays far below the size.
+            int top = 0;
+            stack[top++] = 0;
+            var inv = new Vec3(1 / dir.X, 1 / dir.Y, 1 / dir.Z);
+            while (top > 0)
+            {
+                var node = _nodes[stack[--top]];
                 if (!HitsBox(node.Box, origin, inv))
                     continue;
                 if (node.Left < 0)
                 {
                     for (int i = node.First; i < node.First + node.Count; i++)
-                    {
-                        int t = _order[i];
-                        if (HitsTriangle(origin, dir, _a[t], _b[t], _c[t]))
+                        if (HitsTriangle(origin, dir, _sa[i], _sb[i], _sc[i]))
                             return true;
-                    }
                     continue;
                 }
-                stack.Push(node.Left);
-                stack.Push(node.Right);
+                stack[top++] = node.Left;
+                stack[top++] = node.Right;
             }
             return false;
         }

@@ -19,7 +19,8 @@ namespace GeoSimplifier.SolidWorks.Geometry
         /// As above; <paramref name="owners"/>, when given, receives for each copy the component it came from, and
         /// <paramref name="excluded"/> copies of the excluded ones.
         /// </summary>
-        public static List<IBody2> CopySheets(IModelDoc2 doc, Exclusions exclusions, List<string> owners, List<IBody2> excluded = null)
+        public static List<IBody2> CopySheets(IModelDoc2 doc, Exclusions exclusions, List<string> owners, List<IBody2> excluded = null,
+                                              List<(string key, double[] transform)> instances = null)
         {
             var copies = new List<IBody2>();
             switch ((swDocumentTypes_e)doc.GetType())
@@ -38,6 +39,7 @@ namespace GeoSimplifier.SolidWorks.Geometry
                             }
                             copies.Add((IBody2)body.Copy());
                             owners?.Add("");
+                            instances?.Add((null, null));
                         }
                     break;
 
@@ -55,8 +57,11 @@ namespace GeoSimplifier.SolidWorks.Geometry
                             continue;
                         var transform = comp.Transform2;
                         bool wholeComponent = exclusions != null && exclusions.Contains(comp);
+                        string part = instances == null ? null : $"{comp.GetPathName()}|{comp.ReferencedConfiguration}|sheet";
+                        int index = -1;
                         foreach (IBody2 body in sheets)
                         {
+                            index++;
                             if (IsEmpty(body))
                                 continue;
                             var copy = (IBody2)body.Copy();
@@ -69,6 +74,7 @@ namespace GeoSimplifier.SolidWorks.Geometry
                             }
                             copies.Add(copy);
                             owners?.Add(comp.Name2);
+                            instances?.Add(($"{part}|{index}", (double[])((IMathTransform)transform)?.ArrayData));
                         }
                     }
                     break;
