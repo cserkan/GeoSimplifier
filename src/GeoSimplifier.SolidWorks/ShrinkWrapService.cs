@@ -895,12 +895,25 @@ namespace GeoSimplifier.SolidWorks
             // they are put in as they are.
             int featureOptions = bodies.Count > 50 ? 0
                 : (int)(swCreateFeatureBodyOpts_e.swCreateFeatureBodyCheck | swCreateFeatureBodyOpts_e.swCreateFeatureBodySimplify);
-            foreach (var body in bodies)
+            // The feature tree and the view are not updated after each of possibly a thousand bodies, only once.
+            var partDoc = (IModelDoc2)part;
+            var view = partDoc.ActiveView as IModelView;
+            partDoc.FeatureManager.EnableFeatureTree = false;
+            if (view != null) view.EnableGraphicsUpdate = false;
+            try
             {
-                if (part.CreateFeatureFromBody3((IBody2)body.Copy(), false, featureOptions) != null)
-                    created++;
+                foreach (var body in bodies)
+                {
+                    if (part.CreateFeatureFromBody3((IBody2)body.Copy(), false, featureOptions) != null)
+                        created++;
+                }
             }
-            ((IModelDoc2)part).ViewZoomtofit2();
+            finally
+            {
+                partDoc.FeatureManager.EnableFeatureTree = true;
+                if (view != null) view.EnableGraphicsUpdate = true;
+            }
+            partDoc.ViewZoomtofit2();
             if (created < bodies.Count)
                 result.Notes.Add("Bazı gövdeler parçaya eklenemedi, sonuç eksik olabilir.");
             return "Tamamlandı: " + result.Summary();

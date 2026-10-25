@@ -205,9 +205,24 @@ namespace GeoSimplifier.Probe
             }
             if (Array.IndexOf(args, "--bodies") >= 0)
             {
-                // The active part's bodies: kind, faces, volume, box.
-                var pd = (IPartDoc)swApp.ActiveDoc;
+                // The active part's bodies (or those of the part file given after --bodies): kind, faces, volume, box.
+                int at = Array.IndexOf(args, "--bodies");
+                IPartDoc pd;
+                if (at + 1 < args.Length && args[at + 1].EndsWith(".SLDPRT", StringComparison.OrdinalIgnoreCase))
+                {
+                    int oe = 0, ow = 0;
+                    pd = (IPartDoc)swApp.OpenDoc6(args[at + 1], 1, 1, "", ref oe, ref ow);
+                }
+                else
+                    pd = (IPartDoc)swApp.ActiveDoc;
                 Console.WriteLine(((IModelDoc2)pd).GetTitle());
+                foreach (int kind in new[] { 0, 1 })
+                {
+                    var all = ((object[])pd.GetBodies2(kind, true) ?? new object[0]).Cast<IBody2>().ToList();
+                    if (all.Count == 0) continue;
+                    double volume = all.Sum(b => ((double[])b.GetMassProperties(1))?[3] ?? 0) * 1e9;
+                    Console.WriteLine($"  TOPLAM {(kind == 0 ? "katı" : "yüzey")}: {all.Count} gövde, {all.Sum(b => ((object[])b.GetFaces()).Length)} yüz, hacim {volume:F0} mm³");
+                }
                 foreach (int kind in new[] { 0, 1 })
                     foreach (IBody2 b in (object[])pd.GetBodies2(kind, true) ?? new object[0])
                         Console.WriteLine($"  {(kind == 0 ? "katı" : "yüzey")}: {((object[])b.GetFaces()).Length} yüz, hacim {((double[])b.GetMassProperties(1))?[3] * 1e9:F0} mm³, kutu {Box((double[])b.GetBodyBox())}");
