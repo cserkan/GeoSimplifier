@@ -164,6 +164,94 @@ namespace GeoSimplifier.SolidWorks.Geometry
             return modeler.ThickenSheet((Body2)sheet, thickness, (int)swThickenDirection_e.swThickenDirection_Side2) as IBody2;
         }
 
+        /// <summary>
+        /// Flat surface lids for the holes of a surface body: every inner loop of a flat face at most
+        /// <paramref name="maxWidth"/> wide gets a disc (round loops) or a rectangle along the loop's main
+        /// direction (loops that mostly fill it), as a surface body, with the loop's points for drawing it as
+        /// triangles. Imported surface models have no solid to plug, so the hole's walls stay as they are; they
+        /// are hidden behind the lid.
+        /// </summary>
+        public List<(IBody2 lid, List<Vec3> outline, Vec3 normal)> SheetLids(IBody2 sheet, double maxWidth)
+        {
+            var lids = new List<(IBody2 lid, List<Vec3> outline, Vec3 normal)>();
+            var modeler = (IModeler)_ops.Modeler;
+            foreach (IFace2 face in (object[])sheet.GetFaces() ?? new object[0])
+            {
+                var surface = (ISurface)face.GetSurface();
+                if (surface == null || !surface.IsPlane())
+                    continue;
+                var p = (double[])surface.PlaneParams;
+                var normal = new Vec3(p[0], p[1], p[2]).Normalized();
+                foreach (ILoop2 loop in (object[])face.GetLoops() ?? new object[0])
+                {
+                    if (loop.IsOuter())
+                        continue;
+                    var points = Chain(((object[])loop.GetEdges() ?? new object[0]).Cast<IEdge>().Select(e => Sample(e, 12).ToList()).ToList());
+                    if (points.Count < 3)
+                        continue;
+                    var box = Aabb.FromPoints(points.ToArray());
+                    var centre = (box.Min + box.Max) * 0.5;
+                    // In-plane extent along the loop's main direction and across it.
+                    var a = Math.Abs(normal.X) < 0.9 ? new Vec3(1, 0, 0) : new Vec3(0, 1, 0);
+                    a = (a - normal * Vec3.Dot(a, normal)).Normalized();
+                    var b = Vec3.Cross(normal, a);
+                    double sxx = 0, sxy = 0, syy = 0;
+                    foreach (var q in points)
+                    {
+                        double x = Vec3.Dot(q - centre, a), y = Vec3.Dot(q - centre, b);
+                        sxx += x * x; sxy += x * y; syy += y * y;
+                    }
+                    double angle = 0.5 * Math.Atan2(2 * sxy, sxx - syy);
+                    var u = a * Math.Cos(angle) + b * Math.Sin(angle);
+                    var v = Vec3.Cross(normal, u);
+                    double u0 = points.Min(q => Vec3.Dot(q - centre, u)), u1 = points.Max(q => Vec3.Dot(q - centre, u));
+                    double v0 = points.Min(q => Vec3.Dot(q - centre, v)), v1 = points.Max(q => Vec3.Dot(q - centre, v));
+                    if (Math.Min(u1 - u0, v1 - v0) > maxWidth || Math.Min(u1 - u0, v1 - v0) < 1e-5)
+                        continue;
+                    var reach = points.Select(q => { var d = q - centre; return (d - normal * Vec3.Dot(d, normal)).Length; }).ToList();
+                    IBody2 lid = null;
+                    List<Vec3> outline = null;
+                    if (reach.Min() >= 0.92 * reach.Max())
+                    {
+                        // A disc: the end face of a thin cylinder, as a surface.
+                        double radius = reach.Max();
+                        var disc = _ops.SolidCylinder(centre, normal, radius, 1e-4);
+                        lid = ((object[])disc?.GetFaces() ?? new object[0]).OfType<IFace2>()
+                            .Where(f => ((ISurface)f.GetSurface())?.IsPlane() == true)
+                            .Select(f => f.CreateSheetBody() as IBody2).FirstOrDefault(s => s != null);
+                        outline = Enumerable.Range(0, 24).Select(k => centre + (u * Math.Cos(k * Math.PI / 12) + v * Math.Sin(k * Math.PI / 12)) * radius).ToList();
+                    }
+                    if (lid == null)
+                    {
+                        double area = 0;
+                        for (int i = 0; i < points.Count; i++)
+                        {
+                            var q0 = points[i] - centre;
+                            var q1 = points[(i + 1) % points.Count] - centre;
+                            area += Vec3.Dot(q0, u) * Vec3.Dot(q1, v) - Vec3.Dot(q1, u) * Vec3.Dot(q0, v);
+                        }
+                        if (Math.Abs(area) / 2 < 0.6 * (u1 - u0) * (v1 - v0))
+                        {
+                            SkippedCaps++;
+                            continue;
+                        }
+                        var plane = modeler.CreatePlanarSurface2(new[] { centre.X, centre.Y, centre.Z }, new[] { normal.X, normal.Y, normal.Z },
+                                                                 new[] { u.X, u.Y, u.Z }) as Surface;
+                        lid = plane == null ? null : modeler.CreateSheetFromSurface(plane, new[] { u0, u1, v0, v1 }) as IBody2;
+                        outline = new List<Vec3> { centre + u * u0 + v * v0, centre + u * u1 + v * v0, centre + u * u1 + v * v1, centre + u * u0 + v * v1 };
+                    }
+                    if (lid == null)
+                    {
+                        SkippedCaps++;
+                        continue;
+                    }
+                    lids.Add((lid, outline, normal));
+                    Closed++;
+                }
+            }
+            return lids;
+        }
+
         public List<IBody2> MouthCaps(IBody2 body, double maxWidth)
         {
             const double thickness = 3e-4;

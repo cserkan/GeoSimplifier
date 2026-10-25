@@ -174,7 +174,8 @@ namespace GeoSimplifier.SolidWorks.UI
             _excludeBox.AllowMultipleSelectOfSameEntity = false;
             _excludeBox.Height = 50;
             _excludeBox.Mark = ExcludeMark;
-            _excludeBox.SetSelectionFilters(new[] { (int)swSelectType_e.swSelCOMPONENTS, (int)swSelectType_e.swSelSOLIDBODIES });
+            _excludeBox.SetSelectionFilters(new[] { (int)swSelectType_e.swSelCOMPONENTS, (int)swSelectType_e.swSelSOLIDBODIES,
+                                                    (int)swSelectType_e.swSelSURFACEBODIES });
 
             // Where OK puts the result: a new part, or a new configuration of this document.
             _outputGroup = (IPropertyManagerPageGroup)_page.AddGroupBox(OutputGroupId, "Sonuç",
@@ -341,7 +342,7 @@ namespace GeoSimplifier.SolidWorks.UI
                         ? " Zarf mavi gösteriliyor, eklenen malzeme yok."
                         : " Zarf mavi, eklenecek malzeme turuncu gösteriliyor.";
                 if (_display.Supported && _preview.Removed.Count > 0)
-                    text += " Düzlenen kabartmalar kırmızı.";
+                    text += _preview.IsSkin ? " Çıkarılacak küçük parçalar kırmızı." : " Düzlenen kabartmalar kırmızı.";
                 // The page shows no summary (users found it too long); it and the hole details go to the log.
                 HideMessage();
                 PageLog.Write($"Önizleme (çizildi {shown}, hesap {computed:F2} sn, toplam {watch.Elapsed.TotalSeconds:F2} sn): " + text);

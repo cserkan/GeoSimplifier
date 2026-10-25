@@ -69,6 +69,19 @@ namespace GeoSimplifier.Core.Geometry
         /// <param name="offset">How far off the face the rays start (model units), so they do not hit their own face.</param>
         public HashSet<int> Visible(double offset)
         {
+            var visible = new HashSet<int>(_unsampled);
+            foreach (var kv in Escapes(offset))
+                if (kv.Value.escaped > 0)
+                    visible.Add(kv.Key);
+            return visible;
+        }
+
+        /// <summary>
+        /// For each sampled face, how many of its sample points some ray escapes from, and how many points it has
+        /// (faces without normals are not listed; they count as visible).
+        /// </summary>
+        public Dictionary<int, (int escaped, int samples)> Escapes(double offset)
+        {
             Build();
             var escaped = new bool[_samples.Count];
             Parallel.For(0, _samples.Count, s =>
@@ -82,12 +95,18 @@ namespace GeoSimplifier.Core.Geometry
                         return;
                     }
             });
-            var visible = new HashSet<int>(_unsampled);
+            var counts = new Dictionary<int, (int escaped, int samples)>();
             for (int s = 0; s < _samples.Count; s++)
-                if (escaped[s])
-                    visible.Add(_samples[s].face);
-            return visible;
+            {
+                int face = _samples[s].face;
+                counts.TryGetValue(face, out var c);
+                counts[face] = (c.escaped + (escaped[s] ? 1 : 0), c.samples + 1);
+            }
+            return counts;
         }
+
+        /// <summary>Faces added without normals; they are always counted as visible.</summary>
+        public IReadOnlyCollection<int> Unsampled => _unsampled;
 
         public int Triangles => _a.Count;
         public int Samples => _samples.Count;

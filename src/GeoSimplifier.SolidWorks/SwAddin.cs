@@ -166,9 +166,18 @@ namespace GeoSimplifier.SolidWorks
             limitsMm = limitsMm.Replace("knit:", "");
             // "maxsheets<n>:" sets how many surfaces a part may show before it is boxed (0: never).
             var maxSheets = System.Text.RegularExpressions.Regex.Match(limitsMm, @"maxsheets([0-9]+):");
-            ShrinkWrapService.MaxSheetsPerPart = maxSheets.Success ? int.Parse(maxSheets.Groups[1].Value) : 0;
+            ShrinkWrapService.MaxSheetsPerPart = maxSheets.Success ? int.Parse(maxSheets.Groups[1].Value) : 150;
             if (maxSheets.Success)
                 limitsMm = limitsMm.Remove(maxSheets.Index, maxSheets.Length);
+            // "lids:" puts lids on the holes of surface models' skins.
+            ShrinkWrapService.SkinLids = limitsMm.Contains("lids:");
+            limitsMm = limitsMm.Replace("lids:", "");
+            // "skin<share>,<area>:" sets SkinMinSeen and SkinMinArea.
+            var skin = System.Text.RegularExpressions.Regex.Match(limitsMm, @"skin([0-9.eE-]+),([0-9.eE-]+):");
+            ShrinkWrapService.SkinMinSeen = skin.Success ? double.Parse(skin.Groups[1].Value, System.Globalization.CultureInfo.InvariantCulture) : 0.2;
+            ShrinkWrapService.SkinMinArea = skin.Success ? double.Parse(skin.Groups[2].Value, System.Globalization.CultureInfo.InvariantCulture) : 1e-6;
+            if (skin.Success)
+                limitsMm = limitsMm.Remove(skin.Index, skin.Length);
             // "emboss<mm>:" sets the emboss height.
             var embossMatch = System.Text.RegularExpressions.Regex.Match(limitsMm, @"emboss([0-9.]+):");
             double emboss = -1;

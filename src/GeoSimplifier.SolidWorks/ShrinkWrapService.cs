@@ -114,9 +114,21 @@ namespace GeoSimplifier.SolidWorks
 
         /// <summary>
         /// In the outer skin of a surface model, a part showing more separate surfaces than this is replaced by its
-        /// box when it is grid-like (0: never; off until Serkan agrees to boxes for radiator-like parts).
+        /// box when it is grid-like (0: never). Serkan agreed to boxes for radiator- and grille-like parts.
         /// </summary>
-        public static int MaxSheetsPerPart { get; set; }
+        public static int MaxSheetsPerPart { get; set; } = 150;
+
+        /// <summary>
+        /// In the outer skin of a surface model, a surface body is kept when more than this share of its sample
+        /// points is seen from outside, and its area is above SkinMinArea times the square of the model's size.
+        /// </summary>
+        public static double SkinMinSeen { get; set; } = 0.2;
+
+        /// <summary>Whether the outer skin of a surface model gets flat lids on the holes of its surfaces.</summary>
+        public static bool SkinLids { get; set; }
+        // 1e-6 of the model's size squared: 38 mm² on V12 (6.1 m). With 20 % seen, V12 went from 10,591 to
+        // 5,843 surface bodies and looked complete; Serkan took that.
+        public static double SkinMinArea { get; set; } = 1e-6;
 
         /// <summary>Whether surface bodies are knitted per component before wrapping (for trials; see Compute).</summary>
         public static bool KnitSheets { get; set; }
@@ -312,6 +324,33 @@ namespace GeoSimplifier.SolidWorks
         }
 
         /// <summary>
+        /// Quick preview for <see cref="Skin"/>: the small parts that will be left out, the largest of them drawn
+        /// in red (drawing costs about 25 ms a body, so at most MaxPreviewLids).
+        /// </summary>
+        private void SkinPreview(WrapResult result, ShrinkWrapOptions options, List<IBody2> solids, List<string> solidOwners,
+                                 List<IBody2> sheets, List<string> sheetOwners)
+        {
+            var bodies = solids.Concat(sheets).ToList();
+            var owners = solidOwners.Take(solids.Count).Concat(sheetOwners).ToList();
+            var boxes = bodies.Select(BodyOps.AnyBounds).ToList();
+            var model = boxes.Aggregate(Core.Geometry.Aabb.Empty, (a, b) => a.Union(b));
+            double limit = options.MinPartPercent / 100 * (model.Max - model.Min).Length;
+            var partBoxes = new Dictionary<string, Core.Geometry.Aabb>();
+            for (int i = 0; i < bodies.Count; i++)
+                partBoxes[owners[i] ?? ""] = partBoxes.TryGetValue(owners[i] ?? "", out var pb) ? pb.Union(boxes[i]) : boxes[i];
+            var small = new HashSet<string>(partBoxes.Where(kv => kv.Key != "" && (kv.Value.Max - kv.Value.Min).Length < limit).Select(kv => kv.Key));
+            var removed = Enumerable.Range(0, bodies.Count).Where(i => options.MinPartPercent > 0 && small.Contains(owners[i] ?? "")).ToList();
+            result.IsPreview = true;
+            result.IsSkin = true;
+            result.EnvelopeLeftOut = true;
+            result.SourceBodies = bodies.Count;
+            result.SmallPartsRemoved = small.Count;
+            result.Removed = removed.OrderByDescending(i => (boxes[i].Max - boxes[i].Min).Length).Take(MaxPreviewLids).Select(i => bodies[i]).ToList();
+            result.Notes.Add($"Yüzey modeli: {partBoxes.Count - small.Count} parça kalıyor; dışarıdan görünen yüzeyleri Tamam'da seçilir.");
+            UI.PageLog.Write($"  yüzey modeli önizlemesi: {bodies.Count} gövde, {small.Count} küçük parça ({removed.Count} gövde), en büyük {result.Removed.Count} tanesi kırmızı");
+        }
+
+        /// <summary>
         /// The outer skin of a model made mostly of surface bodies, without making solids: small parts are left
         /// out (each part measured as a whole), then every face of every body, solid or surface, is tested with
         /// rays from outside. Surface bodies with a face seen from outside are kept as they are; of the solids only
@@ -363,16 +402,71 @@ namespace GeoSimplifier.SolidWorks
                     faceOf.Add((i, face));
                 }
             }
+            // Lids on the holes of the surfaces (at most the gap width across). They go into the ray test too,
+            // so the walls of a closed hole are no longer seen, and are kept where they are seen themselves.
+            var lids = new List<(string owner, IBody2 lid)>();
+            int firstLid = faceOf.Count;
+            // Off by default: on V12 they added 5742 lid bodies and hid few walls (a through hole's walls are
+            // still seen from the other side).
+            if (options.GapWidth > 0 && SkinLids)
+            {
+                var closer = new HoleCloser(new BodyOps(_swApp));
+                foreach (int i in keep.Where(i => i >= solidCount))
+                {
+                    foreach (var (lid, outline, normal) in closer.SheetLids(bodies[i], options.GapWidth))
+                    {
+                        var centre = outline.Aggregate(new Core.Geometry.Vec3(0, 0, 0), (a, p) => a + p) * (1.0 / outline.Count);
+                        var triangles = new List<float>();
+                        var normals = new List<float>();
+                        for (int k = 0; k < outline.Count; k++)
+                            foreach (var p in new[] { centre, outline[k], outline[(k + 1) % outline.Count] })
+                            {
+                                triangles.AddRange(new[] { (float)p.X, (float)p.Y, (float)p.Z });
+                                normals.AddRange(new[] { (float)normal.X, (float)normal.Y, (float)normal.Z });
+                            }
+                        visibility.AddFace(firstLid + lids.Count, triangles, normals, samples: 2, twoSided: true);
+                        lids.Add((owners[i], lid));
+                    }
+                }
+                result.HolesClosed = lids.Count;
+                UI.PageLog.Write($"  delik kapakları: {lids.Count} ({closer.SkippedCaps} düzensiz ağız kapatılmadı)");
+            }
+
             double size = (model.Max - model.Min).Length;
-            var visible = visibility.Visible(Math.Max(1e-5, size * 2e-5));
+            var escapes = visibility.Escapes(Math.Max(1e-5, size * 2e-5));
+            var visible = new HashSet<int>(visibility.Unsampled.Concat(escapes.Where(kv => kv.Value.escaped > 0).Select(kv => kv.Key)));
             UI.PageLog.Write($"  dış yüzler: {visible.Count}/{faceOf.Count} yüz görünüyor, {visibility.Triangles} üçgen ({watch.Elapsed.TotalSeconds:F1} sn)");
+
+            // Per surface body: the share of its sample points seen from outside, and its area. A surface seen
+            // only at a point or two through a gap, or a tiny one, is dropped (SkinMinSeen, SkinMinArea).
+            var seenShare = new Dictionary<int, (int escaped, int samples, double area)>();
+            for (int f = 0; f < faceOf.Count; f++)
+            {
+                var (b, face) = faceOf[f];
+                if (b < solidCount) continue;
+                seenShare.TryGetValue(b, out var c);
+                var e = escapes.TryGetValue(f, out var x) ? x : (visibility.Unsampled.Contains(f) ? (1, 1) : (0, 0));
+                seenShare[b] = (c.escaped + e.Item1, c.samples + e.Item2, c.area + face.GetArea());
+            }
+            double modelArea = size * size;
+            foreach (var share in new[] { 0.0, 0.2, 0.4 })
+                foreach (var area in new[] { 0.0, 1e-6, 1e-5 })
+                    UI.PageLog.Write($"  kural: görünen pay > %{share * 100:F0}, alan > {area * modelArea * 1e6:F0} mm² → " +
+                                     $"{seenShare.Values.Count(v => v.escaped > 0 && v.escaped > share * v.samples && v.area > area * modelArea)} yüzey");
 
             var seenBodies = new HashSet<int>();
             var seenSolidFaces = new List<(int body, IFace2 face)>();
             foreach (int f in visible)
             {
+                if (f >= firstLid)
+                    continue;
                 var (b, face) = faceOf[f];
-                if (b >= solidCount) seenBodies.Add(b);
+                if (b >= solidCount)
+                {
+                    var v = seenShare[b];
+                    if (v.escaped > SkinMinSeen * v.samples && v.area > SkinMinArea * modelArea)
+                        seenBodies.Add(b);
+                }
                 else seenSolidFaces.Add((b, face));
             }
             var output = new List<(string owner, IBody2 body)>();
@@ -386,6 +480,10 @@ namespace GeoSimplifier.SolidWorks
             }
             if (solidFailed > 0)
                 result.Notes.Add($"{solidFailed} katı yüzü yüzeye çevrilemedi.");
+            var seenLids = lids.Where((l, k) => visible.Contains(firstLid + k)).ToList();
+            output.AddRange(seenLids);
+            if (lids.Count > 0)
+                UI.PageLog.Write($"  görünen kapak: {seenLids.Count}/{lids.Count}");
             var perPart = output.GroupBy(o => o.owner ?? "").Select(g => (part: g.Key, count: g.Count())).OrderByDescending(p => p.count).ToList();
             UI.PageLog.Write($"  parça başına yüzey: {perPart.Count} parça; en çok: " +
                              string.Join(", ", perPart.Take(15).Select(p => $"{p.part} {p.count}")) +
@@ -644,12 +742,30 @@ namespace GeoSimplifier.SolidWorks
                 // The lid preview does not use them, so it leaves them out (1015 surfaces took seconds).
                 bool lidPreview = options.Preview && options.GapWidth > 0 && !options.Bag;
                 var owners = new List<string>();
-                var sheets = lidPreview ? new List<IBody2>() : BodyCollector.CopySheets(source, exclusions, owners);
+                var excludedSheets = new List<IBody2>();
+                var sheets = lidPreview ? new List<IBody2>() : BodyCollector.CopySheets(source, exclusions, owners, excludedSheets);
+                if (lidPreview)
+                {
+                    // The preview of a surface model's outer skin: which parts go as small (red). Seeing which
+                    // surfaces stay takes the ray test of OK (two minutes on V12).
+                    var previewSheets = BodyCollector.CopySheets(source, exclusions, owners);
+                    if (previewSheets.Count > bodies.Count)
+                    {
+                        SkinPreview(result, options, bodies, bodyOwners, previewSheets, owners);
+                        result.Seconds = watch.Elapsed.TotalSeconds;
+                        return result;
+                    }
+                }
                 if (options.SurfaceShell && !options.Preview && sheets.Count > bodies.Count)
                 {
                     // A model made of surfaces (STEP imports): its outer skin is taken from the surfaces as they
                     // are, with no solids made.
                     Skin(result, options, bodies, bodyOwners, sheets, owners, (d, t) => Report("dış yüzler", 10, 90, d, t));
+                    // Excluded parts come through whole, with every face ("Hariç tut": keep these as they are).
+                    result.Bodies.AddRange(excluded.Concat(excludedSheets));
+                    result.ExcludedBodies = excluded.Count + excludedSheets.Count;
+                    if (result.ExcludedBodies > 0)
+                        UI.PageLog.Write($"  hariç tutulan: {excluded.Count} katı + {excludedSheets.Count} yüzey gövdesi olduğu gibi eklendi");
                     result.Seconds = watch.Elapsed.TotalSeconds;
                     return result;
                 }

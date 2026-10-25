@@ -75,6 +75,7 @@ namespace GeoSimplifier.SolidWorks.Geometry
                         result.AddComponent(obj as IComponent2 ?? component);
                         break;
                     case swSelectType_e.swSelSOLIDBODIES:
+                    case swSelectType_e.swSelSURFACEBODIES:
                         result.AddBody(obj as IBody2, component);
                         break;
                 }

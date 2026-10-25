@@ -78,6 +78,32 @@ namespace GeoSimplifier.Probe
                 swApp.CloseDoc(md.GetTitle());
                 return 0;
             }
+            int lowAt = Array.IndexOf(args, "--lowest");
+            if (lowAt >= 0 && lowAt + 1 < args.Length)
+            {
+                // --lowest <open assembly path>: the leaf components lying lowest (Y up, then Z up), with their size
+                // and surface count, to find feet and mounts.
+                var lowAsm = (IAssemblyDoc)swApp.GetOpenDocumentByName(args[lowAt + 1]);
+                var rows = new System.Collections.Generic.List<(string name, string file, double[] box, int bodies)>();
+                foreach (IComponent2 comp in (object[])lowAsm.GetComponents(false) ?? new object[0])
+                {
+                    if (comp.GetSuppression2() == 0 || ((object[])comp.GetChildren())?.Length > 0) continue;
+                    var box = (double[])comp.GetBox(false, false);
+                    if (box == null) continue;
+                    int n = (((object[])comp.GetBodies3(1, out _))?.Length ?? 0) + (((object[])comp.GetBodies3(0, out _))?.Length ?? 0);
+                    rows.Add((comp.Name2, System.IO.Path.GetFileName(comp.GetPathName()), box, n));
+                }
+                double minY = rows.Min(r => r.box[1]), maxY = rows.Max(r => r.box[4]);
+                double minZ = rows.Min(r => r.box[2]), maxZ = rows.Max(r => r.box[5]);
+                Console.WriteLine($"Model Y {minY * 1000:F0}..{maxY * 1000:F0} mm, Z {minZ * 1000:F0}..{maxZ * 1000:F0} mm, {rows.Count} parça");
+                foreach (var axis in new[] { 1, 2 })
+                {
+                    Console.WriteLine(axis == 1 ? "--- en alttakiler (Y)" : "--- en alttakiler (Z)");
+                    foreach (var r in rows.OrderBy(r => r.box[axis]).Take(25))
+                        Console.WriteLine($"  {r.name} ({r.file}): {Box(r.box)}, boy {(r.box[3] - r.box[0]) * 1000:F0}x{(r.box[4] - r.box[1]) * 1000:F0}x{(r.box[5] - r.box[2]) * 1000:F0} mm, {r.bodies} gövde");
+                }
+                return 0;
+            }
             int addAt = Array.IndexOf(args, "--add-sheets");
             if (addAt >= 0 && addAt + 1 < args.Length)
             {
@@ -827,6 +853,13 @@ namespace GeoSimplifier.Probe
         private static ISldWorks FindSolidWorksWithDocument()
         {
             ISldWorks fallback = null;
+            // The test scripts note the SOLIDWORKS they started in my_sw_pid.txt (next to the probe's folder); while
+            // that one runs, only it is used, never one Serkan opened himself.
+            string mine = null;
+            var pidFile = System.IO.Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "..", "my_sw_pid.txt");
+            if (System.IO.File.Exists(pidFile) && int.TryParse(System.IO.File.ReadAllText(pidFile).Trim(), out int pid) &&
+                System.Diagnostics.Process.GetProcesses().Any(p => p.Id == pid))
+                mine = "SolidWorks_PID_" + pid;
             GetRunningObjectTable(0, out var rot);
             CreateBindCtx(0, out var ctx);
             rot.EnumRunning(out var monikers);
@@ -836,6 +869,8 @@ namespace GeoSimplifier.Probe
                 one[0].GetDisplayName(ctx, null, out string name);
                 if (!name.StartsWith("SolidWorks_PID_", StringComparison.OrdinalIgnoreCase))
                     continue;
+                if (mine != null && !name.Equals(mine, StringComparison.OrdinalIgnoreCase))
+                    continue;
                 rot.GetObject(one[0], out object obj);
                 if (obj is ISldWorks app)
                 {
@@ -844,6 +879,8 @@ namespace GeoSimplifier.Probe
                     fallback = fallback ?? app;
                 }
             }
+            if (fallback == null && mine != null)
+                throw new InvalidOperationException("Testin başlattığı SOLIDWORKS bulunamadı; başka bir oturuma bağlanılmadı.");
             return fallback ?? (ISldWorks)Marshal.GetActiveObject("SldWorks.Application");
         }
     }

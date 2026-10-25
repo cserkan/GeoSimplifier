@@ -15,8 +15,11 @@ namespace GeoSimplifier.SolidWorks.Geometry
         /// <summary>Copies of the visible surface (sheet) bodies, in model coordinates, skipping excluded ones.</summary>
         public static List<IBody2> CopySheets(IModelDoc2 doc, Exclusions exclusions) => CopySheets(doc, exclusions, null);
 
-        /// <summary>As above; <paramref name="owners"/>, when given, receives for each copy the component it came from.</summary>
-        public static List<IBody2> CopySheets(IModelDoc2 doc, Exclusions exclusions, List<string> owners)
+        /// <summary>
+        /// As above; <paramref name="owners"/>, when given, receives for each copy the component it came from, and
+        /// <paramref name="excluded"/> copies of the excluded ones.
+        /// </summary>
+        public static List<IBody2> CopySheets(IModelDoc2 doc, Exclusions exclusions, List<string> owners, List<IBody2> excluded = null)
         {
             var copies = new List<IBody2>();
             switch ((swDocumentTypes_e)doc.GetType())
@@ -25,19 +28,24 @@ namespace GeoSimplifier.SolidWorks.Geometry
                     var bodies = (object[])((IPartDoc)doc).GetBodies2((int)swBodyType_e.swSheetBody, true);
                     if (bodies != null)
                         foreach (IBody2 body in bodies)
-                            if (!IsEmpty(body) && (exclusions == null || !exclusions.Contains(body, null)))
+                        {
+                            if (IsEmpty(body))
+                                continue;
+                            if (exclusions != null && exclusions.Contains(body, null))
                             {
-                                copies.Add((IBody2)body.Copy());
-                                owners?.Add("");
+                                excluded?.Add((IBody2)body.Copy());
+                                continue;
                             }
+                            copies.Add((IBody2)body.Copy());
+                            owners?.Add("");
+                        }
                     break;
 
                 case swDocumentTypes_e.swDocASSEMBLY:
                     foreach (IComponent2 comp in (object[])((IAssemblyDoc)doc).GetComponents(false) ?? new object[0])
                     {
                         if (comp.GetSuppression2() == (int)swComponentSuppressionState_e.swComponentSuppressed ||
-                            comp.Visible == (int)swComponentVisibilityState_e.swComponentHidden ||
-                            (exclusions != null && exclusions.Contains(comp)))
+                            comp.Visible == (int)swComponentVisibilityState_e.swComponentHidden)
                             continue;
                         var children = (object[])comp.GetChildren();
                         if (children != null && children.Length > 0)
@@ -46,13 +54,19 @@ namespace GeoSimplifier.SolidWorks.Geometry
                         if (sheets == null)
                             continue;
                         var transform = comp.Transform2;
+                        bool wholeComponent = exclusions != null && exclusions.Contains(comp);
                         foreach (IBody2 body in sheets)
                         {
-                            if (IsEmpty(body) || (exclusions != null && exclusions.Contains(body, comp)))
+                            if (IsEmpty(body))
                                 continue;
                             var copy = (IBody2)body.Copy();
                             if (transform != null)
                                 copy.ApplyTransform(transform);
+                            if (wholeComponent || (exclusions != null && exclusions.Contains(body, comp)))
+                            {
+                                excluded?.Add(copy);
+                                continue;
+                            }
                             copies.Add(copy);
                             owners?.Add(comp.Name2);
                         }
