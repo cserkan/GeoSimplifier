@@ -164,6 +164,11 @@ namespace GeoSimplifier.SolidWorks
             // "knit:" knits surface bodies per component first (a trial).
             ShrinkWrapService.KnitSheets = limitsMm.Contains("knit:");
             limitsMm = limitsMm.Replace("knit:", "");
+            // "maxsheets<n>:" sets how many surfaces a part may show before it is boxed (0: never).
+            var maxSheets = System.Text.RegularExpressions.Regex.Match(limitsMm, @"maxsheets([0-9]+):");
+            ShrinkWrapService.MaxSheetsPerPart = maxSheets.Success ? int.Parse(maxSheets.Groups[1].Value) : 0;
+            if (maxSheets.Success)
+                limitsMm = limitsMm.Remove(maxSheets.Index, maxSheets.Length);
             // "emboss<mm>:" sets the emboss height.
             var embossMatch = System.Text.RegularExpressions.Regex.Match(limitsMm, @"emboss([0-9.]+):");
             double emboss = -1;

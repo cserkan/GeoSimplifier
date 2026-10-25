@@ -78,6 +78,27 @@ namespace GeoSimplifier.Probe
                 swApp.CloseDoc(md.GetTitle());
                 return 0;
             }
+            int addAt = Array.IndexOf(args, "--add-sheets");
+            if (addAt >= 0 && addAt + 1 < args.Length)
+            {
+                // --add-sheets <part>: unites the part's surface bodies one by one with a boolean add, to see whether
+                // separate surfaces can live in one body; prints how many bodies come out.
+                int oe = 0, ow = 0;
+                var src = (IPartDoc)swApp.OpenDoc6(args[addAt + 1], 1, 1, "", ref oe, ref ow);
+                var sheets = ((object[])src.GetBodies2(1, true) ?? new object[0]).Cast<IBody2>().Select(b => (IBody2)b.Copy()).ToList();
+                var watch = System.Diagnostics.Stopwatch.StartNew();
+                var acc = sheets[0];
+                int failed = 0, pieces = 1;
+                for (int i = 1; i < sheets.Count; i++)
+                {
+                    var res = (object[])acc.Operations2(15, sheets[i], out int err);
+                    if (res == null || res.Length != 1) { failed++; if (failed <= 3) Console.WriteLine($"  {i}: sonuç {res?.Length ?? -1} gövde, hata {err}"); continue; }
+                    acc = (IBody2)res[0];
+                    pieces++;
+                }
+                Console.WriteLine($"{sheets.Count} yüzey → 1 gövdede {pieces} yüzey, {failed} eklenemedi; gövde {acc.GetFaceCount()} yüz, {watch.Elapsed.TotalSeconds:F1} sn");
+                return 0;
+            }
             int knitAt = Array.IndexOf(args, "--knit");
             if (knitAt >= 0 && knitAt + 1 < args.Length)
             {
@@ -88,6 +109,12 @@ namespace GeoSimplifier.Probe
                 var sheets = ((object[])pd.GetBodies2(1, true) ?? new object[0]).Cast<IBody2>().ToList();
                 var modeler = (IModeler)swApp.GetModeler();
                 Console.WriteLine($"{sheets.Count} yüzey gövdesi, {sheets.Sum(b => ((object[])b.GetFaces()).Length)} yüz");
+                if (Array.IndexOf(args, "--from-faces") >= 0)
+                {
+                    // Fresh surfaces made from the faces (IFace2.CreateSheetBody) instead of the imported bodies.
+                    sheets = sheets.SelectMany(b => ((object[])b.GetFaces()).Cast<IFace2>()).Select(f => f.CreateSheetBody() as IBody2).Where(b => b != null).ToList();
+                    Console.WriteLine($"  yüzlerden yeni yüzey: {sheets.Count}");
+                }
                 {
                     // Each sheet alone: open edges, and whether it becomes a solid by itself.
                     int closedSheets = 0, alone = 0, aloneSolid = 0;

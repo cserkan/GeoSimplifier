@@ -112,6 +112,12 @@ namespace GeoSimplifier.SolidWorks
         // faces) redrawing it took 5 s of a preview's 11.
         private const int LargeModelFaces = 3000;
 
+        /// <summary>
+        /// In the outer skin of a surface model, a part showing more separate surfaces than this is replaced by its
+        /// box when it is grid-like (0: never; off until Serkan agrees to boxes for radiator-like parts).
+        /// </summary>
+        public static int MaxSheetsPerPart { get; set; }
+
         /// <summary>Whether surface bodies are knitted per component before wrapping (for trials; see Compute).</summary>
         public static bool KnitSheets { get; set; }
 
@@ -380,6 +386,60 @@ namespace GeoSimplifier.SolidWorks
             }
             if (solidFailed > 0)
                 result.Notes.Add($"{solidFailed} katı yüzü yüzeye çevrilemedi.");
+            var perPart = output.GroupBy(o => o.owner ?? "").Select(g => (part: g.Key, count: g.Count())).OrderByDescending(p => p.count).ToList();
+            UI.PageLog.Write($"  parça başına yüzey: {perPart.Count} parça; en çok: " +
+                             string.Join(", ", perPart.Take(15).Select(p => $"{p.part} {p.count}")) +
+                             $"; 100+ yüzeyli {perPart.Count(p => p.count >= 100)} parça toplam {perPart.Where(p => p.count >= 100).Sum(p => p.count)} yüzey");
+
+            // A part that shows very many separate surfaces (a radiator core, a grille: SOLIDWORKS cannot knit or
+            // unite imported surfaces) is replaced by the surfaces of its box, which also closes its openings.
+            if (MaxSheetsPerPart > 0)
+            {
+                var ops = new BodyOps(_swApp);
+                var modeler = (IModeler)_swApp.GetModeler();
+                // Only grid-like parts: most of their surfaces are flat and square to the axes, and the part is
+                // plate-like (its box much thinner one way). An engine block is neither and stays exact.
+                bool GridLike(string part)
+                {
+                    var faces = output.Where(o => o.owner == part).SelectMany(o => ((object[])o.body.GetFaces() ?? new object[0]).OfType<IFace2>()).ToList();
+                    int square = faces.Count(f =>
+                    {
+                        var surface = (ISurface)f.GetSurface();
+                        if (surface == null || !surface.IsPlane()) return false;
+                        var p = (double[])surface.PlaneParams;
+                        double m = Math.Max(Math.Abs(p[0]), Math.Max(Math.Abs(p[1]), Math.Abs(p[2])));
+                        return m > 0.999;
+                    });
+                    var box = Enumerable.Range(0, bodies.Count).Where(i => owners[i] == part)
+                        .Aggregate(Core.Geometry.Aabb.Empty, (a, i) => a.Union(boxes[i]));
+                    var s = box.Size;
+                    double thin = Math.Min(s.X, Math.Min(s.Y, s.Z)), wide = Math.Max(s.X, Math.Max(s.Y, s.Z));
+                    bool grid = faces.Count > 0 && square >= 0.8 * faces.Count && thin <= 0.25 * wide;
+                    UI.PageLog.Write($"  çok yüzeyli parça {part}: {faces.Count} yüz, %{100.0 * square / Math.Max(1, faces.Count):F0} eksene dik düz, " +
+                                     $"kutu {s.X * 1000:F0}x{s.Y * 1000:F0}x{s.Z * 1000:F0} mm → {(grid ? "kutu" : "olduğu gibi")}");
+                    return grid;
+                }
+                var boxed = new HashSet<string>(perPart.Where(p => p.part != "" && p.count > MaxSheetsPerPart && GridLike(p.part)).Select(p => p.part));
+                var replaced = new List<(string owner, IBody2 body)>();
+                int boxedSheets = 0;
+                foreach (var part in boxed)
+                {
+                    var box = Enumerable.Range(0, bodies.Count).Where(i => owners[i] == part && keep.Contains(i))
+                        .Aggregate(Core.Geometry.Aabb.Empty, (a, i) => a.Union(boxes[i]));
+                    var solid = ops.Box(box);
+                    var faces = ((object[])solid?.GetFaces() ?? new object[0]).OfType<IFace2>().Select(f => f.CreateSheetBody() as IBody2).Where(s => s != null).ToArray();
+                    int error = 0;
+                    var skin = faces.Length == 6
+                        ? ((object[])modeler.CreateBodiesFromSheets2(faces, SheetBodiesOnly, 1e-5, ref error))?.OfType<IBody2>().FirstOrDefault()
+                        : null;
+                    if (skin == null && solid == null)
+                        continue;
+                    boxedSheets += output.Count(o => o.owner == part);
+                    replaced.Add((part, skin ?? solid));
+                }
+                output = output.Where(o => !boxed.Contains(o.owner ?? "")).Concat(replaced).ToList();
+                UI.PageLog.Write($"  çok yüzeyli parçalar kutuya çevrildi: {replaced.Count} parça, {boxedSheets} yüzey yerine (sınır {MaxSheetsPerPart})");
+            }
 
             if (options.ForceSingleBody)
             {
