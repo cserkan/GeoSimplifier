@@ -185,9 +185,16 @@ namespace GeoSimplifier.Probe
                 string path = args[open + 1];
                 int type = path.EndsWith(".sldasm", StringComparison.OrdinalIgnoreCase) ? 2 : 1;
                 int errors = 0, warnings = 0;
+                // --resolved: open an assembly fully resolved, overriding a lightweight default (64 without 128).
+                int openOptions = Array.IndexOf(args, "--resolved") >= 0 ? 64 : 0;
                 var openWatch = System.Diagnostics.Stopwatch.StartNew();
-                var opened = swApp.OpenDoc6(path, type, 0, "", ref errors, ref warnings);
+                var opened = swApp.OpenDoc6(path, type, openOptions, "", ref errors, ref warnings);
                 Console.WriteLine($"Açılma süresi: {openWatch.Elapsed.TotalSeconds:F2} sn");
+                if (opened is IAssemblyDoc openedAsm)
+                {
+                    var comps = ((object[])openedAsm.GetComponents(false) ?? new object[0]).Cast<IComponent2>().ToList();
+                    Console.WriteLine($"Bileşen {comps.Count}, hafif (lightweight) {comps.Count(c => c.GetSuppression2() == 1)}, tam çözülmüş {comps.Count(c => c.GetSuppression2() == 2)}");
+                }
                 int activateErrors = 0;
                 swApp.ActivateDoc3(System.IO.Path.GetFileName(path), false, 0, ref activateErrors);
                 Console.WriteLine($"Açıldı: {path} (hata {errors}, uyarı {warnings})");
