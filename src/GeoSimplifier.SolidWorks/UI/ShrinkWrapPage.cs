@@ -34,8 +34,6 @@ namespace GeoSimplifier.SolidWorks.UI
         private const int PreviewId = 16;
         private const int SmallPartsLabelId = 18;
         private const int SmallPartsId = 19;
-        private const int SmallShellLabelId = 20;
-        private const int SmallShellId = 21;
         private const int SingleBodyId = 22;
         private const int TypeGroupId = 23;
         private const int SolidOptionId = 24;
@@ -54,7 +52,9 @@ namespace GeoSimplifier.SolidWorks.UI
         private static bool _newConfiguration;
         private static string _configurationName = "Simple";
         private static bool _surfaceShell;
-        private static double _smallShellPercent = 14;
+        // The shell's last clean-up of small surface bodies uses the same percentage as 'Bundan küçük parçaları
+        // çıkar' (Serkan merged the two options); none when that box is unticked.
+        private static double SmallShellPercent => _removeSmallParts ? _smallParts : 0;
         private static bool _forceSingleBody;
 
         private readonly ISldWorks _swApp;
@@ -88,9 +88,6 @@ namespace GeoSimplifier.SolidWorks.UI
         private IPropertyManagerPageOption _shellOption;
         private bool _shellOutput;
         private int _step = 1;
-        private IPropertyManagerPageLabel _smallShellLabel;
-        private IPropertyManagerPageNumberbox _smallShellBox;
-        private double _smallShellValue;
         private IPropertyManagerPageCheckbox _singleBodyBox;
         private bool _ok;
         private IModelDoc2 _source;
@@ -217,14 +214,6 @@ namespace GeoSimplifier.SolidWorks.UI
             _configNameBox = (IPropertyManagerPageTextbox)AddControl(_outputGroup, ConfigNameId, swPropertyManagerPageControlType_e.swControlType_Textbox,
                 "Konfigürasyon adı", "Bu ad varsa sonuna numara eklenir.");
             _configNameBox.Text = _configurationName;
-            _smallShellLabel = (IPropertyManagerPageLabel)AddControl(_outputGroup, SmallShellLabelId, swPropertyManagerPageControlType_e.swControlType_Label,
-                "Küçük yüzey gövdelerini sil (%)", null);
-            _smallShellBox = (IPropertyManagerPageNumberbox)AddControl(_outputGroup, SmallShellId, swPropertyManagerPageControlType_e.swControlType_Numberbox,
-                "Küçük yüzey gövdelerini sil (%)",
-                "Dış kabukta boyu modelin bu yüzdesinden küçük kalan yüzey gövdeleri (vida başı, halka parçaları) silinir. En büyük gövde hep kalır. 0 hiçbirini silmez.");
-            _smallShellBox.SetRange2((int)swNumberboxUnitType_e.swNumberBox_UnitlessDouble, 0, 100, true, 1, 5, 0.5);
-            _smallShellBox.Value = _smallShellPercent;
-            _smallShellValue = _smallShellPercent;
             (_newConfiguration ? _newConfigOption : _newPartOption).Checked = true;
             _outputNewConfig = _newConfiguration;
             _outputName = _configurationName;
@@ -343,9 +332,6 @@ namespace GeoSimplifier.SolidWorks.UI
             _group.Visible = settings;
             _excludeGroup.Visible = settings;
             _outputGroup.Visible = settings;
-            // Settings of one kind only: deleting small surfaces for the skin.
-            ((IPropertyManagerPageControl)_smallShellLabel).Visible = _shellOutput;
-            ((IPropertyManagerPageControl)_smallShellBox).Visible = _shellOutput;
             _group.Caption = _shellOutput ? "Ayarlar: yüzey kabuk" : "Ayarlar: katı";
         }
 
@@ -408,9 +394,6 @@ namespace GeoSimplifier.SolidWorks.UI
             double emboss = _embossBox.Value;
             if (emboss >= 0)
                 _embossValue = emboss;
-            double shellPercent = _smallShellBox.Value;
-            if (shellPercent >= 0)
-                _smallShellValue = shellPercent;
             double small = _smallPartsBox.Value;
             if (small >= 0)
                 _smallPartsValue = small;
@@ -629,8 +612,6 @@ namespace GeoSimplifier.SolidWorks.UI
                 _smallPartsValue = value;
                 ScheduleHighlight();
             }
-            else if (id == SmallShellId)
-                _smallShellValue = value;
             else
                 return false;
             return true;
@@ -656,7 +637,6 @@ namespace GeoSimplifier.SolidWorks.UI
             _closeHoles = _closeHolesBox.Checked;
             _newConfiguration = _outputNewConfig;
             _surfaceShell = _shellOutput;
-            _smallShellPercent = _smallShellValue;
             _configurationName = string.IsNullOrWhiteSpace(_outputName) ? "Simple" : _outputName.Trim();
             _gapWidth = _gapValue;
             _embossHeight = _embossValue;
@@ -679,8 +659,8 @@ namespace GeoSimplifier.SolidWorks.UI
             {
                 var result = _preview ?? _service.Compute(_source, CurrentOptionsFromSettings(), _exclusions);
                 string message = _outputNewConfig
-                    ? _service.Commit(result, _source, string.IsNullOrWhiteSpace(_outputName) ? "Simple" : _outputName.Trim(), _surfaceShell, _smallShellPercent)
-                    : _service.Commit(result, null, null, _surfaceShell, _smallShellPercent);
+                    ? _service.Commit(result, _source, string.IsNullOrWhiteSpace(_outputName) ? "Simple" : _outputName.Trim(), _surfaceShell, SmallShellPercent)
+                    : _service.Commit(result, null, null, _surfaceShell, SmallShellPercent);
                 // No message box on success: it only gets in the way. The summary goes to the log.
                 PageLog.Write("Tamam: " + message);
             }
