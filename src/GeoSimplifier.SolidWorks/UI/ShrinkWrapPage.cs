@@ -426,7 +426,7 @@ namespace GeoSimplifier.SolidWorks.UI
             SurfaceShell = _shellOutput,
         };
 
-        private string Key(ShrinkWrapOptions o) => $"{o.GapWidth:R}|{o.FillCavities}|{o.MaxEmbossHeight:R}|{o.MinPartPercent:R}|{o.SurfaceShell}|{_exclusions.Key}";
+        private string Key(ShrinkWrapOptions o) => $"{o.GapWidth:R}|{o.MaxEmbossHeight:R}|{o.MinPartPercent:R}|{o.SurfaceShell}|{_exclusions.Key}";
 
         /// <summary>Recomputes the wrap for the current settings and shows what it adds.</summary>
         private void UpdatePreview()
