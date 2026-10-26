@@ -55,6 +55,11 @@ namespace GeoSimplifier.SolidWorks.Geometry
             return _components.Contains(name) || _components.Any(c => name.StartsWith(c + "/", StringComparison.OrdinalIgnoreCase));
         }
 
+        /// <summary>True when an excluded component or body lies under the sub-assembly named <paramref name="parent"/>.</summary>
+        public bool AnyUnder(string parent) =>
+            _components.Any(c => c.StartsWith(parent + "/", StringComparison.OrdinalIgnoreCase)) ||
+            _bodies.Any(b => b.StartsWith(parent + "/", StringComparison.OrdinalIgnoreCase));
+
         public bool Contains(IBody2 body, IComponent2 component) => _bodies.Contains(BodyKey(component?.Name2, body.Name));
 
         private static string BodyKey(string component, string body) => (component ?? "") + "|" + body;
