@@ -350,6 +350,13 @@ namespace GeoSimplifier.SolidWorks.Geometry
             // the subtraction fails (coincident faces); the mouths end up a few microns below the rim.
             double eps = Math.Max(1e-6, bb.LongestSide * 1e-5);
             var inner = new Aabb(bb.Min + new Vec3(eps, eps, eps), bb.Max - new Vec3(eps, eps, eps));
+            var started = System.Diagnostics.Stopwatch.StartNew();
+            bool late()
+            {
+                if (started.Elapsed.TotalSeconds <= MaxSecondsPerBody) return false;
+                UI.PageLog.Write($"  kap içi: gövde başına süre sınırında ({MaxSecondsPerBody:F0} sn) bırakıldı, kutu {bb.Size.X * 1000:F0}x{bb.Size.Y * 1000:F0}x{bb.Size.Z * 1000:F0} mm");
+                return true;
+            }
             var pieces = Subtract(Box(inner), part);
             if (pieces == null)
                 return result;
@@ -360,6 +367,8 @@ namespace GeoSimplifier.SolidWorks.Geometry
             {
                 if (ReferenceEquals(other, part) || !Overlaps(inner, Bounds(other), 0))
                     continue;
+                if (late())
+                    return result;
                 var next = new List<IBody2>();
                 foreach (var piece in around)
                 {
@@ -386,6 +395,8 @@ namespace GeoSimplifier.SolidWorks.Geometry
                 if (Trace)
                     UI.PageLog.Write($"  iç aday: parça kutusu {bb.Size.X * 1000:F0}x{bb.Size.Y * 1000:F0}x{bb.Size.Z * 1000:F0} mm, " +
                                      $"hava {Volume(piece):F0} mm³, kenarlar {string.Join(" ", sides.Select(sd => (sd.dir > 0 ? "+" : "-") + "XYZ"[sd.axis]))}");
+                if (late())
+                    return new List<IBody2>();
                 bool covered = true;
                 foreach (var (a, dir) in sides)
                 {
@@ -637,6 +648,13 @@ namespace GeoSimplifier.SolidWorks.Geometry
         /// <summary>Logs failing booleans to the page log (for finding why bodies stay apart).</summary>
         public bool Trace;
 
+        /// <summary>
+        /// The time one body gets in each per-body step of a solid result (threads, holes, insides, cavities); a body
+        /// over it is left as it is. TAG3's imported castings held one step for over 18 minutes; 30 s cut MOTOR030220's
+        /// hole closing short (140 holes instead of 143), its slowest body needing well over that.
+        /// </summary>
+        public const double MaxSecondsPerBody = 120;
+
         private static double Volume(IBody2 b) => (((double[])b?.GetMassProperties(1))?[3] ?? 0) * 1e9;
 
         /// <returns>The single merged body, or null when the bodies stay separate or the union fails.</returns>
@@ -724,9 +742,17 @@ namespace GeoSimplifier.SolidWorks.Geometry
             if (pieces == null || pieces.Length <= 1)
                 return body;
 
+            var started = System.Diagnostics.Stopwatch.StartNew();
+            int addedBefore = added?.Count ?? 0;
             var result = body;
             foreach (IBody2 piece in pieces)
             {
+                if (started.Elapsed.TotalSeconds > MaxSecondsPerBody)
+                {
+                    UI.PageLog.Write($"  iç boşluk: gövde başına süre sınırında ({MaxSecondsPerBody:F0} sn) bırakıldı, {pieces.Length} parçalı");
+                    added?.RemoveRange(addedBefore, added.Count - addedBefore);
+                    return body;
+                }
                 // The outside piece reaches into the margin around the body; cavities stay within its bounds.
                 var pb = Bounds(piece);
                 bool outside = false;

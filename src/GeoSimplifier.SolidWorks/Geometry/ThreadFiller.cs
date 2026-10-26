@@ -33,9 +33,23 @@ namespace GeoSimplifier.SolidWorks.Geometry
         /// <summary>Thread cylinders tried at most per body (each try is a boolean).</summary>
         public const int MaxTriesPerBody = 40;
 
+        /// <summary>
+        /// Bodies with more faces are not searched for threads (nor for holes, nor tessellated for rays): TAG3's
+        /// imported castings have 36,596; 7300002's largest real part, 7,523, is still worked on.
+        /// </summary>
+        public const int MaxFaces = 20000;
+
         public IBody2 Fill(IBody2 body)
         {
             var faces = ((object[])body.GetFaces() ?? new object[0]).OfType<IFace2>().ToList();
+            // A body of more faces than any real threaded part (TAG3's imported castings) is left as it is: sampling
+            // its faces alone took minutes.
+            if (faces.Count > MaxFaces)
+            {
+                UI.PageLog.Write($"  diş: {faces.Count} yüzlü gövde atlandı (sınır {MaxFaces})");
+                return body;
+            }
+            var started = System.Diagnostics.Stopwatch.StartNew();
             var flanks = faces.Where(f => Identity(f) == Cone || Identity(f) == Freeform).ToList();
             if (flanks.Count < MinFlanks)
                 return body;
@@ -94,9 +108,10 @@ namespace GeoSimplifier.SolidWorks.Geometry
                     continue;
                 // Each try costs a boolean; a body offering more threads than any real part (a 1.2 GB STEP casting
                 // spent an hour here) is left with the threads filled so far.
-                if (++tries > MaxTriesPerBody)
+                if (++tries > MaxTriesPerBody || started.Elapsed.TotalSeconds > BodyOps.MaxSecondsPerBody)
                 {
-                    UI.PageLog.Write($"  diş: gövdede {axes.Count} eksen var, {MaxTriesPerBody} denemeden sonra bırakıldı");
+                    UI.PageLog.Write($"  diş: gövdede {axes.Count} eksen var, {tries - 1} deneme ve {started.Elapsed.TotalSeconds:F0} sn sonra bırakıldı " +
+                                     $"(sınır {MaxTriesPerBody} deneme, {BodyOps.MaxSecondsPerBody:F0} sn)");
                     break;
                 }
                 var centre = axis.origin + axis.dir * ((t0 + t1) / 2);

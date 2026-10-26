@@ -146,6 +146,9 @@ namespace GeoSimplifier.SolidWorks
             catch (Exception) { return _swApp.Visible; }
         }
 
+        /// <summary>Whether grilles inside one part get flat lids in a surface skin (a trial; off).</summary>
+        public static bool SkinGrilleCaps { get; set; }
+
         /// <summary>A trial: leave the new part's view as it is instead of zooming to fit.</summary>
         public static bool SkipZoom { get; set; }
 
@@ -317,9 +320,19 @@ namespace GeoSimplifier.SolidWorks
             var rays = new Core.Geometry.OutsideRays();
             var cache = new Dictionary<string, (double[] t, List<Core.Geometry.Vec3> triangles)>();
             var extent = Core.Geometry.Aabb.Empty;
+            // A body of more faces than any real part (TAG3's imported castings) is not tessellated: SOLIDWORKS took
+            // all 32 GB of memory on one. It counts as seen, so it stays as it is, and hides nothing behind it.
+            var huge = new HashSet<int>();
             for (int i = 0; i < bodies.Count; i++)
             {
                 report(i, bodies.Count);
+                if (bodies[i].GetFaceCount() > Geometry.ThreadFiller.MaxFaces)
+                {
+                    huge.Add(i);
+                    trianglesOut?.Add(new List<Core.Geometry.Vec3>());
+                    extent = extent.Union(BodyOps.Bounds(bodies[i]));
+                    continue;
+                }
                 var (key, t) = i < instances.Count ? instances[i] : (null, null);
                 string k = key == null || t == null || t.Length < 13 ? null
                     : key + "|" + string.Join(",", t.Take(9).Concat(new[] { t[12] }).Select(v => Math.Round(v, 9).ToString("R")));
@@ -338,9 +351,12 @@ namespace GeoSimplifier.SolidWorks
                 trianglesOut?.Add(triangles);
                 extent = extent.Union(BodyOps.Bounds(bodies[i]));
             }
-            UI.PageLog.Write($"  dışarıdan görünen: {bodies.Count} gövdenin üçgenleri okundu, {rays.Triangles} üçgen");
+            UI.PageLog.Write($"  dışarıdan görünen: {bodies.Count} gövdenin üçgenleri okundu, {rays.Triangles} üçgen" +
+                             (huge.Count > 0 ? $"; {huge.Count} gövde {Geometry.ThreadFiller.MaxFaces} yüzden fazla, okunmadı, görünür sayıldı" : ""));
             // Coarser than for the shell: a part missed here only goes without lids in the preview.
-            return rays.Seen(directions: 32, spacing: Math.Max(extent.LongestSide / 250, 5e-4), maxRaysPerSide: 250);
+            var seen = rays.Seen(directions: 32, spacing: Math.Max(extent.LongestSide / 250, 5e-4), maxRaysPerSide: 250);
+            seen.UnionWith(huge);
+            return seen;
         }
 
         /// <summary>
@@ -463,7 +479,10 @@ namespace GeoSimplifier.SolidWorks
                     }
                 }
             }
-            var caps = GrilleCaps(flatFaces, keep.Where(i => i >= solidCount).ToList(), owners, boxes);
+            // Off: on V12 the caps over the radiator grille hid the radiator's frame and shroud too, leaving flat
+            // plates in the air.
+            var caps = SkinGrilleCaps ? GrilleCaps(flatFaces, keep.Where(i => i >= solidCount).ToList(), owners, boxes)
+                : new List<(string part, IBody2 sheet, Core.Geometry.Vec3[] corners, Core.Geometry.Vec3 normal)>();
             double readSeconds = watch.Elapsed.TotalSeconds;
             // Lids on the holes of the surfaces (at most the gap width across). They go into the ray test too,
             // so the walls of a closed hole are no longer seen, and are kept where they are seen themselves.
@@ -698,8 +717,9 @@ namespace GeoSimplifier.SolidWorks
         /// <summary>
         /// Cages: sub-assemblies made of many separate thin parts with mostly air between them (wire cages, guard
         /// grilles, radiator bars). Per sub-assembly (the parts' common parent), it counts when it has at least 20
-        /// parts, nearly all rods (their two smaller sides under 3 % of the group's longest), together filling little of the
-        /// group's box, none of them a big block, and nothing in it excluded. Returns the members (body indices)
+        /// parts, nearly all rods (their two smaller sides under 3 % of the group's longest), together filling under 10 % of
+        /// the group's box, none of them a big block, nearly all straight and along at most two directions with similar
+        /// lengths (a regular grid, not a cable bundle), and nothing in it excluded. Returns the members (body indices)
         /// and the group's box.
         /// </summary>
         private static List<(string group, List<int> members, Core.Geometry.Aabb box)> Cages(
@@ -728,8 +748,57 @@ namespace GeoSimplifier.SolidWorks
                 });
                 double filled = list.Sum(p => p.box.Size.X * p.box.Size.Y * p.box.Size.Z);
                 bool block = list.Any(p => p.box.Size.X * p.box.Size.Y * p.box.Size.Z > 0.1 * volume);
-                if (thin < 0.9 * list.Count || filled > 0.3 * volume || block)
+                if (thin < 0.9 * list.Count || block)
                     continue;
+                if (filled > 0.1 * volume)
+                {
+                    UI.PageLog.Write($"  kafes/ızgara değil: {group.Key}, {list.Count} ince parça ama kutusunun %{100 * filled / volume:F0}'ini dolduruyor");
+                    continue;
+                }
+                // Real cages and grilles are straight rods in a regular grid: each member much longer than wide (a
+                // curved cable or pipe has a wide box), lying along at most two directions, of similar lengths along
+                // each. A cable or pipe bundle (TAG3's engine V) does not qualify.
+                var members = list.Select(p => { var s = new[] { p.box.Size.X, p.box.Size.Y, p.box.Size.Z }; int along = Array.IndexOf(s, s.Max()); return (along, length: s.Max(), width: s.OrderBy(v => v).ElementAt(1)); }).ToList();
+                int straight = members.Count(m => m.width < 0.05 * m.length);
+                var directions = members.GroupBy(m => m.along).OrderByDescending(g => g.Count()).ToList();
+                int inTwo = directions.Take(2).Sum(g => g.Count());
+                bool regular = directions.Take(2).Where(g => g.Count() >= 5).All(g =>
+                {
+                    double mean = g.Average(m => m.length);
+                    double spread = Math.Sqrt(g.Average(m => (m.length - mean) * (m.length - mean)));
+                    return spread < 0.5 * mean;
+                });
+                if (straight < 0.8 * list.Count || inTwo < 0.9 * list.Count || !regular)
+                {
+                    // Member shapes, for tuning the rule: sides sorted s0 <= s1 <= s2; planar wire (a ring, a spoke)
+                    // has s0 well under s1, a straight rod s1 well under s2.
+                    var shapes = list.Select(p => new[] { p.box.Size.X, p.box.Size.Y, p.box.Size.Z }.OrderBy(v => v).ToArray()).ToList();
+                    int planar = shapes.Count(s => s[0] < 0.05 * s[1]);
+                    double Median(IEnumerable<double> v) { var a = v.OrderBy(x => x).ToArray(); return a.Length == 0 ? 0 : a[a.Length / 2]; }
+                    // A grid's members sit in shared planes: per axis, the share of members whose centre coordinate
+                    // has at least two others within 1 % of the group's side (a cable bundle's are scattered).
+                    var centres = list.Select(p => (p.box.Min + p.box.Max) * 0.5).ToList();
+                    string Shared(int axis)
+                    {
+                        double tol = Math.Max(1e-3, 0.01 * box.Size[axis]);
+                        var c = centres.Select(v => v[axis]).OrderBy(v => v).ToArray();
+                        int on = 0;
+                        for (int k = 0; k < c.Length; k++)
+                        {
+                            int lo = k, hi = k;
+                            while (lo > 0 && c[k] - c[lo - 1] <= tol) lo--;
+                            while (hi < c.Length - 1 && c[hi + 1] - c[k] <= tol) hi++;
+                            if (hi - lo >= 2) on++;
+                        }
+                        return $"{100 * on / Math.Max(1, c.Length)}";
+                    }
+                    UI.PageLog.Write($"  kafes ölçüsü: {group.Key}, ortak düzlemde % x {Shared(0)} y {Shared(1)} z {Shared(2)}, kutu {box.Size.X * 1000:F0}x{box.Size.Y * 1000:F0}x{box.Size.Z * 1000:F0} mm, doluluk %{100 * filled / volume:F1}");
+                    UI.PageLog.Write($"  kafes/ızgara değil: {group.Key}, {list.Count} ince parça ama düzenli düz çubuk ızgarası değil " +
+                                     $"(düz {straight}, düzlemsel {planar}, iki yönde {inTwo}, boylar düzenli {regular}; " +
+                                     $"medyan s0/s1 {Median(shapes.Select(s => s[0] / Math.Max(s[1], 1e-12))):F3}, s1/s2 {Median(shapes.Select(s => s[1] / Math.Max(s[2], 1e-12))):F3}, " +
+                                     $"üye kutusu medyan {Median(shapes.Select(s => s[2])) * 1000:F0} mm)");
+                    continue;
+                }
                 // A box that would swallow many other parts is no cage outline: V12's engine wiring (89 thin parts)
                 // spans the engine, and its box hid the engine top.
                 var own = new HashSet<string>(list.Select(p => p.part));
@@ -770,16 +839,17 @@ namespace GeoSimplifier.SolidWorks
             return skin ?? solid;
         }
 
-        // A part showing at least this many surfaces is looked at for grilles, and a plane with at least
-        // GrilleMinFaces small flat faces on it is capped.
+        // A part showing at least this many surfaces is looked at for grilles, and a dense slab of at least
+        // GrilleMinFaces small flat faces in it is capped.
         private const int GrillePartSurfaces = 200;
-        private const int GrilleMinFaces = 100;
+        private const int GrilleMinFaces = 300;
 
         /// <summary>
-        /// Flat lids over grilles inside one part (a radiator core: thousands of small fin and tube faces whose
-        /// ends lie in one plane): per part, the small faces square to an axis are grouped by plane (2 mm); a plane
-        /// holding many of them gets one rectangle over their outline, 0.5 mm outside the part's middle. Only
-        /// planes of small faces count, so a large flat face with a few details on it is left alone.
+        /// Flat lids over grilles inside one part. V12's radiator grille is a grid of 2 mm slats 60 mm deep: thousands
+        /// of small flat faces square to the axes, on many planes, filling a thin slab. Per part, those faces are
+        /// put in 100 mm cells; touching cells holding at least 4 faces form a region (the radiator grille has about 8 a cell). A region of many faces whose
+        /// box is a slab (its thinnest side under 15 % of the next) gets a rectangle on each of its two broad sides,
+        /// 0.5 mm outside. Only small faces count, so a part's large flat faces never make a slab.
         /// </summary>
         private List<(string part, IBody2 sheet, Core.Geometry.Vec3[] corners, Core.Geometry.Vec3 normal)> GrilleCaps(
             List<(string part, int axis, double at, Core.Geometry.Aabb box)> flatFaces, List<int> sheetBodies, List<string> owners,
@@ -789,55 +859,83 @@ namespace GeoSimplifier.SolidWorks
             if (flatFaces.Count == 0)
                 return caps;
             var modeler = (IModeler)_swApp.GetModeler();
-            var partBoxes = new Dictionary<string, Core.Geometry.Aabb>();
-            foreach (int i in sheetBodies)
-                partBoxes[owners[i] ?? ""] = partBoxes.TryGetValue(owners[i] ?? "", out var pb) ? pb.Union(boxes[i]) : boxes[i];
-            foreach (var plane in flatFaces.GroupBy(f => (f.part, f.axis, bin: (long)Math.Floor(f.at / 0.002))))
+            const double cell = 0.1;
+            foreach (var part in flatFaces.GroupBy(f => f.part))
             {
-                var faces = plane.ToList();
-                if (faces.Count < GrilleMinFaces)
-                    continue;
-                var rect = faces.Aggregate(Core.Geometry.Aabb.Empty, (a, f) => a.Union(f.box));
-                int axis = plane.Key.axis, ua = (axis + 1) % 3, va = (axis + 2) % 3;
-                double rectSide = Math.Max(rect.Size[ua], rect.Size[va]);
-                // Small or narrow faces only (a radiator's tube ends run the core's whole height): narrow one way
-                // compared with the plane's outline.
-                int small = faces.Count(f => Math.Min(f.box.Size[ua], f.box.Size[va]) < 0.05 * rectSide);
-                if (small < 0.9 * faces.Count || rect.Size[ua] < 0.05 || rect.Size[va] < 0.05)
-                    continue;
-                var part = partBoxes[plane.Key.part];
-                double at = faces.Average(f => f.at);
-                double side = at >= (part.Min[axis] + part.Max[axis]) / 2 ? 1 : -1;
-                double capAt = at + side * 5e-4;
-                Core.Geometry.Vec3 Point(double u, double v)
+                var partBox = part.Aggregate(Core.Geometry.Aabb.Empty, (a, f) => a.Union(f.box));
+                // Small faces: under 5 % of the part's longest side both ways.
+                var small = part.Where(f => { var s = f.box.Size; return Math.Max(s.X, Math.Max(s.Y, s.Z)) < 0.05 * partBox.LongestSide; }).ToList();
+                if (small.Count < GrilleMinFaces)
                 {
-                    var p = new double[3];
-                    p[axis] = capAt; p[ua] = u; p[va] = v;
-                    return new Core.Geometry.Vec3(p[0], p[1], p[2]);
+                    if (part.Count() >= GrilleMinFaces)
+                        UI.PageLog.Write($"  ızgara arama: {part.Key}, {part.Count()} düz yüz ama yalnız {small.Count} tanesi küçük");
+                    continue;
                 }
-                var corners = new[] { Point(rect.Min[ua], rect.Min[va]), Point(rect.Max[ua], rect.Min[va]),
-                                      Point(rect.Max[ua], rect.Max[va]), Point(rect.Min[ua], rect.Max[va]) };
-                var n = new double[3]; n[axis] = side;
-                var normal = new Core.Geometry.Vec3(n[0], n[1], n[2]);
-                var u = new double[3]; u[ua] = 1;
-                var centre = Point((rect.Min[ua] + rect.Max[ua]) / 2, (rect.Min[va] + rect.Max[va]) / 2);
-                var vDir = Core.Geometry.Vec3.Cross(normal, new Core.Geometry.Vec3(u[0], u[1], u[2]));
-                double vSign = vDir[va];
-                var surface = modeler.CreatePlanarSurface2(new[] { centre.X, centre.Y, centre.Z }, n, u) as Surface;
-                var sheet = surface == null ? null : modeler.CreateSheetFromSurface(surface, new[]
+                (long, long, long) Cell(Core.Geometry.Vec3 p) => ((long)Math.Floor(p.X / cell), (long)Math.Floor(p.Y / cell), (long)Math.Floor(p.Z / cell));
+                var cells = small.GroupBy(f => Cell((f.box.Min + f.box.Max) * 0.5)).Where(g => g.Count() >= 4).ToDictionary(g => g.Key, g => g.ToList());
+                UI.PageLog.Write($"  ızgara arama: {part.Key}, {part.Count()} düz yüz, {small.Count} küçük, {cells.Count} yoğun hücre");
+                var seen = new HashSet<(long, long, long)>();
+                foreach (var startCell in cells.Keys)
                 {
-                    -rect.Size[ua] / 2, rect.Size[ua] / 2,
-                    Math.Min(-rect.Size[va] / 2 * vSign, rect.Size[va] / 2 * vSign), Math.Max(-rect.Size[va] / 2 * vSign, rect.Size[va] / 2 * vSign),
-                }) as IBody2;
-                if (sheet == null)
-                    continue;
-                caps.Add((plane.Key.part, sheet, corners, normal));
-                UI.PageLog.Write($"  ızgara kapağı: {plane.Key.part}, {faces.Count} küçük yüz, {"XYZ"[axis]}={capAt * 1000:F0} mm düzleminde " +
-                                 $"{rect.Size[ua] * 1000:F0}x{rect.Size[va] * 1000:F0} mm");
+                    if (!seen.Add(startCell)) continue;
+                    var region = new List<(string part, int axis, double at, Core.Geometry.Aabb box)>();
+                    var queue = new Queue<(long, long, long)>();
+                    queue.Enqueue(startCell);
+                    while (queue.Count > 0)
+                    {
+                        var c = queue.Dequeue();
+                        region.AddRange(cells[c]);
+                        for (int dx = -1; dx <= 1; dx++)
+                            for (int dy = -1; dy <= 1; dy++)
+                                for (int dz = -1; dz <= 1; dz++)
+                                {
+                                    var nb = (c.Item1 + dx, c.Item2 + dy, c.Item3 + dz);
+                                    if (cells.ContainsKey(nb) && seen.Add(nb))
+                                        queue.Enqueue(nb);
+                                }
+                    }
+                    if (region.Count < GrilleMinFaces)
+                        continue;
+                    var slab = region.Aggregate(Core.Geometry.Aabb.Empty, (a, f) => a.Union(f.box));
+                    var order = Enumerable.Range(0, 3).OrderBy(a => slab.Size[a]).ToArray();
+                    int axis = order[0], ua = (axis + 1) % 3, va = (axis + 2) % 3;
+                    if (slab.Size[axis] > 0.15 * slab.Size[order[1]] || slab.Size[order[1]] < 0.2)
+                    {
+                        UI.PageLog.Write($"  ızgara değil: {part.Key}, {region.Count} küçük yüz ama katman değil " +
+                                         $"({slab.Size.X * 1000:F0}x{slab.Size.Y * 1000:F0}x{slab.Size.Z * 1000:F0} mm)");
+                        continue;
+                    }
+                    foreach (double side in new[] { -1.0, 1.0 })
+                    {
+                        double capAt = side < 0 ? slab.Min[axis] - 5e-4 : slab.Max[axis] + 5e-4;
+                        Core.Geometry.Vec3 Point(double u, double v)
+                        {
+                            var p = new double[3];
+                            p[axis] = capAt; p[ua] = u; p[va] = v;
+                            return new Core.Geometry.Vec3(p[0], p[1], p[2]);
+                        }
+                        var corners = new[] { Point(slab.Min[ua], slab.Min[va]), Point(slab.Max[ua], slab.Min[va]),
+                                              Point(slab.Max[ua], slab.Max[va]), Point(slab.Min[ua], slab.Max[va]) };
+                        var n = new double[3]; n[axis] = side;
+                        var normal = new Core.Geometry.Vec3(n[0], n[1], n[2]);
+                        var u = new double[3]; u[ua] = 1;
+                        var centre = Point((slab.Min[ua] + slab.Max[ua]) / 2, (slab.Min[va] + slab.Max[va]) / 2);
+                        double vSign = Core.Geometry.Vec3.Cross(normal, new Core.Geometry.Vec3(u[0], u[1], u[2]))[va];
+                        var surface = modeler.CreatePlanarSurface2(new[] { centre.X, centre.Y, centre.Z }, n, u) as Surface;
+                        var sheet = surface == null ? null : modeler.CreateSheetFromSurface(surface, new[]
+                        {
+                            -slab.Size[ua] / 2, slab.Size[ua] / 2,
+                            Math.Min(-slab.Size[va] / 2 * vSign, slab.Size[va] / 2 * vSign), Math.Max(-slab.Size[va] / 2 * vSign, slab.Size[va] / 2 * vSign),
+                        }) as IBody2;
+                        if (sheet != null)
+                            caps.Add((part.Key, sheet, corners, normal));
+                    }
+                    UI.PageLog.Write($"  ızgara kapağı: {part.Key}, {region.Count} küçük yüz, {slab.Size.X * 1000:F0}x{slab.Size.Y * 1000:F0}x{slab.Size.Z * 1000:F0} mm katman, " +
+                                     $"iki yüzü {"XYZ"[axis]} yönünde kapatıldı");
+                }
             }
             return caps;
         }
-
         /// <summary>The area of triangles given as nine numbers each.</summary>
         private static double TriangleArea(float[] t)
         {
@@ -1127,6 +1225,12 @@ namespace GeoSimplifier.SolidWorks
                     asIs = asIs.Where((s, i) => sheetBoxes[i].IsEmpty || (sheetBoxes[i].Max - sheetBoxes[i].Min).Length >= limit).ToList();
                     result.SmallPartsRemoved = before - bodies.Count - asIs.Count;
                     UI.PageLog.Write($"  küçük parçalar: {result.SmallPartsRemoved} gövde çıkarıldı (%{options.MinPartPercent:0.#} = {limit * 1000:F0} mm altı)");
+                    // The copies of the parts left out are released now: SOLIDWORKS keeps them until their COM
+                    // objects go, and TAG3 (98,281 bodies, 20 GB open) ran out of memory with them kept.
+                    sheets = null;
+                    GC.Collect();
+                    GC.WaitForPendingFinalizers();
+                    GC.Collect();
                 }
                 if (asIs.Count > 0)
                     UI.PageLog.Write($"  yüzey gövdeleri kalınlaştırılmadan olduğu gibi kalıyor: {asIs.Count}");
@@ -1524,6 +1628,8 @@ namespace GeoSimplifier.SolidWorks
                        new ConfigurationOutput(_swApp).Create(source, bodies, configurationName, NewPart);
 
             var commitWatch = Stopwatch.StartNew();
+            // Asked before the bodies go in: asking after took 52 s on TAG3 (11,236 bodies) and once never returned.
+            bool zoom = !SkipZoom && MainWindowShown();
             var part = NewPart();
             double newPart = commitWatch.Elapsed.TotalSeconds;
             int created = 0;
@@ -1557,7 +1663,7 @@ namespace GeoSimplifier.SolidWorks
             // Most of this is SOLIDWORKS drawing the new part for the first time: zooming to the bodies' known box
             // instead took as long (26 s on V12).
             // With SOLIDWORKS hidden (batch runs) nobody looks at the view, so it is not fitted.
-            if (!SkipZoom && MainWindowShown())
+            if (zoom)
                 partDoc.ViewZoomtofit2();
             UI.PageLog.Write($"  sığdırma {commitWatch.Elapsed.TotalSeconds - beforeZoom:F1} sn");
             if (created < bodies.Count)

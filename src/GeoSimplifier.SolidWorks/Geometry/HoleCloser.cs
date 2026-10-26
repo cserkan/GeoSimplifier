@@ -334,6 +334,14 @@ namespace GeoSimplifier.SolidWorks.Geometry
         /// <summary>Closes every hole whose narrowest mouth is at most <paramref name="maxWidth"/> wide.</summary>
         public IBody2 CloseHoles(IBody2 body, double maxWidth)
         {
+            // Imported castings of tens of thousands of faces (TAG3) are left as they are: finding their holes alone
+            // ran for many minutes.
+            if (body.GetFaceCount() > ThreadFiller.MaxFaces)
+            {
+                Log.Add($"{body.GetFaceCount()} yüzlü gövdede delik aranmadı (sınır {ThreadFiller.MaxFaces}).");
+                return body;
+            }
+            var started = System.Diagnostics.Stopwatch.StartNew();
             _logging = true;
             var holes = FindHoles(body, maxWidth, out _);
             _logging = false;
@@ -342,6 +350,12 @@ namespace GeoSimplifier.SolidWorks.Geometry
             var current = body;
             foreach (var hole in holes)
             {
+                if (started.Elapsed.TotalSeconds > BodyOps.MaxSecondsPerBody)
+                {
+                    Log.Add($"Delik kapatma gövde başına süre sınırında ({BodyOps.MaxSecondsPerBody:F0} sn) bırakıldı ({holes.Count} delik vardı).");
+                    UI.PageLog.Write($"  delik: gövde başına süre sınırında ({BodyOps.MaxSecondsPerBody:F0} sn) bırakıldı, {holes.Count} delik vardı");
+                    break;
+                }
                 // A through hole has a mouth on each side; the first plug usually fills it and the others add nothing.
                 bool ok = true;
                 foreach (var mouth in PlugsOnly ? hole.Mouths.Take(1) : hole.Mouths)

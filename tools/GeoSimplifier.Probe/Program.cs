@@ -78,6 +78,31 @@ namespace GeoSimplifier.Probe
                 swApp.CloseDoc(md.GetTitle());
                 return 0;
             }
+            int faceStatsAt = Array.IndexOf(args, "--face-stats");
+            if (faceStatsAt >= 0 && faceStatsAt + 1 < args.Length)
+            {
+                // --face-stats <part>: how the part's surfaces are built: faces by surface type, flat faces by normal
+                // (how square to an axis) and by plane (2 mm bins), with typical sizes.
+                int oe = 0, ow = 0;
+                var fsPart = (IPartDoc)swApp.OpenDoc6(args[faceStatsAt + 1], 1, 1, "", ref oe, ref ow);
+                var allFaces = new System.Collections.Generic.List<IFace2>();
+                foreach (int kind in new[] { 0, 1 })
+                    foreach (IBody2 b in (object[])fsPart.GetBodies2(kind, true) ?? new object[0])
+                        allFaces.AddRange(((object[])b.GetFaces() ?? new object[0]).Cast<IFace2>());
+                string[] names = { "", "düzlem", "silindir", "koni", "küre", "tor", "B-spline", "dönel", "öteleme", "ofset" };
+                var byType = allFaces.GroupBy(f => ((ISurface)f.GetSurface()).Identity()).OrderByDescending(g => g.Count());
+                Console.WriteLine($"{allFaces.Count} yüz: " + string.Join(", ", byType.Select(g => $"{(g.Key - 4000 >= 0 && g.Key - 4000 < names.Length ? names[g.Key - 4000] : g.Key.ToString())} {g.Count()}")));
+                var planes = allFaces.Select(f => (f, s: (ISurface)f.GetSurface())).Where(x => x.s.IsPlane())
+                    .Select(x => { var p = (double[])x.s.PlaneParams; var bb = (double[])x.f.GetBox(); return (n: new[] { p[0], p[1], p[2] }, at: p[0] * p[3] + p[1] * p[4] + p[2] * p[5], box: bb); }).ToList();
+                foreach (var g in planes.GroupBy(p => { int a = Enumerable.Range(0, 3).OrderByDescending(i => Math.Abs(p.n[i])).First(); return (a, Math.Round(Math.Abs(p.n[a]), 3)); }).OrderByDescending(g => g.Count()).Take(8))
+                    Console.WriteLine($"  düz yüz, ekseni {"XYZ"[g.Key.a]}, |n|={g.Key.Item2}: {g.Count()}");
+                foreach (var g in planes.GroupBy(p => { int a = Enumerable.Range(0, 3).OrderByDescending(i => Math.Abs(p.n[i])).First(); return (a, bin: (long)Math.Floor(Math.Abs(p.at) / 0.002)); }).OrderByDescending(g => g.Count()).Take(12))
+                {
+                    var sizes = g.Select(p => { var s = new[] { p.box[3] - p.box[0], p.box[4] - p.box[1], p.box[5] - p.box[2] }.OrderBy(v => v).ToArray(); return (mid: s[1], big: s[2]); }).ToList();
+                    Console.WriteLine($"  düzlem {"XYZ"[g.Key.a]}≈{g.Key.bin * 2} mm: {g.Count()} yüz, orta boyut medyan {sizes.Select(x => x.mid).OrderBy(v => v).ElementAt(sizes.Count / 2) * 1000:F1} mm, büyük boyut medyan {sizes.Select(x => x.big).OrderBy(v => v).ElementAt(sizes.Count / 2) * 1000:F1} mm");
+                }
+                return 0;
+            }
             int largestAt = Array.IndexOf(args, "--largest");
             if (largestAt >= 0 && largestAt + 1 < args.Length)
             {
