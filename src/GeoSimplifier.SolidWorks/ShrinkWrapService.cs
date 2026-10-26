@@ -130,6 +130,22 @@ namespace GeoSimplifier.SolidWorks
         // 5,843 surface bodies and looked complete; Serkan took that.
         public static double SkinMinArea { get; set; } = 1e-6;
 
+        [System.Runtime.InteropServices.DllImport("user32.dll")]
+        private static extern bool IsWindowVisible(IntPtr hWnd);
+
+        /// <summary>
+        /// Whether SOLIDWORKS' main window is on the screen. ISldWorks.Visible stays true in a test SOLIDWORKS whose
+        /// window was hidden, so the frame's own window is asked.
+        /// </summary>
+        private bool MainWindowShown()
+        {
+            try
+            {
+                return _swApp.Visible && _swApp.Frame() is IFrame frame && IsWindowVisible(new IntPtr(frame.GetHWndx64()));
+            }
+            catch (Exception) { return _swApp.Visible; }
+        }
+
         /// <summary>A trial: leave the new part's view as it is instead of zooming to fit.</summary>
         public static bool SkipZoom { get; set; }
 
@@ -322,6 +338,7 @@ namespace GeoSimplifier.SolidWorks
                 trianglesOut?.Add(triangles);
                 extent = extent.Union(BodyOps.Bounds(bodies[i]));
             }
+            UI.PageLog.Write($"  dışarıdan görünen: {bodies.Count} gövdenin üçgenleri okundu, {rays.Triangles} üçgen");
             // Coarser than for the shell: a part missed here only goes without lids in the preview.
             return rays.Seen(directions: 32, spacing: Math.Max(extent.LongestSide / 250, 5e-4), maxRaysPerSide: 250);
         }
@@ -495,14 +512,41 @@ namespace GeoSimplifier.SolidWorks
             var output = new List<(string owner, IBody2 body)>();
             foreach (int b in seenBodies.OrderBy(b => b))
                 output.Add((owners[b], bodies[b]));
-            int solidFailed = 0;
-            foreach (var (b, face) in seenSolidFaces)
+            // The seen faces of each solid are knitted back into one surface body, as in Shells (faces of a real
+            // solid knit; a 1.2 GB STEP with 8,500 solids gave 111,000 single-face bodies otherwise).
+            int solidFailed = 0, solidsWhole = 0;
+            var knitModeler = (IModeler)_swApp.GetModeler();
+            foreach (var group in seenSolidFaces.GroupBy(f => f.body))
             {
-                if (face.CreateSheetBody() is IBody2 copy) output.Add((owners[b], copy));
-                else solidFailed++;
+                var faceSheets = new List<IBody2>();
+                foreach (var (_, face) in group)
+                {
+                    if (face.CreateSheetBody() is IBody2 copy) faceSheets.Add(copy);
+                    else solidFailed++;
+                }
+                if (faceSheets.Count == 0)
+                    continue;
+                int error = 0;
+                List<IBody2> knit = null;
+                if (faceSheets.Count > 1)
+                {
+                    try { knit = ((object[])knitModeler.CreateBodiesFromSheets2(faceSheets.Select(f => (object)f.Copy()).ToArray(), SheetBodiesOnly, 1e-4, ref error))?.OfType<IBody2>().ToList(); }
+                    catch (System.Runtime.InteropServices.COMException) { }
+                }
+                if (knit != null && knit.Count > 0)
+                    output.AddRange(knit.Select(k => (owners[group.Key], k)));
+                else if (faceSheets.Count == 1)
+                    output.Add((owners[group.Key], faceSheets[0]));
+                else
+                {
+                    // Faces of imported solids do not knit here (TAG3: 111,000 single faces): the solid goes in whole.
+                    output.Add((owners[group.Key], bodies[group.Key]));
+                    solidsWhole++;
+                }
             }
             if (solidFailed > 0)
                 result.Notes.Add($"{solidFailed} katı yüzü yüzeye çevrilemedi.");
+            UI.PageLog.Write($"  katılar: {seenSolidFaces.Select(f => f.body).Distinct().Count()} katının görünen yüzleri alındı, {solidsWhole} tanesi dikilemediği için bütün olarak kondu");
             var seenLids = lids.Where((l, k) => visible.Contains(firstLid + k)).ToList();
             output.AddRange(seenLids);
             if (lids.Count > 0)
@@ -629,7 +673,9 @@ namespace GeoSimplifier.SolidWorks
         {
             int solids = instances.Count;
             var triangles = new List<List<Core.Geometry.Vec3>>();
+            var watch = Stopwatch.StartNew();
             var seen = SeenFromOutside(bodies.Take(solids).ToList(), instances, report, triangles);
+            UI.PageLog.Write($"  iç parçalar: ışınlar {watch.Elapsed.TotalSeconds:F1} sn ({solids} gövde, {triangles.Sum(t => t.Count) / 3} üçgen)");
             var hidden = Enumerable.Range(0, solids).Where(i => !seen.Contains(i)).ToList();
             if (hidden.Count == 0)
                 return new List<IBody2>();
@@ -644,6 +690,7 @@ namespace GeoSimplifier.SolidWorks
             for (int j = 0; j < hidden.Count; j++)
                 check.AddBody(solids + j, BoxTriangles(boxes[j]));
             var seenBoxes = check.Seen(directions: 32, spacing: Math.Max(extent.LongestSide / 250, 5e-4), maxRaysPerSide: 250);
+            UI.PageLog.Write($"  iç parçalar: kutu denetimi bitti ({watch.Elapsed.TotalSeconds:F1} sn)");
             var proxies = new List<IBody2>();
             var replaced = new List<int>();
             for (int j = 0; j < hidden.Count; j++)
@@ -1288,7 +1335,7 @@ namespace GeoSimplifier.SolidWorks
             // Most of this is SOLIDWORKS drawing the new part for the first time: zooming to the bodies' known box
             // instead took as long (26 s on V12).
             // With SOLIDWORKS hidden (batch runs) nobody looks at the view, so it is not fitted.
-            if (!SkipZoom && _swApp.Visible)
+            if (!SkipZoom && MainWindowShown())
                 partDoc.ViewZoomtofit2();
             UI.PageLog.Write($"  sığdırma {commitWatch.Elapsed.TotalSeconds - beforeZoom:F1} sn");
             if (created < bodies.Count)

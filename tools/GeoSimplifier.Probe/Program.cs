@@ -78,6 +78,46 @@ namespace GeoSimplifier.Probe
                 swApp.CloseDoc(md.GetTitle());
                 return 0;
             }
+            int largestAt = Array.IndexOf(args, "--largest");
+            if (largestAt >= 0 && largestAt + 1 < args.Length)
+            {
+                // --largest <open assembly path>: the Name2 of the leaf component with the largest box, and counts.
+                var la = (IAssemblyDoc)swApp.GetOpenDocumentByName(args[largestAt + 1]);
+                IComponent2 best = null; double size = -1; int leaves = 0, solids = 0, sheets = 0;
+                foreach (IComponent2 comp in (object[])la.GetComponents(false) ?? new object[0])
+                {
+                    if (comp.GetSuppression2() == 0 || ((object[])comp.GetChildren())?.Length > 0) continue;
+                    leaves++;
+                    solids += ((object[])comp.GetBodies3(0, out _))?.Length ?? 0;
+                    sheets += ((object[])comp.GetBodies3(1, out _))?.Length ?? 0;
+                    if (!(comp.GetBox(false, false) is double[] b)) continue;
+                    double d = Math.Sqrt(Math.Pow(b[3] - b[0], 2) + Math.Pow(b[4] - b[1], 2) + Math.Pow(b[5] - b[2], 2));
+                    if (d > size) { size = d; best = comp; }
+                }
+                Console.WriteLine($"Yaprak bileşen {leaves}, katı gövde {solids}, yüzey gövdesi {sheets}");
+                Console.WriteLine($"EN BÜYÜK: {best?.Name2} ({size * 1000:F0} mm)");
+                return 0;
+            }
+            int importAt = Array.IndexOf(args, "--import");
+            if (importAt >= 0 && importAt + 2 < args.Length)
+            {
+                // --import <file.stp> <out.SLDASM|out.SLDPRT>: opens a STEP file with the system's import settings,
+                // times it, and saves the result (with its parts) under the given name.
+                var watch = System.Diagnostics.Stopwatch.StartNew();
+                int err = 0;
+                var md = (IModelDoc2)swApp.LoadFile4(args[importAt + 1], "r", null, ref err);
+                Console.WriteLine($"İçe aktarma: {watch.Elapsed.TotalSeconds:F1} sn, hata {err}, belge {(md == null ? "yok" : md.GetType() == 2 ? "montaj" : "parça")}");
+                if (md == null) return 1;
+                string target = args[importAt + 2];
+                if (md.GetType() == 2 && target.EndsWith(".SLDPRT", StringComparison.OrdinalIgnoreCase))
+                    target = System.IO.Path.ChangeExtension(target, ".SLDASM");
+                watch.Restart();
+                int e = 0, w = 0;
+                // Silent (1) + save the referenced parts too (4).
+                bool ok = md.Extension.SaveAs3(target, 0, 1 | 4, null, null, ref e, ref w);
+                Console.WriteLine($"Kayıt: {ok} → {target} ({watch.Elapsed.TotalSeconds:F1} sn, hata {e}, uyarı {w})");
+                return ok ? 0 : 1;
+            }
             int tessAt = Array.IndexOf(args, "--tess-speed");
             if (tessAt >= 0 && tessAt + 1 < args.Length)
             {

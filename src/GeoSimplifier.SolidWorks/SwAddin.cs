@@ -172,6 +172,11 @@ namespace GeoSimplifier.SolidWorks
             // "nozoom:" leaves the result's view unfitted (a trial).
             ShrinkWrapService.SkipZoom = limitsMm.Contains("nozoom:");
             limitsMm = limitsMm.Replace("nozoom:", "");
+            // "nosmall:" unticks "Bundan küçük parçaları çıkar"; "noholes:" unticks "Delikleri ve boşlukları kapat".
+            bool noSmall = limitsMm.Contains("nosmall:");
+            limitsMm = limitsMm.Replace("nosmall:", "");
+            bool noHoles = limitsMm.Contains("noholes:");
+            limitsMm = limitsMm.Replace("noholes:", "");
             // "hlshow:" runs the timed highlight sequence instead of the simulation.
             bool highlightShow = limitsMm.Contains("hlshow:");
             limitsMm = limitsMm.Replace("hlshow:", "");
@@ -221,6 +226,10 @@ namespace GeoSimplifier.SolidWorks
                     _page.SmallPartsForTest(small);
                 if (emboss >= 0)
                     _page.EmbossForTest(emboss);
+                if (noSmall)
+                    _page.UntickSmallForTest();
+                if (noHoles)
+                    _page.NoHolesForTest();
                 if (wizard)
                 {
                     // Next, Back, the other kind of result, the original kind again and Next, collecting garbage

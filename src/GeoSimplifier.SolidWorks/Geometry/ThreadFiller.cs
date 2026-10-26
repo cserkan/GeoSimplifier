@@ -30,6 +30,9 @@ namespace GeoSimplifier.SolidWorks.Geometry
 
         public int Filled { get; private set; }
 
+        /// <summary>Thread cylinders tried at most per body (each try is a boolean).</summary>
+        public const int MaxTriesPerBody = 40;
+
         public IBody2 Fill(IBody2 body)
         {
             var faces = ((object[])body.GetFaces() ?? new object[0]).OfType<IFace2>().ToList();
@@ -53,6 +56,7 @@ namespace GeoSimplifier.SolidWorks.Geometry
 
             var current = body;
             var used = new HashSet<IFace2>();
+            int tries = 0;
             // Each face is sampled once; a large casting has many axes to try.
             var samples = flanks.ToDictionary(f => f, Sample);
             foreach (var axis in axes)
@@ -88,6 +92,13 @@ namespace GeoSimplifier.SolidWorks.Geometry
                 double t0 = all.Min(p => Dot(p - axis.origin, axis.dir)), t1 = all.Max(p => Dot(p - axis.origin, axis.dir));
                 if (t1 - t0 < 1e-4 || rMax < 1e-4)
                     continue;
+                // Each try costs a boolean; a body offering more threads than any real part (a 1.2 GB STEP casting
+                // spent an hour here) is left with the threads filled so far.
+                if (++tries > MaxTriesPerBody)
+                {
+                    UI.PageLog.Write($"  diş: gövdede {axes.Count} eksen var, {MaxTriesPerBody} denemeden sonra bırakıldı");
+                    break;
+                }
                 var centre = axis.origin + axis.dir * ((t0 + t1) / 2);
                 var cylinder = _ops.SolidCylinder(centre, axis.dir, rMax, t1 - t0);
                 // The cylinder covers the thread's own faces, so it lies within the body's box; one that does not

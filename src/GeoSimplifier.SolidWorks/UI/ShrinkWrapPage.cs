@@ -568,6 +568,14 @@ namespace GeoSimplifier.SolidWorks.UI
             PageLog.Write($"Simülasyon: küçük parça kutusu işaretsiz; işaret 4: {manager.GetSelectedObjectCount2(HighlightMark)}, hariç tutulanlar '{_exclusions.Key}'");
         }
 
+        /// <summary>Test hook: unticks "Delikleri ve boşlukları kapat".</summary>
+        public void NoHolesForTest()
+        {
+            _closeHolesBox.Checked = false;
+            UpdateEnabled();
+            PageLog.Write("Simülasyon: delik kapatma kapalı");
+        }
+
         /// <summary>Test hook: closes the page with Cancel.</summary>
         public void CloseForTest()
         {
