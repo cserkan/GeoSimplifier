@@ -1,4 +1,4 @@
-using System;
+﻿using System;
 using System.Collections.Generic;
 using System.Threading.Tasks;
 
@@ -11,12 +11,21 @@ namespace GeoSimplifier.Core.Geometry
     /// </summary>
     public sealed class FaceVisibility
     {
-        private readonly List<Vec3> _a = new List<Vec3>(), _b = new List<Vec3>(), _c = new List<Vec3>();
+        // The corners in single precision, as SOLIDWORKS gives them: half the memory of doubles, with the same
+        // values (TAG3's skin at 5 % ran out of memory with doubles).
+        private readonly List<Vec3f> _a = new List<Vec3f>(), _b = new List<Vec3f>(), _c = new List<Vec3f>();
         private readonly List<int> _face = new List<int>();
         private readonly HashSet<int> _unsampled = new HashSet<int>();
         private readonly List<(Vec3 point, Vec3 normal, int face)> _samples = new List<(Vec3, Vec3, int)>();
         private Node[] _nodes;
         private int[] _order;
+
+        private struct Vec3f
+        {
+            public readonly float X, Y, Z;
+            public Vec3f(float x, float y, float z) { X = x; Y = y; Z = z; }
+            public static implicit operator Vec3(Vec3f v) => new Vec3(v.X, v.Y, v.Z);
+        }
 
         private struct Node
         {
@@ -30,14 +39,17 @@ namespace GeoSimplifier.Core.Geometry
         /// <param name="normals">Nine numbers per triangle: the normal at each corner, pointing out of the model.</param>
         /// <param name="samples">How many of the face's triangles rays are sent from (spread over the face).</param>
         /// <param name="twoSided">Rays leave on both sides (a surface body has no inside).</param>
-        public void AddFace(int face, IReadOnlyList<float> triangles, IReadOnlyList<float> normals, int samples, bool twoSided = false)
+        /// <param name="spacing">With a positive spacing, large triangles get more points, about one per spacing
+        /// squared of their area (a 1.5 m² radiator panel of two triangles had two points, both behind a fan hub).</param>
+        public void AddFace(int face, IReadOnlyList<float> triangles, IReadOnlyList<float> normals, int samples, bool twoSided = false,
+                            double spacing = 0)
         {
             int count = triangles.Count / 9;
             for (int t = 0; t < count; t++)
             {
-                _a.Add(new Vec3(triangles[9 * t], triangles[9 * t + 1], triangles[9 * t + 2]));
-                _b.Add(new Vec3(triangles[9 * t + 3], triangles[9 * t + 4], triangles[9 * t + 5]));
-                _c.Add(new Vec3(triangles[9 * t + 6], triangles[9 * t + 7], triangles[9 * t + 8]));
+                _a.Add(new Vec3f(triangles[9 * t], triangles[9 * t + 1], triangles[9 * t + 2]));
+                _b.Add(new Vec3f(triangles[9 * t + 3], triangles[9 * t + 4], triangles[9 * t + 5]));
+                _c.Add(new Vec3f(triangles[9 * t + 6], triangles[9 * t + 7], triangles[9 * t + 8]));
                 _face.Add(face);
             }
             if (normals == null || normals.Count < 9 * count)
@@ -52,7 +64,7 @@ namespace GeoSimplifier.Core.Geometry
             for (int t = 0, n = 0; t < count && n < samples; t += step, n++)
             {
                 int i = _a.Count - count + t;
-                var centre = (_a[i] + _b[i] + _c[i]) * (1.0 / 3);
+                var centre = ((Vec3)_a[i] + _b[i] + _c[i]) * (1.0 / 3);
                 var normal = new Vec3(normals[9 * t] + normals[9 * t + 3] + normals[9 * t + 6],
                                       normals[9 * t + 1] + normals[9 * t + 4] + normals[9 * t + 7],
                                       normals[9 * t + 2] + normals[9 * t + 5] + normals[9 * t + 8]);
@@ -62,6 +74,33 @@ namespace GeoSimplifier.Core.Geometry
                     if (twoSided)
                         _samples.Add((centre, normal * (-1 / normal.Length), face));
                 }
+            }
+            if (spacing <= 0)
+                return;
+            // Large triangles: points on a grid over them as well (centres of the n x n smaller triangles pointing
+            // the same way, n up to 8).
+            for (int t = 0; t < count; t++)
+            {
+                int i = _a.Count - count + t;
+                Vec3 a = _a[i], b = _b[i], c = _c[i];
+                double area = Cross(b - a, c - a).Length / 2;
+                int n = Math.Min(8, (int)Math.Ceiling(Math.Sqrt(area) / spacing));
+                if (n < 2)
+                    continue;
+                var normal = new Vec3(normals[9 * t] + normals[9 * t + 3] + normals[9 * t + 6],
+                                      normals[9 * t + 1] + normals[9 * t + 4] + normals[9 * t + 7],
+                                      normals[9 * t + 2] + normals[9 * t + 5] + normals[9 * t + 8]);
+                if (normal.Length <= 1e-12)
+                    continue;
+                normal = normal * (1 / normal.Length);
+                for (int u = 0; u < n; u++)
+                    for (int v = 0; u + v < n; v++)
+                    {
+                        var p = a + (b - a) * ((u + 1.0 / 3) / n) + (c - a) * ((v + 1.0 / 3) / n);
+                        _samples.Add((p, normal, face));
+                        if (twoSided)
+                            _samples.Add((p, normal * -1, face));
+                    }
             }
         }
 
@@ -106,10 +145,60 @@ namespace GeoSimplifier.Core.Geometry
             return counts;
         }
 
+        /// <summary>
+        /// The face a ray from <paramref name="origin"/> along <paramref name="dir"/> hits first, and how far away;
+        /// (-1, infinity) when it escapes. For tracing why a face counts as hidden.
+        /// </summary>
+        public (int face, double distance) FirstHit(Vec3 origin, Vec3 dir)
+        {
+            Build();
+            var inv = new Vec3(1 / dir.X, 1 / dir.Y, 1 / dir.Z);
+            var stack = new int[128];
+            int top = 0, best = -1;
+            double bestT = double.PositiveInfinity;
+            stack[top++] = 0;
+            while (top > 0)
+            {
+                var node = _nodes[stack[--top]];
+                if (!HitsBox(node.Box, origin, inv))
+                    continue;
+                if (node.Left < 0)
+                {
+                    for (int i = node.First; i < node.First + node.Count; i++)
+                    {
+                        double t = HitDistance(origin, dir, _sa[i], _sb[i], _sc[i]);
+                        if (t < bestT) { bestT = t; best = _face[_order[i]]; }
+                    }
+                    continue;
+                }
+                stack[top++] = node.Left;
+                stack[top++] = node.Right;
+            }
+            return (best, bestT);
+        }
+
+        private static double HitDistance(Vec3 o, Vec3 d, Vec3 a, Vec3 b, Vec3 c)
+        {
+            var e1 = b - a;
+            var e2 = c - a;
+            var p = Cross(d, e2);
+            double det = Dot(e1, p);
+            if (Math.Abs(det) < 1e-18) return double.PositiveInfinity;
+            double inv = 1 / det;
+            var s = o - a;
+            double u = Dot(s, p) * inv;
+            if (u < 0 || u > 1) return double.PositiveInfinity;
+            var q = Cross(s, e1);
+            double v = Dot(d, q) * inv;
+            if (v < 0 || u + v > 1) return double.PositiveInfinity;
+            double t = Dot(e2, q) * inv;
+            return t > 1e-9 ? t : double.PositiveInfinity;
+        }
+
         /// <summary>Faces added without normals; they are always counted as visible.</summary>
         public IReadOnlyCollection<int> Unsampled => _unsampled;
 
-        public int Triangles => _a.Count;
+        public int Triangles => _nodes != null ? _triangles : _a.Count;
         public int Samples => _samples.Count;
 
         private static IEnumerable<Vec3> Directions(Vec3 n)
@@ -132,36 +221,48 @@ namespace GeoSimplifier.Core.Geometry
                 return;
             int count = _a.Count;
             _order = new int[count];
-            var centres = new Vec3[count];
-            var boxes = new Aabb[count];
+            // Only the centres are kept per triangle while the tree is built; boxes are worked out from the corners.
+            var centres = new Vec3f[count];
             for (int i = 0; i < count; i++)
             {
                 _order[i] = i;
-                boxes[i] = Aabb.Empty.Include(_a[i]).Include(_b[i]).Include(_c[i]);
-                centres[i] = (_a[i] + _b[i] + _c[i]) * (1.0 / 3);
+                var centre = ((Vec3)_a[i] + _b[i] + _c[i]) * (1.0 / 3);
+                centres[i] = new Vec3f((float)centre.X, (float)centre.Y, (float)centre.Z);
             }
             var nodes = new List<Node>();
-            Split(nodes, boxes, centres, 0, count);
+            Split(nodes, centres, 0, count);
             _nodes = nodes.ToArray();
-            // The triangles in tree order, side by side in memory for the leaves.
-            _sa = new Vec3[count];
-            _sb = new Vec3[count];
-            _sc = new Vec3[count];
+            centres = null;
+            // The triangles in tree order, side by side in memory for the leaves; the lists they came in go.
+            _sa = new Vec3f[count];
+            _sb = new Vec3f[count];
+            _sc = new Vec3f[count];
             for (int i = 0; i < count; i++)
-            {
                 _sa[i] = _a[_order[i]];
+            _a.Clear();
+            _a.TrimExcess();
+            for (int i = 0; i < count; i++)
                 _sb[i] = _b[_order[i]];
+            _b.Clear();
+            _b.TrimExcess();
+            for (int i = 0; i < count; i++)
                 _sc[i] = _c[_order[i]];
-            }
+            _c.Clear();
+            _c.TrimExcess();
+            _triangles = count;
         }
 
-        private Vec3[] _sa, _sb, _sc;
+        private Vec3f[] _sa, _sb, _sc;
+        private int _triangles;
 
-        private int Split(List<Node> nodes, Aabb[] boxes, Vec3[] centres, int first, int count)
+        private int Split(List<Node> nodes, Vec3f[] centres, int first, int count)
         {
             var box = Aabb.Empty;
             for (int i = first; i < first + count; i++)
-                box = box.Union(boxes[_order[i]]);
+            {
+                int t = _order[i];
+                box = box.Include(_a[t]).Include(_b[t]).Include(_c[t]);
+            }
             int index = nodes.Count;
             nodes.Add(new Node { Box = box, Left = -1, Right = -1, First = first, Count = count });
             if (count <= 8)
@@ -172,8 +273,8 @@ namespace GeoSimplifier.Core.Geometry
             // 6.6 million triangles).
             int half = count / 2;
             Select(centres, axis, first, first + count - 1, first + half);
-            int left = Split(nodes, boxes, centres, first, half);
-            int right = Split(nodes, boxes, centres, first + half, count - half);
+            int left = Split(nodes, centres, first, half);
+            int right = Split(nodes, centres, first + half, count - half);
             nodes[index] = new Node { Box = box, Left = left, Right = right, First = first, Count = count };
             return index;
         }
@@ -182,18 +283,19 @@ namespace GeoSimplifier.Core.Geometry
         /// Reorders _order[lo..hi] so that position k holds the triangle that would be there if sorted by its
         /// centre along the axis, with none greater before it and none smaller after it (quickselect).
         /// </summary>
-        private void Select(Vec3[] centres, int axis, int lo, int hi, int k)
+        private void Select(Vec3f[] centres, int axis, int lo, int hi, int k)
         {
+            float At(int t) => axis == 0 ? centres[t].X : axis == 1 ? centres[t].Y : centres[t].Z;
             while (hi > lo)
             {
                 int mid = lo + (hi - lo) / 2;
-                double a = centres[_order[lo]][axis], b = centres[_order[mid]][axis], c = centres[_order[hi]][axis];
-                double pivot = Math.Max(Math.Min(a, b), Math.Min(Math.Max(a, b), c));
+                float a = At(_order[lo]), b = At(_order[mid]), c = At(_order[hi]);
+                float pivot = Math.Max(Math.Min(a, b), Math.Min(Math.Max(a, b), c));
                 int i = lo, j = hi;
                 while (i <= j)
                 {
-                    while (centres[_order[i]][axis] < pivot) i++;
-                    while (centres[_order[j]][axis] > pivot) j--;
+                    while (At(_order[i]) < pivot) i++;
+                    while (At(_order[j]) > pivot) j--;
                     if (i <= j)
                     {
                         (_order[i], _order[j]) = (_order[j], _order[i]);
@@ -246,7 +348,7 @@ namespace GeoSimplifier.Core.Geometry
             return true;
         }
 
-        // Möller-Trumbore, hits in front of the origin only.
+        // MÃ¶ller-Trumbore, hits in front of the origin only.
         private static bool HitsTriangle(Vec3 o, Vec3 d, Vec3 a, Vec3 b, Vec3 c)
         {
             var e1 = b - a;

@@ -330,6 +330,15 @@ namespace GeoSimplifier.Probe
                 swApp.Visible = false;
                 return 0;
             }
+            int closeAt = Array.IndexOf(args, "--close-doc");
+            if (closeAt >= 0 && closeAt + 1 < args.Length)
+            {
+                // --close-doc <title>: closes that one document without saving (frees the source assembly's memory
+                // before a large result is saved).
+                swApp.QuitDoc(args[closeAt + 1]);
+                Console.WriteLine($"Kapatıldı (kaydedilmeden): {args[closeAt + 1]}");
+                return 0;
+            }
             if (Array.IndexOf(args, "--close-all") >= 0)
             {
                 // Closes every document without saving, keeping SOLIDWORKS open.
@@ -690,6 +699,14 @@ namespace GeoSimplifier.Probe
                     swApp.ActivateDoc3(args[saveAs + 2], false, 0, ref activateErrors);
                 }
                 var active = (IModelDoc2)swApp.ActiveDoc;
+                // Only the result part asked for is saved: when the wrap made none, the active document is the
+                // source assembly, which must never be saved (it once tried to save TAG3.SLDASM as a part).
+                if (active == null || active.GetType() != (int)global::SolidWorks.Interop.swconst.swDocumentTypes_e.swDocPART ||
+                    (saveAs + 2 < args.Length && !args[saveAs + 2].StartsWith("--") && !active.GetTitle().StartsWith(args[saveAs + 2])))
+                {
+                    Console.WriteLine($"Kaydedilmedi: etkin belge istenen sonuç parçası değil ({active?.GetTitle() ?? "yok"})");
+                    return 1;
+                }
                 int e = 0, w = 0;
                 bool ok = active.Extension.SaveAs3(target, 0, 1, null, null, ref e, ref w);
                 Console.WriteLine($"Kaydedildi: {ok} ({active.GetTitle()} → {target}, hata {e})");

@@ -50,5 +50,27 @@ namespace GeoSimplifier.Core.Tests
             Assert.DoesNotContain(6, visible);   // second cube's -X face
             Assert.Equal(10, visible.Count);
         }
+
+        [Fact]
+        public void A_large_face_seen_only_at_its_edges_is_visible_with_a_spacing()
+        {
+            // A 10 x 10 panel of two triangles under an 8 x 8 cover 0.1 above it: the triangles' centres see only
+            // the cover, the panel's edges are open (TAG3's radiator panels behind a fan hub).
+            Vec3 P(double x, double y, double z) => new Vec3(x, y, z);
+            foreach (double spacing in new[] { 0.0, 1.0 })
+            {
+                var v = new FaceVisibility();
+                var t = new List<float>();
+                var normals = new List<float>();
+                foreach (var p in new[] { P(0, 0, 0), P(10, 0, 0), P(10, 10, 0), P(0, 0, 0), P(10, 10, 0), P(0, 10, 0) })
+                {
+                    t.AddRange(new[] { (float)p.X, (float)p.Y, (float)p.Z });
+                    normals.AddRange(new[] { 0f, 0f, 1f });
+                }
+                v.AddFace(0, t, normals, 2, spacing: spacing);
+                Square(v, 1, P(1, 1, 0.1), P(9, 1, 0.1), P(9, 9, 0.1), P(1, 9, 0.1), new Vec3(0, 0, 1));
+                Assert.Equal(spacing > 0, v.Visible(1e-6).Contains(0));
+            }
+        }
     }
 }

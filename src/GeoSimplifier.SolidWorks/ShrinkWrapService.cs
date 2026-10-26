@@ -29,6 +29,9 @@ namespace GeoSimplifier.SolidWorks
         /// <summary>Bodies kept out of the wrap and united with it as they are.</summary>
         public int ExcludedBodies;
 
+        /// <summary>Bodies the last small-body clean-up leaves alone however small (excluded parts, cage boxes).</summary>
+        public HashSet<IBody2> KeepAlways = new HashSet<IBody2>();
+
         public int SourceBodies;
 
         /// <summary>Surface bodies wrapped as thin solids, and those SOLIDWORKS could not thicken.</summary>
@@ -43,6 +46,9 @@ namespace GeoSimplifier.SolidWorks
 
         /// <summary>Small parts left out (<see cref="ShrinkWrapOptions.MinPartPercent"/>).</summary>
         public int SmallPartsRemoved;
+
+        /// <summary>Cable bundles deleted.</summary>
+        public int BundlesRemoved;
 
         /// <summary>The bodies already are the outer skin of a surface model (see Skin); Commit puts them in as they are.</summary>
         public bool IsSkin;
@@ -81,6 +87,7 @@ namespace GeoSimplifier.SolidWorks
                           (HolesFailed > 0 ? $", {HolesFailed} delik kapatılamadı" : "") +
                           (BossesRemoved > 0 ? $", {BossesRemoved} kabartma düzlendi" : "") +
                           (SmallPartsRemoved > 0 ? $", {SmallPartsRemoved} küçük parça çıkarıldı" : "") +
+                          (BundlesRemoved > 0 ? $", {BundlesRemoved} kablo demeti silindi" : "") +
                           (InsideParts > 0 ? $", {InsideParts} iç parça atlandı" : "") +
                           (ThreadsFilled > 0 ? $", {ThreadsFilled} vida dişi dolduruldu" : "") +
                           (Bridges > 0 ? $", {Bridges} boşluk köprülendi" : "") +
@@ -133,6 +140,9 @@ namespace GeoSimplifier.SolidWorks
         [System.Runtime.InteropServices.DllImport("user32.dll")]
         private static extern bool IsWindowVisible(IntPtr hWnd);
 
+        [System.Runtime.InteropServices.DllImport("user32.dll")]
+        private static extern bool IsIconic(IntPtr hWnd);
+
         /// <summary>
         /// Whether SOLIDWORKS' main window is on the screen. ISldWorks.Visible stays true in a test SOLIDWORKS whose
         /// window was hidden, so the frame's own window is asked.
@@ -141,10 +151,25 @@ namespace GeoSimplifier.SolidWorks
         {
             try
             {
-                return _swApp.Visible && _swApp.Frame() is IFrame frame && IsWindowVisible(new IntPtr(frame.GetHWndx64()));
+                // A minimized window counts as visible to Windows; nobody sees it either (zooming the hidden test
+                // SOLIDWORKS onto TAG3's 8,457 bodies took it to 38.7 GB and it never came back).
+                return _swApp.Visible && _swApp.Frame() is IFrame frame &&
+                       IsWindowVisible(new IntPtr(frame.GetHWndx64())) && !IsIconic(new IntPtr(frame.GetHWndx64()));
             }
             catch (Exception) { return _swApp.Visible; }
         }
+
+        /// <summary>Whether the solids seen in a surface model's skin get holes plugged, threads filled and embossed details flattened.</summary>
+        public static bool SkinSolidWork { get; set; } = true;
+
+        /// <summary>How long the solids of a surface model's skin are worked on in all, most visible first.</summary>
+        public const double SkinSolidSeconds = 300;
+
+        /// <summary>
+        /// Thin-part groups whose members' median middle/longest box side is below this are cable bundles (TAG3's
+        /// bundles 0.42 to 0.63, V12's fan cages 0.98 and 1.0).
+        /// </summary>
+        private const double BundleSquat = 0.8;
 
         /// <summary>Whether grilles inside one part get flat lids in a surface skin (a trial; off).</summary>
         public static bool SkinGrilleCaps { get; set; }
@@ -412,9 +437,15 @@ namespace GeoSimplifier.SolidWorks
             var boxes = bodies.Select(BodyOps.AnyBounds).ToList();
             var model = boxes.Aggregate(Core.Geometry.Aabb.Empty, (a, b) => a.Union(b));
             var keep = Enumerable.Range(0, bodies.Count).ToList();
-            // Cages and grilles of many thin parts become one box each, before anything else looks at their parts.
+            // Cages and grilles of many thin parts become one box each, before anything else looks at their parts;
+            // cable bundles are deleted.
             var cageBoxes = new List<(string part, IBody2 sheet, List<float> triangles)>();
-            foreach (var cage in Cages(boxes, owners, keep, exclusions))
+            var bundles = new List<(string group, List<int> members, Core.Geometry.Aabb box)>();
+            var cages = Cages(boxes, owners, keep, exclusions, bundles);
+            var bundled = new HashSet<int>(bundles.SelectMany(b => b.members));
+            keep = keep.Where(i => !bundled.Contains(i)).ToList();
+            result.BundlesRemoved = bundles.Count;
+            foreach (var cage in cages)
             {
                 var members = new HashSet<int>(cage.members);
                 keep = keep.Where(i => !members.Contains(i)).ToList();
@@ -436,6 +467,19 @@ namespace GeoSimplifier.SolidWorks
                 result.SmallPartsRemoved = small.Count;
                 UI.PageLog.Write($"  küçük parçalar: {small.Count} parça ({bodies.Count - keep.Count} gövde) çıkarıldı (%{options.MinPartPercent:0.#} = {limit * 1000:F0} mm altı)");
             }
+            // The copies of the bodies left out are released now: SOLIDWORKS keeps them until their COM objects go,
+            // and TAG3's skin at 5 % ran out of memory (33 GB) with all 98,281 kept.
+            {
+                var kept = new HashSet<int>(keep);
+                for (int i = 0; i < bodies.Count; i++)
+                    if (!kept.Contains(i))
+                        bodies[i] = null;
+                solids.Clear();
+                sheets.Clear();
+                GC.Collect();
+                GC.WaitForPendingFinalizers();
+                GC.Collect();
+            }
 
             // Every face of the kept bodies goes into one ray caster; surfaces have no inside, so rays leave them
             // on both sides.
@@ -449,6 +493,8 @@ namespace GeoSimplifier.SolidWorks
             // to an axis, per part and plane, from their triangles (no extra SOLIDWORKS calls).
             var surfacesPerPart = keep.Where(i => i >= solidCount).GroupBy(i => owners[i] ?? "").ToDictionary(g => g.Key, g => g.Count());
             var flatFaces = new List<(string part, int axis, double at, Core.Geometry.Aabb box)>();
+            // Large faces get rays from a grid over them, about one point per 2 % of the model's size squared.
+            double sampleSpacing = 0.02 * (model.Max - model.Min).Length;
             int done = 0;
             foreach (int i in keep)
             {
@@ -461,7 +507,7 @@ namespace GeoSimplifier.SolidWorks
                     if (triangles == null || triangles.Length == 0)
                         continue;
                     var normals = face.GetTessNorms() as float[];
-                    visibility.AddFace(faceOf.Count, triangles, normals, samples: 4, twoSided: sheet);
+                    visibility.AddFace(faceOf.Count, triangles, normals, samples: 4, twoSided: sheet, spacing: sampleSpacing);
                     faceOf.Add((i, face));
                     faceArea.Add(TriangleArea(triangles));
                     if (busy)
@@ -583,6 +629,31 @@ namespace GeoSimplifier.SolidWorks
                 }
                 else seenSolidFaces.Add((b, face));
             }
+            // Large surfaces dropped here, for tracing a part that goes missing (TAG3's radiator front plates).
+            foreach (int b in keep.Where(b => b >= solidCount && !seenBodies.Contains(b) && (boxes[b].Max - boxes[b].Min).Length > 0.1 * size))
+            {
+                seenShare.TryGetValue(b, out var v);
+                var s = boxes[b].Size;
+                // What a ray straight out of its middle hits first, on each side.
+                string blockers = "";
+                if (s.X * s.Y + s.Y * s.Z + s.X * s.Z > 0.01 * size * size &&
+                    ((object[])bodies[b].GetFaces())?.OfType<IFace2>().FirstOrDefault() is IFace2 first &&
+                    first.GetTessTriangles(true) is float[] tri && first.GetTessNorms() is float[] nor && tri.Length >= 9)
+                {
+                    var c = new Core.Geometry.Vec3((tri[0] + tri[3] + tri[6]) / 3, (tri[1] + tri[4] + tri[7]) / 3, (tri[2] + tri[5] + tri[8]) / 3);
+                    var n = new Core.Geometry.Vec3(nor[0] + nor[3] + nor[6], nor[1] + nor[4] + nor[7], nor[2] + nor[5] + nor[8]);
+                    n = n * (1 / Math.Max(n.Length, 1e-12));
+                    foreach (double side in new[] { 1.0, -1.0 })
+                    {
+                        var (hit, distance) = visibility.FirstHit(c + n * (side * size * 2e-5), n * side);
+                        string what = hit < 0 ? "dışarı" : hit < faceOf.Count ? $"{owners[faceOf[hit].body] ?? "?"} ({(faceOf[hit].body >= solidCount ? "yüzey" : "katı")})" : "kafes/kapak kutusu";
+                        blockers += $"; {(side > 0 ? "+" : "-")}normal: {what}{(hit < 0 ? "" : $" {distance * 1000:F0} mm")}";
+                    }
+                    blockers += $"; orta {c.X * 1000:F0},{c.Y * 1000:F0},{c.Z * 1000:F0} mm";
+                }
+                UI.PageLog.Write($"  büyük yüzey düştü: {owners[b]}, kutu {s.X * 1000:F0}x{s.Y * 1000:F0}x{s.Z * 1000:F0} mm, {bodies[b].GetFaceCount()} yüz, " +
+                                 $"görülen {v.escaped}/{v.samples} örnek, alan {v.area * 1e6:F0} mm²{blockers}");
+            }
             var output = new List<(string owner, IBody2 body)>();
             foreach (int b in seenBodies.OrderBy(b => b))
                 output.Add((owners[b], bodies[b]));
@@ -590,6 +661,46 @@ namespace GeoSimplifier.SolidWorks
             // solid knit; a 1.2 GB STEP with 8,500 solids gave 111,000 single-face bodies otherwise).
             int solidFailed = 0, solidsWhole = 0;
             var knitModeler = (IModeler)_swApp.GetModeler();
+            // The solids seen from outside get the solid path's simplification (Serkan: the bolt holes of TAG3's
+            // flywheel housing stayed open): holes plugged, threads filled, embossed details flattened; then they go
+            // in whole. (Their seen faces did not knit on TAG3 anyway, so they went in whole before too.)
+            if (SkinSolidWork && (options.GapWidth > 0 || options.FillThreads || options.MaxEmbossHeight > 0))
+            {
+                var solidWatch = Stopwatch.StartNew();
+                var ops = new BodyOps(_swApp);
+                var closer = new HoleCloser(ops);
+                var threads = new ThreadFiller(ops);
+                // The most visible solids first, within a time budget: TAG3's 414 seen solids (imported castings)
+                // needed 40 s each; those left over go in as they are.
+                var seenSolids = seenSolidFaces.GroupBy(f => f.body).OrderByDescending(g => g.Count()).Select(g => g.Key).ToList();
+                int n = 0, skipped = 0;
+                foreach (int b in seenSolids)
+                {
+                    report(n++, seenSolids.Count);
+                    var body = bodies[b];
+                    if (solidWatch.Elapsed.TotalSeconds > SkinSolidSeconds)
+                    {
+                        output.Add((owners[b], body));
+                        skipped++;
+                        continue;
+                    }
+                    if (options.FillThreads)
+                        body = threads.Fill(body);
+                    if (options.MaxEmbossHeight > 0)
+                        body = closer.RemoveBosses(body, options.MaxEmbossHeight);
+                    if (options.GapWidth > 0)
+                        body = closer.CloseHoles(body, options.GapWidth) ?? body;
+                    output.Add((owners[b], body));
+                }
+                result.HolesClosed = closer.Closed;
+                result.HolesFailed = closer.Failed;
+                result.ThreadsFilled = threads.Filled;
+                result.BossesRemoved = closer.BossesRemoved;
+                UI.PageLog.Write($"  görünen katılar: {seenSolids.Count} katı sadeleştirildi ({closer.Closed} delik kapandı, {closer.Failed} kapanmadı, " +
+                                 $"{threads.Filled} diş, {closer.BossesRemoved} kabartma; {skipped} tanesi {SkinSolidSeconds:F0} sn bütçesi dolduğu için olduğu gibi; " +
+                                 $"{solidWatch.Elapsed.TotalSeconds:F1} sn)");
+                seenSolidFaces.Clear();
+            }
             foreach (var group in seenSolidFaces.GroupBy(f => f.body))
             {
                 var faceSheets = new List<IBody2>();
@@ -625,6 +736,7 @@ namespace GeoSimplifier.SolidWorks
             output.AddRange(seenLids);
             output.AddRange(caps.Select(c => (c.part, c.sheet)));
             output.AddRange(cageBoxes.Select(c => (c.part, c.sheet)));
+            result.KeepAlways.UnionWith(cageBoxes.Select(c => c.sheet));
             if (lids.Count > 0)
                 UI.PageLog.Write($"  görünen kapak: {seenLids.Count}/{lids.Count}");
             var perPart = output.GroupBy(o => o.owner ?? "").Select(g => (part: g.Key, count: g.Count())).OrderByDescending(p => p.count).ToList();
@@ -708,22 +820,55 @@ namespace GeoSimplifier.SolidWorks
                 UI.PageLog.Write($"  dikme: {output.Count} yüzey → {knitted.Count} ({joined} birleşti)");
                 output = knitted;
             }
+            // Large parts with nothing in the result, and why: for tracing a part that goes missing.
+            {
+                var inOutput = new HashSet<string>(output.Select(o => o.owner ?? ""));
+                var keptSet = new HashSet<int>(keep);
+                var lost = Enumerable.Range(0, bodies.Count).Where(i => !string.IsNullOrEmpty(owners[i]))
+                    .GroupBy(i => owners[i]).Select(g => (part: g.Key, box: g.Aggregate(Core.Geometry.Aabb.Empty, (a, i) => a.Union(boxes[i])), members: g.ToList()))
+                    .Where(p => (p.box.Max - p.box.Min).Length > 0.1 * size && !inOutput.Contains(p.part)).ToList();
+                foreach (var p in lost.Take(30))
+                {
+                    var s = p.box.Size;
+                    bool kept = p.members.Any(keptSet.Contains);
+                    UI.PageLog.Write($"  büyük parça sonuçta yok: {p.part}, kutu {s.X * 1000:F0}x{s.Y * 1000:F0}x{s.Z * 1000:F0} mm, {p.members.Count} gövde " +
+                                     $"({p.members.Count(i => i >= solidCount)} yüzey), {(kept ? "ışın/seyrek kuralda düştü" : "kafes ya da küçük parça olarak çıkarıldı")}");
+                }
+                UI.PageLog.Write($"  büyük parça sonuçta yok: toplam {lost.Count}");
+            }
             result.Bodies = output.Select(o => o.body).ToList();
             result.Sheets = seenBodies.Count;
+            // Everything else is let go before the result goes into a part: the faces read for the ray test (355,000
+            // on TAG3 at 5 %) and the copies of the bodies not kept. With them held, inserting TAG3's skin took
+            // SOLIDWORKS to 38 GB and the machine ran out of memory.
+            {
+                var used = new HashSet<IBody2>(result.Bodies);
+                for (int i = 0; i < bodies.Count; i++)
+                    if (bodies[i] != null && !used.Contains(bodies[i]))
+                        bodies[i] = null;
+                faceOf.Clear();
+                faceOf.TrimExcess();
+                visibility = null;
+                escapes = null;
+                GC.Collect();
+                GC.WaitForPendingFinalizers();
+                GC.Collect();
+            }
             UI.PageLog.Write($"  dış kabuk (yüzey modeli): {keep.Count} gövde → {result.Bodies.Count} yüzey gövdesi, " +
                              $"{result.Bodies.Sum(b => b.GetFaceCount())} yüz ({watch.Elapsed.TotalSeconds:F1} sn)");
         }
 
         /// <summary>
-        /// Cages: sub-assemblies made of many separate thin parts with mostly air between them (wire cages, guard
-        /// grilles, radiator bars). Per sub-assembly (the parts' common parent), it counts when it has at least 20
-        /// parts, nearly all rods (their two smaller sides under 3 % of the group's longest), together filling under 10 % of
-        /// the group's box, none of them a big block, nearly all straight and along at most two directions with similar
-        /// lengths (a regular grid, not a cable bundle), and nothing in it excluded. Returns the members (body indices)
-        /// and the group's box.
+        /// Cages and cable bundles: sub-assemblies made of many separate thin parts with mostly air between them. Per
+        /// sub-assembly (the parts' common parent), it counts when it has at least 20 parts, nearly all thin (their two
+        /// smaller sides under 3 % of the group's longest), together filling under 10 % of the group's box, none of
+        /// them a big block, and nothing in it excluded. A group whose box holds many other parts, or whose members
+        /// are elongated, is a cable bundle and is deleted (Serkan); the others are cages and grilles, each boxed with
+        /// the few parts inside. Returns the members (body indices) and the group's box of each.
         /// </summary>
         private static List<(string group, List<int> members, Core.Geometry.Aabb box)> Cages(
-            List<Core.Geometry.Aabb> boxes, List<string> owners, IEnumerable<int> candidates, Exclusions exclusions)
+            List<Core.Geometry.Aabb> boxes, List<string> owners, IEnumerable<int> candidates, Exclusions exclusions,
+            List<(string group, List<int> members, Core.Geometry.Aabb box)> bundles)
         {
             var cages = new List<(string, List<int>, Core.Geometry.Aabb)>();
             var parts = candidates.Where(i => !string.IsNullOrEmpty(owners[i]) && !boxes[i].IsEmpty)
@@ -755,72 +900,40 @@ namespace GeoSimplifier.SolidWorks
                     UI.PageLog.Write($"  kafes/ızgara değil: {group.Key}, {list.Count} ince parça ama kutusunun %{100 * filled / volume:F0}'ini dolduruyor");
                     continue;
                 }
-                // Real cages and grilles are straight rods in a regular grid: each member much longer than wide (a
-                // curved cable or pipe has a wide box), lying along at most two directions, of similar lengths along
-                // each. A cable or pipe bundle (TAG3's engine V) does not qualify.
-                var members = list.Select(p => { var s = new[] { p.box.Size.X, p.box.Size.Y, p.box.Size.Z }; int along = Array.IndexOf(s, s.Max()); return (along, length: s.Max(), width: s.OrderBy(v => v).ElementAt(1)); }).ToList();
-                int straight = members.Count(m => m.width < 0.05 * m.length);
-                var directions = members.GroupBy(m => m.along).OrderByDescending(g => g.Count()).ToList();
-                int inTwo = directions.Take(2).Sum(g => g.Count());
-                bool regular = directions.Take(2).Where(g => g.Count() >= 5).All(g =>
-                {
-                    double mean = g.Average(m => m.length);
-                    double spread = Math.Sqrt(g.Average(m => (m.length - mean) * (m.length - mean)));
-                    return spread < 0.5 * mean;
-                });
-                if (straight < 0.8 * list.Count || inTwo < 0.9 * list.Count || !regular)
-                {
-                    // Member shapes, for tuning the rule: sides sorted s0 <= s1 <= s2; planar wire (a ring, a spoke)
-                    // has s0 well under s1, a straight rod s1 well under s2.
-                    var shapes = list.Select(p => new[] { p.box.Size.X, p.box.Size.Y, p.box.Size.Z }.OrderBy(v => v).ToArray()).ToList();
-                    int planar = shapes.Count(s => s[0] < 0.05 * s[1]);
-                    double Median(IEnumerable<double> v) { var a = v.OrderBy(x => x).ToArray(); return a.Length == 0 ? 0 : a[a.Length / 2]; }
-                    // A grid's members sit in shared planes: per axis, the share of members whose centre coordinate
-                    // has at least two others within 1 % of the group's side (a cable bundle's are scattered).
-                    var centres = list.Select(p => (p.box.Min + p.box.Max) * 0.5).ToList();
-                    string Shared(int axis)
-                    {
-                        double tol = Math.Max(1e-3, 0.01 * box.Size[axis]);
-                        var c = centres.Select(v => v[axis]).OrderBy(v => v).ToArray();
-                        int on = 0;
-                        for (int k = 0; k < c.Length; k++)
-                        {
-                            int lo = k, hi = k;
-                            while (lo > 0 && c[k] - c[lo - 1] <= tol) lo--;
-                            while (hi < c.Length - 1 && c[hi + 1] - c[k] <= tol) hi++;
-                            if (hi - lo >= 2) on++;
-                        }
-                        return $"{100 * on / Math.Max(1, c.Length)}";
-                    }
-                    UI.PageLog.Write($"  kafes ölçüsü: {group.Key}, ortak düzlemde % x {Shared(0)} y {Shared(1)} z {Shared(2)}, kutu {box.Size.X * 1000:F0}x{box.Size.Y * 1000:F0}x{box.Size.Z * 1000:F0} mm, doluluk %{100 * filled / volume:F1}");
-                    UI.PageLog.Write($"  kafes/ızgara değil: {group.Key}, {list.Count} ince parça ama düzenli düz çubuk ızgarası değil " +
-                                     $"(düz {straight}, düzlemsel {planar}, iki yönde {inTwo}, boylar düzenli {regular}; " +
-                                     $"medyan s0/s1 {Median(shapes.Select(s => s[0] / Math.Max(s[1], 1e-12))):F3}, s1/s2 {Median(shapes.Select(s => s[1] / Math.Max(s[2], 1e-12))):F3}, " +
-                                     $"üye kutusu medyan {Median(shapes.Select(s => s[2])) * 1000:F0} mm)");
-                    continue;
-                }
-                // A box that would swallow many other parts is no cage outline: V12's engine wiring (89 thin parts)
-                // spans the engine, and its box hid the engine top.
+                // Cage or cable bundle. A bundle runs across the machine, so its box holds many other parts (V12's
+                // engine wiring: 643 in 89; TAG3's SCHEME groups 550 to 1049), or its members are elongated pieces
+                // of a curved run (median middle/longest side of the members' boxes 0.42 to 0.63 on TAG3). A guard
+                // or grille holds few parts and is made of short, squat pieces (V12's fan cages: 0.98 and 1.0).
                 var own = new HashSet<string>(list.Select(p => p.part));
                 double diag = (box.Max - box.Min).Length;
                 var inside = parts.Where(p => !own.Contains(p.part) && (p.box.Max - p.box.Min).Length > 0.05 * diag &&
                                               Inside(box, (p.box.Min + p.box.Max) * 0.5)).ToList();
-                // A guard around a fan holds a few parts (V12: 4 in 20, 14 in 84); the engine wiring held 643 in 89.
-                if (inside.Count > 0.25 * list.Count)
+                var ratios = list.Select(p => { var s = new[] { p.box.Size.X, p.box.Size.Y, p.box.Size.Z }.OrderBy(v => v).ToArray(); return s[1] / Math.Max(s[2], 1e-12); })
+                    .OrderBy(v => v).ToList();
+                double squat = ratios[ratios.Count / 2];
+                var size = box.Size;
+                if (inside.Count > 0.25 * list.Count || squat < BundleSquat)
                 {
-                    UI.PageLog.Write($"  kafes/ızgara değil: {group.Key}, {list.Count} ince parça ama kutusunun içinde {inside.Count} başka parça var");
+                    bundles.Add((group.Key, list.SelectMany(p => p.members).ToList(), box));
+                    UI.PageLog.Write($"  kablo demeti: {group.Key}, {list.Count} ince parça, kutu {size.X * 1000:F0}x{size.Y * 1000:F0}x{size.Z * 1000:F0} mm, " +
+                                     $"içinde {inside.Count} başka parça, üye oranı {squat:F2} → silinir");
                     continue;
                 }
                 // The parts inside the cage go with it.
                 cages.Add((group.Key, list.SelectMany(p => p.members).Concat(inside.SelectMany(p => p.members)).ToList(), box));
-                UI.PageLog.Write($"  kafes/ızgara: {group.Key}, {list.Count} ince parça, kutu {box.Size.X * 1000:F0}x{box.Size.Y * 1000:F0}x{box.Size.Z * 1000:F0} mm, " +
-                                 $"doluluk %{100 * filled / volume:F0} → tek kutu");
+                UI.PageLog.Write($"  kafes/ızgara: {group.Key}, {list.Count} ince parça, kutu {size.X * 1000:F0}x{size.Y * 1000:F0}x{size.Z * 1000:F0} mm, " +
+                                 $"doluluk %{100 * filled / volume:F0}, içinde {inside.Count} parça, üye oranı {squat:F2} → tek kutu");
             }
             return cages;
         }
 
         private static bool Inside(Core.Geometry.Aabb box, Core.Geometry.Vec3 p) =>
             p.X >= box.Min.X && p.X <= box.Max.X && p.Y >= box.Min.Y && p.Y <= box.Max.Y && p.Z >= box.Min.Z && p.Z <= box.Max.Z;
+
+        /// <summary>Whether two boxes touch or overlap, within 0.5 mm.</summary>
+        private static bool Touch(Core.Geometry.Aabb a, Core.Geometry.Aabb b) =>
+            a.Min.X <= b.Max.X + 5e-4 && b.Min.X <= a.Max.X + 5e-4 && a.Min.Y <= b.Max.Y + 5e-4 && b.Min.Y <= a.Max.Y + 5e-4 &&
+            a.Min.Z <= b.Max.Z + 5e-4 && b.Min.Z <= a.Max.Z + 5e-4;
 
         /// <summary>A box's six faces as one surface body (or the solid box when they do not knit).</summary>
         private IBody2 BoxSkin(Core.Geometry.Aabb box)
@@ -1148,6 +1261,7 @@ namespace GeoSimplifier.SolidWorks
                     Skin(result, options, bodies, bodyOwners, sheets, owners, (d, t) => Report("dış yüzler", 10, 90, d, t), instances, sheetInstances, exclusions);
                     // Excluded parts come through whole, with every face ("Hariç tut": keep these as they are).
                     result.Bodies.AddRange(excluded.Concat(excludedSheets));
+                    result.KeepAlways.UnionWith(excluded.Concat(excludedSheets));
                     result.ExcludedBodies = excluded.Count + excludedSheets.Count;
                     if (result.ExcludedBodies > 0)
                         UI.PageLog.Write($"  hariç tutulan: {excluded.Count} katı + {excludedSheets.Count} yüzey gövdesi olduğu gibi eklendi");
@@ -1185,8 +1299,18 @@ namespace GeoSimplifier.SolidWorks
                 // would otherwise drop their thin bars one by one).
                 if (!options.Preview && bodyOwners.Count == bodies.Count)
                 {
-                    var cageBoxes = Cages(bodies.Select(BodyOps.AnyBounds).ToList(), bodyOwners, Enumerable.Range(0, bodies.Count), exclusions);
-                    var gone = new HashSet<int>(cageBoxes.SelectMany(c => c.members));
+                    // Solids and the surfaces kept as they are, together (a bundle's wires may be either); cable
+                    // bundles are deleted.
+                    bool sheetOwnersKnown = owners.Count == asIs.Count;
+                    var allBoxes = bodies.Select(BodyOps.AnyBounds).Concat(sheetOwnersKnown ? asIs.Select(BodyOps.AnyBounds) : Enumerable.Empty<Core.Geometry.Aabb>()).ToList();
+                    var allOwners = bodyOwners.Concat(sheetOwnersKnown ? owners : Enumerable.Empty<string>()).ToList();
+                    var bundles = new List<(string group, List<int> members, Core.Geometry.Aabb box)>();
+                    var cageBoxes = Cages(allBoxes, allOwners, Enumerable.Range(0, allBoxes.Count), exclusions, bundles);
+                    result.BundlesRemoved = bundles.Count;
+                    var gone = new HashSet<int>(cageBoxes.SelectMany(c => c.members).Concat(bundles.SelectMany(b => b.members)));
+                    int solidsBefore = bodies.Count;
+                    if (sheetOwnersKnown)
+                        asIs = asIs.Where((s, k) => !gone.Contains(solidsBefore + k)).ToList();
                     for (int i = bodies.Count - 1; i >= 0; i--)
                         if (gone.Contains(i))
                         {
@@ -1535,7 +1659,8 @@ namespace GeoSimplifier.SolidWorks
                     Lap("iç boşluk");
                 }
 
-                progress.UpdateTitle("Shrink wrap: önizleme hazırlanıyor");
+                // On OK nothing is previewed here: only what was added is listed (the plugs).
+                progress.UpdateTitle(options.Preview ? "Shrink wrap: önizleme hazırlanıyor" : "Shrink wrap: sonuç hazırlanıyor");
                 progress.UpdateProgress(85);
                 // Plugs were taken per body; bridges and filled cavities are what the lumps have beyond the union.
                 var changed = lumps.Where(l => !original.Any(o => ReferenceEquals(o, l))).ToList();
@@ -1551,6 +1676,8 @@ namespace GeoSimplifier.SolidWorks
                     progress.UpdateProgress(90);
                     int before = lumps.Count;
                     lumps = ops.UnionAll(lumps.Concat(excluded), tolerance);
+                    // Excluded bodies that stayed apart are kept by the last clean-up however small.
+                    result.KeepAlways.UnionWith(lumps.Where(l => excluded.Any(e => ReferenceEquals(e, l))));
                     if (lumps.Count > before)
                         result.Notes.Add("Bazı hariç tutulan gövdeler sarılan gövdeye değmediği için ayrı kaldı.");
                     Lap("hariç");
@@ -1623,6 +1750,10 @@ namespace GeoSimplifier.SolidWorks
         public string Commit(WrapResult result, IModelDoc2 source, string configurationName, bool surfaceShell, double smallShellPercent)
         {
             var bodies = surfaceShell && !result.IsSkin ? Shells(result, smallShellPercent / 100) : result.Bodies;
+            // The skin of a surface model and a solid result get the same last clean-up (Serkan: "Select Bodies By
+            // Size" at the same percentage still picked 183 bodies of a TAG3 result).
+            if (smallShellPercent > 0 && (result.IsSkin || !surfaceShell) && !result.IsPreview)
+                bodies = DropSmall(bodies, smallShellPercent / 100, result.KeepAlways);
             if (source != null && configurationName != null)
                 return "Tamamlandı: " + result.Summary() + " " +
                        new ConfigurationOutput(_swApp).Create(source, bodies, configurationName, NewPart);
@@ -1642,12 +1773,26 @@ namespace GeoSimplifier.SolidWorks
             var view = partDoc.ActiveView as IModelView;
             partDoc.FeatureManager.EnableFeatureTree = false;
             if (view != null) view.EnableGraphicsUpdate = false;
+            int total = bodies.Count;
             try
             {
-                foreach (var body in bodies)
+                // Each body is let go once it is in the part: holding all of them besides their copies in the part
+                // took SOLIDWORKS to 44 GB on TAG3, and the result could then not be saved (save error 1).
+                var queue = new List<IBody2>(bodies);
+                bodies = null;
+                // The count stays for the summary; the bodies themselves go.
+                result.Bodies = new List<IBody2>(new IBody2[queue.Count]);
+                result.KeepAlways.Clear();
+                for (int i = 0; i < queue.Count; i++)
                 {
-                    if (part.CreateFeatureFromBody3((IBody2)body.Copy(), false, featureOptions) != null)
+                    if (part.CreateFeatureFromBody3((IBody2)queue[i].Copy(), false, featureOptions) != null)
                         created++;
+                    queue[i] = null;
+                    if (i % 1000 == 999)
+                    {
+                        GC.Collect();
+                        GC.WaitForPendingFinalizers();
+                    }
                 }
             }
             finally
@@ -1656,7 +1801,7 @@ namespace GeoSimplifier.SolidWorks
                 partDoc.FeatureManager.EnableFeatureTree = true;
                 double tree = commitWatch.Elapsed.TotalSeconds;
                 if (view != null) view.EnableGraphicsUpdate = true;
-                UI.PageLog.Write($"  ekleme: yeni parça {newPart:F1}, {bodies.Count} gövde {inserted - newPart:F1}, ağaç {tree - inserted:F1}, " +
+                UI.PageLog.Write($"  ekleme: yeni parça {newPart:F1}, {total} gövde {inserted - newPart:F1}, ağaç {tree - inserted:F1}, " +
                                  $"görüntü {commitWatch.Elapsed.TotalSeconds - tree:F1} sn");
             }
             double beforeZoom = commitWatch.Elapsed.TotalSeconds;
@@ -1666,8 +1811,10 @@ namespace GeoSimplifier.SolidWorks
             if (zoom)
                 partDoc.ViewZoomtofit2();
             UI.PageLog.Write($"  sığdırma {commitWatch.Elapsed.TotalSeconds - beforeZoom:F1} sn");
-            if (created < bodies.Count)
+            if (created < total)
                 result.Notes.Add("Bazı gövdeler parçaya eklenemedi, sonuç eksik olabilir.");
+            GC.Collect();
+            GC.WaitForPendingFinalizers();
             return "Tamamlandı: " + result.Summary();
         }
 
@@ -1762,6 +1909,70 @@ namespace GeoSimplifier.SolidWorks
                              $"({before - shells.Count} küçük parça atıldı), {kept}/{total} yüz görünüyor ({watch.Elapsed.TotalSeconds:F1} sn)");
             return shells;
         }
+        /// <summary>
+        /// The result's bodies smaller than <paramref name="fraction"/> of its size (box diagonals, as SOLIDWORKS'
+        /// "Select Bodies By Size" measures) are dropped. A surface touching a surface that stays is kept: a large
+        /// imported panel is often many small patches, and dropping them would open holes in it. The largest body
+        /// and <paramref name="keep"/> always stay.
+        /// </summary>
+        private static List<IBody2> DropSmall(List<IBody2> bodies, double fraction, ICollection<IBody2> keep)
+        {
+            if (bodies.Count < 2)
+                return bodies;
+            var watch = Stopwatch.StartNew();
+            var boxes = bodies.Select(BodyOps.AnyBounds).ToList();
+            var model = boxes.Aggregate(Core.Geometry.Aabb.Empty, (a, b) => a.Union(b));
+            double limit = fraction * (model.Max - model.Min).Length;
+            int largest = Enumerable.Range(0, bodies.Count).OrderByDescending(i => (boxes[i].Max - boxes[i].Min).Length).First();
+            bool Sheet(int i) => bodies[i].GetType() == (int)swBodyType_e.swSheetBody;
+            var small = new HashSet<int>(Enumerable.Range(0, bodies.Count).Where(i => i != largest && !keep.Contains(bodies[i]) &&
+                !boxes[i].IsEmpty && (boxes[i].Max - boxes[i].Min).Length < limit));
+            // Small surfaces joined to a large one, directly or through other small ones, stay with it.
+            var stays = new HashSet<int>();
+            var bigSheets = Enumerable.Range(0, bodies.Count).Where(i => !small.Contains(i) && Sheet(i)).ToList();
+            var grid = new Dictionary<(long, long, long), List<int>>();
+            double cell = Math.Max(limit, 1e-3);
+            (long, long, long) Key(Core.Geometry.Vec3 p) => ((long)Math.Floor(p.X / cell), (long)Math.Floor(p.Y / cell), (long)Math.Floor(p.Z / cell));
+            foreach (int i in small.Where(Sheet))
+            {
+                var k = Key((boxes[i].Min + boxes[i].Max) * 0.5);
+                if (!grid.TryGetValue(k, out var list)) grid[k] = list = new List<int>();
+                list.Add(i);
+            }
+            bool Touch(Core.Geometry.Aabb a, Core.Geometry.Aabb b) =>
+                a.Min.X <= b.Max.X + 5e-4 && b.Min.X <= a.Max.X + 5e-4 && a.Min.Y <= b.Max.Y + 5e-4 && b.Min.Y <= a.Max.Y + 5e-4 &&
+                a.Min.Z <= b.Max.Z + 5e-4 && b.Min.Z <= a.Max.Z + 5e-4;
+            IEnumerable<int> SmallNear(Core.Geometry.Aabb box)
+            {
+                var lo = Key(box.Min - new Core.Geometry.Vec3(cell, cell, cell));
+                var hi = Key(box.Max + new Core.Geometry.Vec3(cell, cell, cell));
+                // A large box spans many cells; it is checked against every small sheet instead.
+                if ((hi.Item1 - lo.Item1 + 1) * (hi.Item2 - lo.Item2 + 1) * (hi.Item3 - lo.Item3 + 1) > grid.Count)
+                    return grid.Values.SelectMany(v => v).Where(j => Touch(box, boxes[j]));
+                var found = new List<int>();
+                for (long x = lo.Item1; x <= hi.Item1; x++)
+                    for (long y = lo.Item2; y <= hi.Item2; y++)
+                        for (long z = lo.Item3; z <= hi.Item3; z++)
+                            if (grid.TryGetValue((x, y, z), out var list))
+                                found.AddRange(list.Where(j => Touch(box, boxes[j])));
+                return found;
+            }
+            var queue = new Queue<int>();
+            foreach (int b in bigSheets)
+                foreach (int j in SmallNear(boxes[b]))
+                    if (stays.Add(j)) queue.Enqueue(j);
+            while (queue.Count > 0)
+            {
+                int i = queue.Dequeue();
+                foreach (int j in SmallNear(boxes[i]))
+                    if (stays.Add(j)) queue.Enqueue(j);
+            }
+            var result = Enumerable.Range(0, bodies.Count).Where(i => !small.Contains(i) || stays.Contains(i)).Select(i => bodies[i]).ToList();
+            UI.PageLog.Write($"  son temizlik: {bodies.Count} gövde → {result.Count} (%{fraction * 100:0.#} = {limit * 1000:F0} mm altı {small.Count} küçük gövde, " +
+                             $"{stays.Count} tanesi büyük bir yüzeye bağlı olduğu için kaldı; {watch.Elapsed.TotalSeconds:F1} sn)");
+            return result;
+        }
+
         // CreateBodiesFromSheets2 option that knits into sheet bodies instead of closing them into solids
         // (found by trying: 0 and 2 gave solids).
         private const int SheetBodiesOnly = 1;

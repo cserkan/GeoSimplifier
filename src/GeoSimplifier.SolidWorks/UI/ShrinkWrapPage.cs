@@ -39,6 +39,10 @@ namespace GeoSimplifier.SolidWorks.UI
         private const int SolidOptionId = 24;
         private const int ShellOptionId = 25;
         private const int SmallListId = 26;
+        private const int SuggestLabelId = 27;
+
+        // Above this many components the outer skin is suggested (TAG3 9,116; an electric motor a few dozen).
+        private const int ShellSuggestComponents = 1000;
 
         // Selection mark of the exclusion box, so its items are told apart from other selections.
         private const int ExcludeMark = 2;
@@ -86,6 +90,7 @@ namespace GeoSimplifier.SolidWorks.UI
         private IPropertyManagerPageGroup _typeGroup;
         private IPropertyManagerPageOption _solidOption;
         private IPropertyManagerPageOption _shellOption;
+        private IPropertyManagerPageLabel _suggestLabel;
         private bool _shellOutput;
         private int _step = 1;
         private IPropertyManagerPageCheckbox _singleBodyBox;
@@ -128,7 +133,18 @@ namespace GeoSimplifier.SolidWorks.UI
             _shellOption = (IPropertyManagerPageOption)AddControl(_typeGroup, ShellOptionId, swPropertyManagerPageControlType_e.swControlType_Option,
                 "Yüzey kabuk (yalnız dış yüzler)",
                 "Yalnız dışarıdan görünen yüzler, yüzey gövdesi olarak. En hafif sonuç; yüzeylerden oluşan (STEP) modeller için de. Ardından İleri ile ayarlara geçin.");
-            _shellOutput = _surfaceShell;
+            // The kind suited to the model is suggested and ticked (Serkan: very large assemblies such as TAG3 and V12
+            // as an outer skin, an electric motor as a solid). Only the component count is read here: it is instant,
+            // and opening the command must stay under a second.
+            var watch = System.Diagnostics.Stopwatch.StartNew();
+            int components = _source is IAssemblyDoc assembly ? assembly.GetComponentCount(false) : 0;
+            bool suggestShell = components > ShellSuggestComponents;
+            _suggestLabel = (IPropertyManagerPageLabel)AddControl(_typeGroup, SuggestLabelId, swPropertyManagerPageControlType_e.swControlType_Label,
+                (suggestShell ? "Önerilen: Yüzey kabuk" : "Önerilen: Katı") + (components > 0 ? $" ({components} bileşen)" : ""),
+                "Katı: hacim, kütle, çakışma denetimi ya da kapalı gövde gerektiğinde; küçük ve orta montajlar (bir elektrik motoru gibi). " +
+                "Yüzey kabuk: görsel model; çok büyük montajlar, hızlı hesaplanır ve hızlı açılır.");
+            PageLog.Write($"Öneri: {components} bileşen → {(suggestShell ? "yüzey kabuk" : "katı")} ({watch.Elapsed.TotalMilliseconds:F0} ms)");
+            _shellOutput = suggestShell;
             (_shellOutput ? _shellOption : _solidOption).Checked = true;
 
             var group = _group = (IPropertyManagerPageGroup)_page.AddGroupBox(GroupId, "Ayarlar",
@@ -333,6 +349,13 @@ namespace GeoSimplifier.SolidWorks.UI
             _excludeGroup.Visible = settings;
             _outputGroup.Visible = settings;
             _group.Caption = _shellOutput ? "Ayarlar: yüzey kabuk" : "Ayarlar: katı";
+            // There are two pages: no "next" on the last, no "back" on the first.
+            try
+            {
+                _page?.EnableButton((int)swPropertyManagerPageButtons_e.swPropertyManagerPageButton_Next, !settings);
+                _page?.EnableButton((int)swPropertyManagerPageButtons_e.swPropertyManagerPageButton_Back, settings);
+            }
+            catch (System.Runtime.InteropServices.COMException) { }
         }
 
         private static object AddControl(IPropertyManagerPageGroup group, int id, swPropertyManagerPageControlType_e type, string caption, string tip)
@@ -710,6 +733,8 @@ namespace GeoSimplifier.SolidWorks.UI
 
         public bool OnNextPage()
         {
+            if (_step == 2)
+                return false;
             _step = 2;
             ShowStep();
             return false;

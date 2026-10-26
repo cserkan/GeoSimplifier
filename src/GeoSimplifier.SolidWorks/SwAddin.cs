@@ -169,6 +169,9 @@ namespace GeoSimplifier.SolidWorks
             ShrinkWrapService.MaxSheetsPerPart = maxSheets.Success ? int.Parse(maxSheets.Groups[1].Value) : 150;
             if (maxSheets.Success)
                 limitsMm = limitsMm.Remove(maxSheets.Index, maxSheets.Length);
+            // "noskinsolid:" leaves the solids of a surface model's skin as they are (for before/after comparisons).
+            ShrinkWrapService.SkinSolidWork = !limitsMm.Contains("noskinsolid:");
+            limitsMm = limitsMm.Replace("noskinsolid:", "");
             // "nozoom:" leaves the result's view unfitted (a trial).
             ShrinkWrapService.SkipZoom = limitsMm.Contains("nozoom:");
             limitsMm = limitsMm.Replace("nozoom:", "");
@@ -218,8 +221,8 @@ namespace GeoSimplifier.SolidWorks
                     _page.ExcludeForTest(excludeNames.Split(';'));
                 if (!string.IsNullOrEmpty(configurationName))
                     _page.OutputForTest(configurationName);
-                if (shell)
-                    _page.ShellForTest();
+                // Always chosen, as the page now ticks the kind it suggests for the model.
+                _page.KindForTest(shell);
                 if (single)
                     _page.SingleBodyForTest();
                 if (small > 0)
