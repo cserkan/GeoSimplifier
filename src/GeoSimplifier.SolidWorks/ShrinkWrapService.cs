@@ -14,6 +14,9 @@ namespace GeoSimplifier.SolidWorks
     {
         public List<IBody2> Bodies = new List<IBody2>();
 
+        /// <summary>The component each result body came from, where known (tests name the features after it).</summary>
+        public Dictionary<IBody2, string> Owners = new Dictionary<IBody2, string>();
+
         /// <summary>Material the wrap adds to the original bodies (plugs, bridges, filled cavities), for the preview.</summary>
         public List<IBody2> Added = new List<IBody2>();
 
@@ -852,6 +855,9 @@ namespace GeoSimplifier.SolidWorks
                 UI.PageLog.Write($"  büyük parça sonuçta yok: toplam {lost.Count}");
             }
             result.Bodies = output.Select(o => o.body).ToList();
+            foreach (var (owner, body) in output)
+                if (!string.IsNullOrEmpty(owner) && body != null)
+                    result.Owners[body] = owner;
             result.Sheets = seenBodies.Count;
             // Everything else is let go before the result goes into a part: the faces read for the ray test (355,000
             // on TAG3 at 5 %) and the copies of the bodies not kept. With them held, inserting TAG3's skin took
@@ -889,6 +895,15 @@ namespace GeoSimplifier.SolidWorks
             var parts = candidates.Where(i => !string.IsNullOrEmpty(owners[i]) && !boxes[i].IsEmpty)
                 .GroupBy(i => owners[i]).Select(g => (part: g.Key, members: g.ToList(), box: g.Aggregate(Core.Geometry.Aabb.Empty, (a, i) => a.Union(boxes[i])))).ToList();
             int allParts = parts.Count;
+            // GEOSIMPLIFIER_DUMP (tests only): every part's path and box, to tune the bundle rule without SOLIDWORKS.
+            if (System.Environment.GetEnvironmentVariable("GEOSIMPLIFIER_DUMP") is string dump && dump != "")
+                try
+                {
+                    string R(double v) => v.ToString("R", System.Globalization.CultureInfo.InvariantCulture);
+                    System.IO.File.WriteAllLines(System.IO.Path.Combine(dump, "parts.csv"),
+                        parts.Select(p => $"{p.part.Replace(',', ';')},{p.members.Count},{R(p.box.Min.X)},{R(p.box.Min.Y)},{R(p.box.Min.Z)},{R(p.box.Max.X)},{R(p.box.Max.Y)},{R(p.box.Max.Z)}"));
+                }
+                catch (System.IO.IOException) { }
             var taken = new HashSet<string>();
             // First the parts' own parent assemblies, whole: cages and grilles become boxes, bundles are deleted
             // with everything in them (V12's fan cages and engine harness, TAG3's six SCHEME harnesses).
@@ -1019,7 +1034,7 @@ namespace GeoSimplifier.SolidWorks
                     try
                     {
                         System.IO.File.WriteAllLines(System.IO.Path.Combine(dump, $"grille_{Math.Abs(part.Key.GetHashCode())}.csv"),
-                            new[] { "# " + part.Key }.Concat(small.Select(i => string.Join(",", new[] { boxes[i].Min.X, boxes[i].Min.Y, boxes[i].Min.Z, boxes[i].Max.X, boxes[i].Max.Y, boxes[i].Max.Z }
+                            new[] { "# " + part.Key }.Concat(part.Select(i => string.Join(",", new[] { boxes[i].Min.X, boxes[i].Min.Y, boxes[i].Min.Z, boxes[i].Max.X, boxes[i].Max.Y, boxes[i].Max.Z }
                                 .Select(v => v.ToString("R", System.Globalization.CultureInfo.InvariantCulture))))));
                     }
                     catch (System.IO.IOException) { }
@@ -1080,6 +1095,41 @@ namespace GeoSimplifier.SolidWorks
                         }
                     }
                 }
+                // Louvres of long slats (TAG3's radiator: one panel stayed open, its slats over the small limit): a
+                // slat's box is long one way and under 120 mm the other two. Slats with the same long axis that start
+                // and end within 20 mm, sit at the same depth (50 mm) and stack with gaps under 60 mm, at least 10
+                // in a run, are a louvre panel.
+                var slats = part.Where(i => !taken.Contains(i) && boxes[i].LongestSide >= 0.05 * partBox.LongestSide && MiddleSide(boxes[i]) < 0.12).ToList();
+                for (int la = 0; la < 3; la++)
+                    foreach (int sa in Enumerable.Range(0, 3).Where(a => a != la))
+                    {
+                        int ta = 3 - la - sa;
+                        var along = slats.Where(i => !taken.Contains(i) && boxes[i].Size[la] == boxes[i].LongestSide);
+                        foreach (var line in along.GroupBy(i => (Math.Round(boxes[i].Min[la] / 0.02), Math.Round(boxes[i].Max[la] / 0.02), Math.Round((boxes[i].Min[ta] + boxes[i].Max[ta]) / 2 / 0.05))))
+                        {
+                            var run = new List<int>();
+                            void Flush()
+                            {
+                                if (run.Count >= 10)
+                                {
+                                    var box = run.Aggregate(Core.Geometry.Aabb.Empty, (a, i) => a.Union(boxes[i]));
+                                    foreach (int i in run) taken.Add(i);
+                                    panels++;
+                                    found.Add((part.Key, run.ToList()));
+                                    var s = box.Size;
+                                    UI.PageLog.Write($"  panjur → kutu: {part.Key}, {run.Count} çıta, kutu {s.X * 1000:F0}x{s.Y * 1000:F0}x{s.Z * 1000:F0} mm");
+                                }
+                                run.Clear();
+                            }
+                            foreach (int i in line.OrderBy(i => boxes[i].Min[sa]))
+                            {
+                                if (run.Count > 0 && boxes[i].Min[sa] - boxes[run[run.Count - 1]].Max[sa] > 0.06)
+                                    Flush();
+                                run.Add(i);
+                            }
+                            Flush();
+                        }
+                    }
                 if (panels == 0)
                     UI.PageLog.Write($"  ızgara arama: {part.Key}, {part.Count()} yüzey gövdesi, {small.Count} küçük, ızgara yok");
                 else
@@ -1109,6 +1159,16 @@ namespace GeoSimplifier.SolidWorks
         /// <summary>A box's six faces as one surface body (or the solid box when they do not knit).</summary>
         private IBody2 BoxSkin(Core.Geometry.Aabb box)
         {
+            // A louvre of flat slats in one plane has a box 0 mm thick, which SOLIDWORKS cannot make (it failed the
+            // whole result on TAG3's radiator): every side is at least 2 mm.
+            const double least = 0.002;
+            var lo = new double[3]; var hi = new double[3];
+            for (int a = 0; a < 3; a++)
+            {
+                double grow = Math.Max(0, least - box.Size[a]) / 2;
+                lo[a] = box.Min[a] - grow; hi[a] = box.Max[a] + grow;
+            }
+            box = new Core.Geometry.Aabb(new Core.Geometry.Vec3(lo[0], lo[1], lo[2]), new Core.Geometry.Vec3(hi[0], hi[1], hi[2]));
             var solid = new BodyOps(_swApp).Box(box);
             if (solid == null)
                 return null;
@@ -1954,10 +2014,18 @@ namespace GeoSimplifier.SolidWorks
                 // The count stays for the summary; the bodies themselves go.
                 result.Bodies = new List<IBody2>(new IBody2[queue.Count]);
                 result.KeepAlways.Clear();
+                // GEOSIMPLIFIER_DUMP (tests only): each feature is named after the component its body came from, to
+                // trace a body of the result back to the assembly (wires left over TAG3's cylinder heads).
+                bool nameAfterOwner = System.Environment.GetEnvironmentVariable("GEOSIMPLIFIER_DUMP") is string dump && dump != "";
                 for (int i = 0; i < queue.Count; i++)
                 {
-                    if (part.CreateFeatureFromBody3((IBody2)queue[i].Copy(), false, featureOptions) != null)
+                    if (part.CreateFeatureFromBody3((IBody2)queue[i].Copy(), false, featureOptions) is IFeature feature)
+                    {
                         created++;
+                        if (nameAfterOwner && result.Owners.TryGetValue(queue[i], out var owner))
+                            try { feature.Name = $"{owner.Replace('/', '|')} #{i}"; }
+                            catch (System.Runtime.InteropServices.COMException) { }
+                    }
                     queue[i] = null;
                     if (i % 1000 == 999)
                     {

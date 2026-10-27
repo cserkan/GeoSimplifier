@@ -500,6 +500,26 @@ namespace GeoSimplifier.Probe
                         Console.WriteLine($"  {(kind == 0 ? "katı" : "yüzey")}: {((object[])b.GetFaces()).Length} yüz, hacim {((double[])b.GetMassProperties(1))?[3] * 1e9:F0} mm³, kutu {Box((double[])b.GetBodyBox())}");
                 return 0;
             }
+            int featureBoxes = Array.IndexOf(args, "--feature-boxes");
+            if (featureBoxes >= 0 && featureBoxes + 1 < args.Length)
+            {
+                // --feature-boxes <file.csv>: every body of the active part with the name of the feature that made it
+                // and its box in mm, one line each (with GEOSIMPLIFIER_DUMP set, the wrap names features after the
+                // component the body came from).
+                var pd = (IPartDoc)swApp.ActiveDoc;
+                var lines = new System.Collections.Generic.List<string>();
+                foreach (int kind in new[] { 0, 1 })
+                    foreach (IBody2 b in (object[])pd.GetBodies2(kind, true) ?? new object[0])
+                    {
+                        var bb = (double[])b.GetBodyBox();
+                        var f = ((object[])b.GetFeatures())?.OfType<IFeature>().FirstOrDefault();
+                        string name = (f?.Name ?? b.Name ?? "").Replace(',', ';');
+                        lines.Add(string.Join(",", new[] { name, kind == 0 ? "katı" : "yüzey" }.Concat(bb.Select(v => (v * 1000).ToString("F0", System.Globalization.CultureInfo.InvariantCulture)))));
+                    }
+                System.IO.File.WriteAllLines(args[featureBoxes + 1], lines);
+                Console.WriteLine($"{lines.Count} gövde yazıldı: {args[featureBoxes + 1]}");
+                return 0;
+            }
             if (Array.IndexOf(args, "--threads") >= 0)
             {
                 // Lists the leaf components of the active assembly with their faces by surface type, to find modeled
