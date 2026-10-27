@@ -183,6 +183,9 @@ namespace GeoSimplifier.SolidWorks
             // "hlshow:" runs the timed highlight sequence instead of the simulation.
             bool highlightShow = limitsMm.Contains("hlshow:");
             limitsMm = limitsMm.Replace("hlshow:", "");
+            // "pageshots:" steps through the two pages slowly, for screenshots, and cancels.
+            bool pageShots = limitsMm.Contains("pageshots:");
+            limitsMm = limitsMm.Replace("pageshots:", "");
             // "wizard:" clicks through the two pages first.
             bool wizard = limitsMm.Contains("wizard:");
             limitsMm = limitsMm.Replace("wizard:", "");
@@ -251,6 +254,26 @@ namespace GeoSimplifier.SolidWorks
                         _page.HighlightForTest(percent);
                         Gc();
                     }
+                }
+                if (pageShots)
+                {
+                    // For screenshots of the two steps: page 1 as it opens, page 2 for a solid, back, the skin chosen,
+                    // page 2 for the skin, then the page cancelled, 8 s apart.
+                    var steps = new Action[]
+                    {
+                        () => _page.StepForTest(true), () => _page.StepForTest(false), () => _page.KindForTest(true),
+                        () => _page.StepForTest(true), () => _page.CloseForTest(),
+                    };
+                    int step = 0;
+                    var timer = new System.Windows.Forms.Timer { Interval = 8000 };
+                    timer.Tick += (s, e) =>
+                    {
+                        UI.PageLog.Write($"Sayfa görüntüsü adımı {step + 1}");
+                        steps[step++]();
+                        if (step >= steps.Length) timer.Stop();
+                    };
+                    timer.Start();
+                    return;
                 }
                 if (highlightShow)
                 {

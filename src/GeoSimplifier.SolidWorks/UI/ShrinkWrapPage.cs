@@ -808,11 +808,10 @@ namespace GeoSimplifier.SolidWorks.UI
             PageLog.Write($"Simülasyon: tür {(shell ? "yüzey kabuk" : "katı")}, sayfa {_step}");
         }
 
-        /// <summary>Test hook: Next or Back, as the user would click them.</summary>
+        /// <summary>Test hook: "Ayarlara geç" or "Sonuç türü", as the user would click them.</summary>
         public void StepForTest(bool next)
         {
-            if (next) OnNextPage();
-            else OnPreviousPage();
+            OnButtonPress(next ? NextButtonId : BackButtonId);
             PageLog.Write($"Simülasyon: {(next ? "İleri" : "Geri")} → sayfa {_step} (tür grubu {(_typeGroup.Visible ? "görünür" : "gizli")}, ayarlar {(_group.Visible ? "görünür" : "gizli")})");
         }
 
