@@ -1,4 +1,4 @@
-﻿using System;
+using System;
 using System.Linq;
 using System.Runtime.InteropServices;
 using System.Windows.Forms;
@@ -40,6 +40,8 @@ namespace GeoSimplifier.SolidWorks.UI
         private const int ShellOptionId = 25;
         private const int SmallListId = 26;
         private const int SuggestLabelId = 27;
+        private const int NextButtonId = 28;
+        private const int BackButtonId = 29;
 
         // Above this many components the outer skin is suggested (TAG3 9,116; an electric motor a few dozen).
         private const int ShellSuggestComponents = 1000;
@@ -91,6 +93,8 @@ namespace GeoSimplifier.SolidWorks.UI
         private IPropertyManagerPageOption _solidOption;
         private IPropertyManagerPageOption _shellOption;
         private IPropertyManagerPageLabel _suggestLabel;
+        private IPropertyManagerPageButton _nextButton;
+        private IPropertyManagerPageButton _backButton;
         private bool _shellOutput;
         private int _step = 1;
         private IPropertyManagerPageCheckbox _singleBodyBox;
@@ -118,21 +122,21 @@ namespace GeoSimplifier.SolidWorks.UI
             int errors = 0;
             _source = _swApp.IActiveDoc2;
             int options = (int)(swPropertyManagerPageOptions_e.swPropertyManagerOptions_OkayButton |
-                                swPropertyManagerPageOptions_e.swPropertyManagerOptions_CancelButton |
-                                swPropertyManagerPageOptions_e.swPropertyManagerOptions_MultiplePages);
+                                swPropertyManagerPageOptions_e.swPropertyManagerOptions_CancelButton);
             _page = (IPropertyManagerPage2)_swApp.CreatePropertyManagerPage("Shrink Wrap", options, this, ref errors);
             if (_page == null)
                 throw new InvalidOperationException("Could not create the PropertyManager page (error " + errors + ").");
 
-            // Page 1: solid or outer skin. The PropertyManager has a single page, so Next and Back show and hide
-            // the groups.
+            // Page 1: solid or outer skin. The PropertyManager has a single page; a button on each step shows and hides
+            // the groups. (With SOLIDWORKS' own page arrows, the arrow that does not apply stayed on the page, greyed out:
+            // Serkan wanted it gone, and they can only be disabled, not hidden.)
             _typeGroup = (IPropertyManagerPageGroup)_page.AddGroupBox(TypeGroupId, "Sonuç türü",
                 (int)(swAddGroupBoxOptions_e.swGroupBoxOptions_Visible | swAddGroupBoxOptions_e.swGroupBoxOptions_Expanded));
             _solidOption = (IPropertyManagerPageOption)AddControl(_typeGroup, SolidOptionId, swPropertyManagerPageControlType_e.swControlType_Option,
-                "Katı", "İçi dolu, delikleri kapalı katı gövde(ler). Ardından İleri ile ayarlara geçin.");
+                "Katı", "İçi dolu, delikleri kapalı katı gövde(ler). Ardından \"Ayarlara geç\" ile ayarlara geçin.");
             _shellOption = (IPropertyManagerPageOption)AddControl(_typeGroup, ShellOptionId, swPropertyManagerPageControlType_e.swControlType_Option,
                 "Yüzey kabuk (yalnız dış yüzler)",
-                "Yalnız dışarıdan görünen yüzler, yüzey gövdesi olarak. En hafif sonuç; yüzeylerden oluşan (STEP) modeller için de. Ardından İleri ile ayarlara geçin.");
+                "Yalnız dışarıdan görünen yüzler, yüzey gövdesi olarak. En hafif sonuç; yüzeylerden oluşan (STEP) modeller için de. Ardından \"Ayarlara geç\" ile ayarlara geçin.");
             // The kind suited to the model is suggested and ticked (Serkan: very large assemblies such as TAG3 and V12
             // as an outer skin, an electric motor as a solid). Only the component count is read here: it is instant,
             // and opening the command must stay under a second.
@@ -146,9 +150,13 @@ namespace GeoSimplifier.SolidWorks.UI
             PageLog.Write($"Öneri: {components} bileşen → {(suggestShell ? "yüzey kabuk" : "katı")} ({watch.Elapsed.TotalMilliseconds:F0} ms)");
             _shellOutput = suggestShell;
             (_shellOutput ? _shellOption : _solidOption).Checked = true;
+            _nextButton = (IPropertyManagerPageButton)AddControl(_typeGroup, NextButtonId, swPropertyManagerPageControlType_e.swControlType_Button,
+                "Ayarlara geç >", "Seçilen sonuç türünün ayarlarını gösterir.");
 
             var group = _group = (IPropertyManagerPageGroup)_page.AddGroupBox(GroupId, "Ayarlar",
                 (int)(swAddGroupBoxOptions_e.swGroupBoxOptions_Visible | swAddGroupBoxOptions_e.swGroupBoxOptions_Expanded));
+            _backButton = (IPropertyManagerPageButton)AddControl(group, BackButtonId, swPropertyManagerPageControlType_e.swControlType_Button,
+                "< Sonuç türü", "Sonuç türü seçimine döner; ayarlar korunur.");
 
             // The preview is computed only while this is checked; it starts unchecked, so opening the command computes nothing.
             _previewBox = (IPropertyManagerPageCheckbox)AddControl(group, PreviewId, swPropertyManagerPageControlType_e.swControlType_Checkbox,
@@ -351,13 +359,6 @@ namespace GeoSimplifier.SolidWorks.UI
             _group.Caption = _shellOutput ? "Ayarlar: yüzey kabuk" : "Ayarlar: katı";
             // "Tek gövdeye zorla" belongs to the solid result only (Serkan): a skin's imported surfaces do not knit.
             ((IPropertyManagerPageControl)_singleBodyBox).Visible = !_shellOutput;
-            // There are two pages: no "next" on the last, no "back" on the first.
-            try
-            {
-                _page?.EnableButton((int)swPropertyManagerPageButtons_e.swPropertyManagerPageButton_Next, !settings);
-                _page?.EnableButton((int)swPropertyManagerPageButtons_e.swPropertyManagerPageButton_Back, settings);
-            }
-            catch (System.Runtime.InteropServices.COMException) { }
         }
 
         private static object AddControl(IPropertyManagerPageGroup group, int id, swPropertyManagerPageControlType_e type, string caption, string tip)
@@ -762,7 +763,11 @@ namespace GeoSimplifier.SolidWorks.UI
             _outputNewConfig = Id == NewConfigId;
             UpdateEnabled();
         }
-        public void OnButtonPress(int Id) { }
+        public void OnButtonPress(int Id)
+        {
+            if (Id == NextButtonId) OnNextPage();
+            else if (Id == BackButtonId) OnPreviousPage();
+        }
         public void OnTextboxChanged(int Id, string Text)
         {
             PageLog.Write($"OnTextboxChanged {Id}: {Text}");
