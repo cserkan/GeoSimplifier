@@ -349,6 +349,8 @@ namespace GeoSimplifier.SolidWorks.UI
             _excludeGroup.Visible = settings;
             _outputGroup.Visible = settings;
             _group.Caption = _shellOutput ? "Ayarlar: yüzey kabuk" : "Ayarlar: katı";
+            // "Tek gövdeye zorla" belongs to the solid result only (Serkan): a skin's imported surfaces do not knit.
+            ((IPropertyManagerPageControl)_singleBodyBox).Visible = !_shellOutput;
             // There are two pages: no "next" on the last, no "back" on the first.
             try
             {
@@ -428,7 +430,7 @@ namespace GeoSimplifier.SolidWorks.UI
             FillCavities = true,
             MaxEmbossHeight = _embossValue,
             MinPartPercent = _smallPartsCheck.Checked ? _smallPartsValue : 0,
-            ForceSingleBody = _singleBodyBox.Checked,
+            ForceSingleBody = !_shellOutput && _singleBodyBox.Checked,
             SurfaceShell = _shellOutput,
         };
 
@@ -709,7 +711,7 @@ namespace GeoSimplifier.SolidWorks.UI
             FillCavities = true,
             MaxEmbossHeight = _embossHeight,
             MinPartPercent = _removeSmallParts ? _smallParts : 0,
-            ForceSingleBody = _forceSingleBody,
+            ForceSingleBody = !_surfaceShell && _forceSingleBody,
             SurfaceShell = _surfaceShell,
         };
 

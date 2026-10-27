@@ -418,8 +418,8 @@ namespace GeoSimplifier.SolidWorks
         /// The outer skin of a model made mostly of surface bodies, without making solids: small parts are left
         /// out (each part measured as a whole), then every face of every body, solid or surface, is tested with
         /// rays from outside. Surface bodies with a face seen from outside are kept as they are; of the solids only
-        /// the faces seen are kept, copied as surfaces. With "Tek gövdeye zorla" each part's kept surfaces are knitted
-        /// where SOLIDWORKS manages to.
+        /// the faces seen are kept, copied as surfaces. The result is always many bodies: "Tek gövdeye zorla" is not offered
+        /// for a skin (Serkan), the imported surfaces did not knit anyway.
         /// </summary>
         private void Skin(WrapResult result, ShrinkWrapOptions options, List<IBody2> solids, List<string> solidOwners,
                           List<IBody2> sheets, List<string> sheetOwners, Action<int, int> report,
@@ -435,7 +435,7 @@ namespace GeoSimplifier.SolidWorks
             int solidCount = solids.Count;
             result.SourceBodies = bodies.Count;
             result.IsSkin = true;
-            result.ManyBodiesWanted = !options.ForceSingleBody;
+            result.ManyBodiesWanted = true;
 
             var boxes = bodies.Select(BodyOps.AnyBounds).ToList();
             var model = boxes.Aggregate(Core.Geometry.Aabb.Empty, (a, b) => a.Union(b));
@@ -812,32 +812,6 @@ namespace GeoSimplifier.SolidWorks
                 UI.PageLog.Write($"  çok yüzeyli parçalar kutuya çevrildi: {replaced.Count} parça, {boxedSheets} yüzey yerine (sınır {MaxSheetsPerPart})");
             }
 
-            if (options.ForceSingleBody)
-            {
-                var modeler = (IModeler)_swApp.GetModeler();
-                var knitted = new List<(string, IBody2)>();
-                int joined = 0;
-                foreach (var group in output.GroupBy(o => o.owner ?? ""))
-                {
-                    var parts = group.Select(g => g.body).ToList();
-                    int error = 0;
-                    List<IBody2> sewn = null;
-                    if (parts.Count > 1)
-                    {
-                        try { sewn = ((object[])modeler.CreateBodiesFromSheets2(parts.Select(p => (object)p.Copy()).ToArray(), SheetBodiesOnly, 1e-4, ref error))?.OfType<IBody2>().ToList(); }
-                        catch (System.Runtime.InteropServices.COMException) { }
-                    }
-                    if (sewn != null && sewn.Count > 0 && sewn.Count < parts.Count)
-                    {
-                        joined += parts.Count - sewn.Count;
-                        knitted.AddRange(sewn.Select(s => (group.Key, s)));
-                    }
-                    else
-                        knitted.AddRange(parts.Select(p => (group.Key, p)));
-                }
-                UI.PageLog.Write($"  dikme: {output.Count} yüzey → {knitted.Count} ({joined} birleşti)");
-                output = knitted;
-            }
             // Large parts with nothing in the result, and why: for tracing a part that goes missing.
             {
                 var inOutput = new HashSet<string>(output.Select(o => o.owner ?? ""));
