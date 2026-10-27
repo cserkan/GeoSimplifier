@@ -1,4 +1,4 @@
-﻿using System;
+using System;
 using System.Collections.Generic;
 using System.Diagnostics;
 using System.Linq;
@@ -456,6 +456,21 @@ namespace GeoSimplifier.SolidWorks
                     tri.AddRange(new[] { (float)p.X, (float)p.Y, (float)p.Z });
                 cageBoxes.Add((cage.group, skin, tri));
             }
+            // Grilles inside one part (a radiator's fin pack imported as thousands of small surfaces) are deleted and
+            // a box stands in their place, on the grille's own bounds (Serkan): dense regions of the part's small
+            // surfaces, so the frame, plates and pipes around it, all large, stay as they are.
+            foreach (var (part, region) in GrilleRegions(boxes, owners, keep.Where(i => i >= solidCount).ToList()))
+            {
+                var gone = new HashSet<int>(region);
+                keep = keep.Where(i => !gone.Contains(i)).ToList();
+                var regionBox = region.Aggregate(Core.Geometry.Aabb.Empty, (a, i) => a.Union(boxes[i]));
+                var skin = BoxSkin(regionBox);
+                if (skin == null) continue;
+                var tri = new List<float>();
+                foreach (var p in BoxTriangles(regionBox))
+                    tri.AddRange(new[] { (float)p.X, (float)p.Y, (float)p.Z });
+                cageBoxes.Add((part, skin, tri));
+            }
             if (options.MinPartPercent > 0)
             {
                 double limit = options.MinPartPercent / 100 * (model.Max - model.Min).Length;
@@ -874,6 +889,9 @@ namespace GeoSimplifier.SolidWorks
             var parts = candidates.Where(i => !string.IsNullOrEmpty(owners[i]) && !boxes[i].IsEmpty)
                 .GroupBy(i => owners[i]).Select(g => (part: g.Key, members: g.ToList(), box: g.Aggregate(Core.Geometry.Aabb.Empty, (a, i) => a.Union(boxes[i])))).ToList();
             int allParts = parts.Count;
+            var taken = new HashSet<string>();
+            // First the parts' own parent assemblies, whole: cages and grilles become boxes, bundles are deleted
+            // with everything in them (V12's fan cages and engine harness, TAG3's six SCHEME harnesses).
             foreach (var group in parts.Where(p => p.part.Contains("/")).GroupBy(p => p.part.Substring(0, p.part.LastIndexOf('/'))))
             {
                 var list = group.ToList();
@@ -886,16 +904,14 @@ namespace GeoSimplifier.SolidWorks
                 if (longest <= 0 || volume <= 0)
                     continue;
                 // Rods and wires: thin in two directions (a sheet-metal housing of thin plates is not a cage).
-                int thin = list.Count(p =>
-                {
-                    var sides = new[] { p.box.Size.X, p.box.Size.Y, p.box.Size.Z }.OrderBy(v => v).ToArray();
-                    return sides[1] < 0.03 * longest;
-                });
+                int thin = list.Count(p => MiddleSide(p.box) < 0.03 * longest);
                 double filled = list.Sum(p => p.box.Size.X * p.box.Size.Y * p.box.Size.Z);
                 bool block = list.Any(p => p.box.Size.X * p.box.Size.Y * p.box.Size.Z > 0.1 * volume);
                 if (thin < 0.9 * list.Count || block)
                     continue;
-                if (filled > 0.1 * volume)
+                // Rods together fill much of their box when they are a dense grid, a radiator's grille (TAG3's
+                // 6425356: 33 %); a housing of plates never gets here, its plates are not thin both ways.
+                if (filled > 0.5 * volume)
                 {
                     UI.PageLog.Write($"  kafes/ızgara değil: {group.Key}, {list.Count} ince parça ama kutusunun %{100 * filled / volume:F0}'ini dolduruyor");
                     continue;
@@ -908,10 +924,10 @@ namespace GeoSimplifier.SolidWorks
                 double diag = (box.Max - box.Min).Length;
                 var inside = parts.Where(p => !own.Contains(p.part) && (p.box.Max - p.box.Min).Length > 0.05 * diag &&
                                               Inside(box, (p.box.Min + p.box.Max) * 0.5)).ToList();
-                var ratios = list.Select(p => { var s = new[] { p.box.Size.X, p.box.Size.Y, p.box.Size.Z }.OrderBy(v => v).ToArray(); return s[1] / Math.Max(s[2], 1e-12); })
-                    .OrderBy(v => v).ToList();
+                var ratios = list.Select(p => Squat(p.box)).OrderBy(v => v).ToList();
                 double squat = ratios[ratios.Count / 2];
                 var size = box.Size;
+                foreach (var p in list) taken.Add(p.part);
                 if (inside.Count > 0.25 * list.Count || squat < BundleSquat)
                 {
                     bundles.Add((group.Key, list.SelectMany(p => p.members).ToList(), box));
@@ -920,12 +936,167 @@ namespace GeoSimplifier.SolidWorks
                     continue;
                 }
                 // The parts inside the cage go with it.
+                foreach (var p in inside) taken.Add(p.part);
                 cages.Add((group.Key, list.SelectMany(p => p.members).Concat(inside.SelectMany(p => p.members)).ToList(), box));
                 UI.PageLog.Write($"  kafes/ızgara: {group.Key}, {list.Count} ince parça, kutu {size.X * 1000:F0}x{size.Y * 1000:F0}x{size.Z * 1000:F0} mm, " +
                                  $"doluluk %{100 * filled / volume:F0}, içinde {inside.Count} parça, üye oranı {squat:F2} → tek kutu");
             }
+            // Then the wires left in harnesses the rule above does not take whole (TAG3's wiring along the cylinder
+            // heads: harness assemblies holding connectors, brackets and boxes too, their wires split over
+            // sub-assemblies of a few each). At every assembly level, deepest first: a group with at least 20
+            // wires, at least half its parts, running across the machine or curved, loses its wires only. A wire is
+            // thin in two directions for its group, under 40 mm thick (pipes are thicker) and at least 50 mm long
+            // (bolts and clips are short); connectors, blocks and pipes stay.
+            var levels = new Dictionary<string, List<(string part, List<int> members, Core.Geometry.Aabb box)>>();
+            foreach (var p in parts.Where(p => !taken.Contains(p.part)))
+                for (int slash = p.part.IndexOf('/'); slash > 0; slash = p.part.IndexOf('/', slash + 1))
+                {
+                    string key = p.part.Substring(0, slash);
+                    if (!levels.TryGetValue(key, out var l)) levels[key] = l = new List<(string, List<int>, Core.Geometry.Aabb)>();
+                    l.Add(p);
+                }
+            int nearMisses = 0;
+            foreach (var level in levels.OrderByDescending(kv => kv.Key.Count(c => c == '/')).ThenBy(kv => kv.Key, StringComparer.Ordinal))
+            {
+                var list = level.Value.Where(p => !taken.Contains(p.part)).ToList();
+                if (list.Count < 20 || list.Count > allParts / 2)
+                    continue;
+                if (exclusions != null && exclusions.AnyUnder(level.Key))
+                    continue;
+                var box = list.Aggregate(Core.Geometry.Aabb.Empty, (a, p) => a.Union(p.box));
+                double longest = box.LongestSide;
+                if (longest <= 0)
+                    continue;
+                var wires = list.Where(p => MiddleSide(p.box) < Math.Min(0.03 * longest, WireThickness) && p.box.LongestSide >= WireLength).ToList();
+                if (wires.Count < 20)
+                    continue;
+                var own = new HashSet<string>(list.Select(p => p.part));
+                double diag = (box.Max - box.Min).Length;
+                int inside = parts.Count(p => !own.Contains(p.part) && (p.box.Max - p.box.Min).Length > 0.05 * diag && Inside(box, (p.box.Min + p.box.Max) * 0.5));
+                var ratios = wires.Select(p => Squat(p.box)).OrderBy(v => v).ToList();
+                double squat = ratios[ratios.Count / 2];
+                var size = box.Size;
+                if (wires.Count < 0.5 * list.Count || !(inside > 0.25 * wires.Count || squat < BundleSquat))
+                {
+                    if (nearMisses++ < 40)
+                        UI.PageLog.Write($"  tel grubu değil: {level.Key}, {list.Count} parça, {wires.Count} tel, içinde {inside} başka parça, üye oranı {squat:F2}, " +
+                                         $"kutu {size.X * 1000:F0}x{size.Y * 1000:F0}x{size.Z * 1000:F0} mm, orta {(box.Min.X + box.Max.X) * 500:F0},{(box.Min.Y + box.Max.Y) * 500:F0},{(box.Min.Z + box.Max.Z) * 500:F0}");
+                    continue;
+                }
+                foreach (var p in wires) taken.Add(p.part);
+                var wireBox = wires.Aggregate(Core.Geometry.Aabb.Empty, (a, p) => a.Union(p.box));
+                bundles.Add((level.Key, wires.SelectMany(p => p.members).ToList(), wireBox));
+                UI.PageLog.Write($"  kablo telleri: {level.Key}, {list.Count} parçanın {wires.Count} teli silinir, kutu {size.X * 1000:F0}x{size.Y * 1000:F0}x{size.Z * 1000:F0} mm, " +
+                                 $"içinde {inside} başka parça, üye oranı {squat:F2}, orta {(box.Min.X + box.Max.X) * 500:F0},{(box.Min.Y + box.Max.Y) * 500:F0},{(box.Min.Z + box.Max.Z) * 500:F0}");
+            }
             return cages;
         }
+
+        /// <summary>
+        /// Grilles inside one part (a radiator imported as tens of thousands of small surfaces): its panels are thin
+        /// dense layers of small surfaces (under 5 % of the part's longest side). Along each axis the surfaces'
+        /// middles are counted in 20 mm slices; a slice holding at least 4 times the median and 300 is a layer,
+        /// with the slices next to it (louvres slant). In its plane, the layer's surfaces are put in 100 mm cells;
+        /// touching cells of at least 4 form a panel, a grille when it has at least 100 surfaces, both sides at
+        /// least 150 mm, one at least 300 mm, and covers at least half its rectangle (a perforated flange or a row
+        /// of rivets does not). Everything else of the part, its frame, plates and pipes, keeps its geometry
+        /// (Serkan: "only the grilles"; one box over TAG3's radiator region of 946x2848x2184 mm was too coarse).
+        /// Returns the surfaces of each panel.
+        /// </summary>
+        private static List<(string part, List<int> bodies)> GrilleRegions(List<Core.Geometry.Aabb> boxes, List<string> owners, List<int> sheets)
+        {
+            var found = new List<(string, List<int>)>();
+            const double slice = 0.02, cell = 0.1;
+            foreach (var part in sheets.Where(i => !string.IsNullOrEmpty(owners[i]) && !boxes[i].IsEmpty).GroupBy(i => owners[i]))
+            {
+                if (part.Count() < GrillePartSurfaces)
+                    continue;
+                var partBox = part.Aggregate(Core.Geometry.Aabb.Empty, (a, i) => a.Union(boxes[i]));
+                var small = part.Where(i => boxes[i].LongestSide < 0.05 * partBox.LongestSide).ToList();
+                // GEOSIMPLIFIER_DUMP (tests only): the boxes of a big part's small surfaces, to tune grille finding
+                // without SOLIDWORKS.
+                if (System.Environment.GetEnvironmentVariable("GEOSIMPLIFIER_DUMP") is string dump && dump != "" && small.Count >= 5000)
+                    try
+                    {
+                        System.IO.File.WriteAllLines(System.IO.Path.Combine(dump, $"grille_{Math.Abs(part.Key.GetHashCode())}.csv"),
+                            new[] { "# " + part.Key }.Concat(small.Select(i => string.Join(",", new[] { boxes[i].Min.X, boxes[i].Min.Y, boxes[i].Min.Z, boxes[i].Max.X, boxes[i].Max.Y, boxes[i].Max.Z }
+                                .Select(v => v.ToString("R", System.Globalization.CultureInfo.InvariantCulture))))));
+                    }
+                    catch (System.IO.IOException) { }
+                var taken = new HashSet<int>();
+                int panels = 0;
+                for (int axis = 0; axis < 3; axis++)
+                {
+                    int ua = (axis + 1) % 3, va = (axis + 2) % 3;
+                    double Mid(int i, int a) => (boxes[i].Min[a] + boxes[i].Max[a]) / 2;
+                    double start = small.Min(i => Mid(i, axis));
+                    var counts = small.GroupBy(i => (int)Math.Floor((Mid(i, axis) - start) / slice)).ToDictionary(g => g.Key, g => g.Count());
+                    var sorted = counts.Values.OrderBy(v => v).ToList();
+                    double limit = Math.Max(300, 4 * sorted[sorted.Count / 2]);
+                    var layers = new List<(int lo, int hi)>();
+                    foreach (int s in counts.Keys.Where(k => counts[k] >= limit).OrderBy(k => k))
+                    {
+                        if (layers.Count > 0 && s <= layers[layers.Count - 1].hi + 1) layers[layers.Count - 1] = (layers[layers.Count - 1].lo, s);
+                        else layers.Add((s, s));
+                    }
+                    foreach (var (lo, hi) in layers)
+                    {
+                        double from = start + (lo - 1) * slice, to = start + (hi + 2) * slice;
+                        var inLayer = small.Where(i => !taken.Contains(i) && boxes[i].Min[axis] >= from && boxes[i].Max[axis] <= to).ToList();
+                        var cells = inLayer.GroupBy(i => ((long)Math.Floor(Mid(i, ua) / cell), (long)Math.Floor(Mid(i, va) / cell)))
+                            .Where(g => g.Count() >= 4).ToDictionary(g => g.Key, g => g.ToList());
+                        var seen = new HashSet<(long, long)>();
+                        foreach (var first in cells.Keys.ToList())
+                        {
+                            if (!seen.Add(first)) continue;
+                            var panel = new List<int>();
+                            int panelCells = 0;
+                            var queue = new Queue<(long, long)>();
+                            queue.Enqueue(first);
+                            while (queue.Count > 0)
+                            {
+                                var c = queue.Dequeue();
+                                panelCells++;
+                                panel.AddRange(cells[c]);
+                                for (int du = -1; du <= 1; du++)
+                                    for (int dv = -1; dv <= 1; dv++)
+                                    {
+                                        var nb = (c.Item1 + du, c.Item2 + dv);
+                                        if (cells.ContainsKey(nb) && seen.Add(nb))
+                                            queue.Enqueue(nb);
+                                    }
+                            }
+                            var box = panel.Aggregate(Core.Geometry.Aabb.Empty, (a, i) => a.Union(boxes[i]));
+                            double su = box.Size[ua], sv = box.Size[va];
+                            double cover = panelCells / Math.Max(1.0, Math.Ceiling(su / cell) * Math.Ceiling(sv / cell));
+                            if (panel.Count < 100 || Math.Min(su, sv) < 0.15 || Math.Max(su, sv) < 0.3 || cover < 0.5)
+                                continue;
+                            foreach (int i in panel) taken.Add(i);
+                            panels++;
+                            found.Add((part.Key, panel));
+                            var s = box.Size;
+                            UI.PageLog.Write($"  ızgara → kutu: {part.Key}, {panel.Count}/{part.Count()} yüzey gövdesi, kutu {s.X * 1000:F0}x{s.Y * 1000:F0}x{s.Z * 1000:F0} mm, " +
+                                             $"{"XYZ"[axis]} yönünde {s[axis] * 1000:F0} mm, doluluk %{100 * cover:F0}");
+                        }
+                    }
+                }
+                if (panels == 0)
+                    UI.PageLog.Write($"  ızgara arama: {part.Key}, {part.Count()} yüzey gövdesi, {small.Count} küçük, ızgara yok");
+                else
+                    UI.PageLog.Write($"  ızgara arama: {part.Key}, {panels} panel, {taken.Count}/{small.Count} küçük yüzey kutuya döndü, kalanı olduğu gibi");
+            }
+            return found;
+        }
+
+        // A wire of a harness: thinner than a pipe, longer than a bolt or clip.
+        private const double WireThickness = 0.04;
+        private const double WireLength = 0.05;
+
+        /// <summary>The middle one of a box's three sides.</summary>
+        private static double MiddleSide(Core.Geometry.Aabb b) => new[] { b.Size.X, b.Size.Y, b.Size.Z }.OrderBy(v => v).ElementAt(1);
+
+        /// <summary>A box's middle side over its longest: low for rods and wires, near 1 for squat pieces.</summary>
+        private static double Squat(Core.Geometry.Aabb b) => MiddleSide(b) / Math.Max(b.LongestSide, 1e-12);
 
         private static bool Inside(Core.Geometry.Aabb box, Core.Geometry.Vec3 p) =>
             p.X >= box.Min.X && p.X <= box.Max.X && p.Y >= box.Min.Y && p.Y <= box.Max.Y && p.Z >= box.Min.Z && p.Z <= box.Max.Z;
