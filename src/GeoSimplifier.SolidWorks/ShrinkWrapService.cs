@@ -971,8 +971,12 @@ namespace GeoSimplifier.SolidWorks
                     l.Add(p);
                 }
             int nearMisses = 0;
+            var caged = cages.Select(c => c.Item1).ToList();
             foreach (var level in levels.OrderByDescending(kv => kv.Key.Count(c => c == '/')).ThenBy(kv => kv.Key, StringComparer.Ordinal))
             {
+                // Nothing of an assembly holding a cage is deleted: the cage's box stands for it.
+                if (caged.Any(c => c == level.Key || c.StartsWith(level.Key + "/", StringComparison.Ordinal)))
+                    continue;
                 var list = level.Value.Where(p => !taken.Contains(p.part)).ToList();
                 if (list.Count < 20 || list.Count > allParts / 2)
                     continue;
@@ -982,6 +986,30 @@ namespace GeoSimplifier.SolidWorks
                 double longest = box.LongestSide;
                 if (longest <= 0)
                     continue;
+                // A whole harness of curved wires with its connectors and clips (TAG3's SCHEME15291, the wiring over
+                // the cylinder heads: 136 of 188 parts thin, members' median 0.76, 120 other parts in its box) goes
+                // whole: seven in ten of its parts thin for the group, elongated, no big block among them, and running
+                // across the machine. An assembly holding a cage is never one (V12's fan guard 1005363977: its cage
+                // boxed, its deeper parts would have gone).
+                if (!caged.Any(c => c == level.Key || c.StartsWith(level.Key + "/", StringComparison.Ordinal)))
+                {
+                    double volume = box.Size.X * box.Size.Y * box.Size.Z;
+                    int thinAll = list.Count(p => MiddleSide(p.box) < 0.03 * longest);
+                    var squatAll = list.Select(p => Squat(p.box)).OrderBy(v => v).ToList();
+                    bool blockAll = list.Any(p => p.box.Size.X * p.box.Size.Y * p.box.Size.Z > 0.1 * volume);
+                    var ownAll = new HashSet<string>(list.Select(p => p.part));
+                    double diagAll = (box.Max - box.Min).Length;
+                    int insideAll = parts.Count(p => !ownAll.Contains(p.part) && (p.box.Max - p.box.Min).Length > 0.05 * diagAll && Inside(box, (p.box.Min + p.box.Max) * 0.5));
+                    if (volume > 0 && thinAll >= 0.7 * list.Count && squatAll[squatAll.Count / 2] < BundleSquat && !blockAll && insideAll > 0.25 * list.Count)
+                    {
+                        foreach (var p in list) taken.Add(p.part);
+                        bundles.Add((level.Key, list.SelectMany(p => p.members).ToList(), box));
+                        var bs = box.Size;
+                        UI.PageLog.Write($"  kablo demeti: {level.Key}, {list.Count} parçanın {thinAll} tanesi ince, kutu {bs.X * 1000:F0}x{bs.Y * 1000:F0}x{bs.Z * 1000:F0} mm, " +
+                                         $"içinde {insideAll} başka parça, üye oranı {squatAll[squatAll.Count / 2]:F2} → bütün olarak silinir");
+                        continue;
+                    }
+                }
                 var wires = list.Where(p => MiddleSide(p.box) < Math.Min(0.03 * longest, WireThickness) && p.box.LongestSide >= WireLength).ToList();
                 if (wires.Count < 20)
                     continue;
@@ -2150,9 +2178,9 @@ namespace GeoSimplifier.SolidWorks
         }
         /// <summary>
         /// The result's bodies smaller than <paramref name="fraction"/> of its size (box diagonals, as SOLIDWORKS'
-        /// "Select Bodies By Size" measures) are dropped. A surface touching a surface that stays is kept: a large
-        /// imported panel is often many small patches, and dropping them would open holes in it. The largest body
-        /// and <paramref name="keep"/> always stay.
+        /// "Select Bodies By Size" measures) are dropped, touching others or not (Serkan: keeping small surfaces
+        /// whose boxes met a large one left 3,550 of TAG3's 5,031). The largest body and <paramref name="keep"/>
+        /// (excluded parts, cage and grille boxes) always stay.
         /// </summary>
         private static List<IBody2> DropSmall(List<IBody2> bodies, double fraction, ICollection<IBody2> keep)
         {
@@ -2163,52 +2191,11 @@ namespace GeoSimplifier.SolidWorks
             var model = boxes.Aggregate(Core.Geometry.Aabb.Empty, (a, b) => a.Union(b));
             double limit = fraction * (model.Max - model.Min).Length;
             int largest = Enumerable.Range(0, bodies.Count).OrderByDescending(i => (boxes[i].Max - boxes[i].Min).Length).First();
-            bool Sheet(int i) => bodies[i].GetType() == (int)swBodyType_e.swSheetBody;
             var small = new HashSet<int>(Enumerable.Range(0, bodies.Count).Where(i => i != largest && !keep.Contains(bodies[i]) &&
                 !boxes[i].IsEmpty && (boxes[i].Max - boxes[i].Min).Length < limit));
-            // Small surfaces joined to a large one, directly or through other small ones, stay with it.
-            var stays = new HashSet<int>();
-            var bigSheets = Enumerable.Range(0, bodies.Count).Where(i => !small.Contains(i) && Sheet(i)).ToList();
-            var grid = new Dictionary<(long, long, long), List<int>>();
-            double cell = Math.Max(limit, 1e-3);
-            (long, long, long) Key(Core.Geometry.Vec3 p) => ((long)Math.Floor(p.X / cell), (long)Math.Floor(p.Y / cell), (long)Math.Floor(p.Z / cell));
-            foreach (int i in small.Where(Sheet))
-            {
-                var k = Key((boxes[i].Min + boxes[i].Max) * 0.5);
-                if (!grid.TryGetValue(k, out var list)) grid[k] = list = new List<int>();
-                list.Add(i);
-            }
-            bool Touch(Core.Geometry.Aabb a, Core.Geometry.Aabb b) =>
-                a.Min.X <= b.Max.X + 5e-4 && b.Min.X <= a.Max.X + 5e-4 && a.Min.Y <= b.Max.Y + 5e-4 && b.Min.Y <= a.Max.Y + 5e-4 &&
-                a.Min.Z <= b.Max.Z + 5e-4 && b.Min.Z <= a.Max.Z + 5e-4;
-            IEnumerable<int> SmallNear(Core.Geometry.Aabb box)
-            {
-                var lo = Key(box.Min - new Core.Geometry.Vec3(cell, cell, cell));
-                var hi = Key(box.Max + new Core.Geometry.Vec3(cell, cell, cell));
-                // A large box spans many cells; it is checked against every small sheet instead.
-                if ((hi.Item1 - lo.Item1 + 1) * (hi.Item2 - lo.Item2 + 1) * (hi.Item3 - lo.Item3 + 1) > grid.Count)
-                    return grid.Values.SelectMany(v => v).Where(j => Touch(box, boxes[j]));
-                var found = new List<int>();
-                for (long x = lo.Item1; x <= hi.Item1; x++)
-                    for (long y = lo.Item2; y <= hi.Item2; y++)
-                        for (long z = lo.Item3; z <= hi.Item3; z++)
-                            if (grid.TryGetValue((x, y, z), out var list))
-                                found.AddRange(list.Where(j => Touch(box, boxes[j])));
-                return found;
-            }
-            var queue = new Queue<int>();
-            foreach (int b in bigSheets)
-                foreach (int j in SmallNear(boxes[b]))
-                    if (stays.Add(j)) queue.Enqueue(j);
-            while (queue.Count > 0)
-            {
-                int i = queue.Dequeue();
-                foreach (int j in SmallNear(boxes[i]))
-                    if (stays.Add(j)) queue.Enqueue(j);
-            }
-            var result = Enumerable.Range(0, bodies.Count).Where(i => !small.Contains(i) || stays.Contains(i)).Select(i => bodies[i]).ToList();
-            UI.PageLog.Write($"  son temizlik: {bodies.Count} gövde → {result.Count} (%{fraction * 100:0.#} = {limit * 1000:F0} mm altı {small.Count} küçük gövde, " +
-                             $"{stays.Count} tanesi büyük bir yüzeye bağlı olduğu için kaldı; {watch.Elapsed.TotalSeconds:F1} sn)");
+            var result = Enumerable.Range(0, bodies.Count).Where(i => !small.Contains(i)).Select(i => bodies[i]).ToList();
+            UI.PageLog.Write($"  son temizlik: {bodies.Count} gövde → {result.Count} (%{fraction * 100:0.#} = {limit * 1000:F0} mm altı {small.Count} küçük gövde silindi; " +
+                             $"{watch.Elapsed.TotalSeconds:F1} sn)");
             return result;
         }
 
