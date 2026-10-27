@@ -23,7 +23,7 @@ namespace GeoSimplifier.Core.Geometry
         /// Louvres are made of long slats (one of TAG3's radiator panels stayed open, its slats over the small limit):
         /// a slat's box is long one way and under 120 mm the other two; slats with the same long axis that start and
         /// end within 20 mm, sit at the same depth (50 mm) and stack with gaps under 60 mm, at least 10 in a run, are a
-        /// louvre panel.
+        /// louvre panel when it is at least 300 mm long.
         /// Returns the surfaces (indices into <paramref name="boxes"/>) of each.
         /// </summary>
         public static List<(string part, List<int> bodies)> Find(IReadOnlyList<Aabb> boxes, IReadOnlyList<string> owners,
@@ -111,9 +111,11 @@ namespace GeoSimplifier.Core.Geometry
                             var run = new List<int>();
                             void Flush()
                             {
-                                if (run.Count >= 10)
+                                // Radiator-sized only, as the panels: on TAG3 the slats of small electrical parts
+                                // made 429 "louvres" of 25 mm, kept as boxes past the last clean-up.
+                                var box = run.Aggregate(Aabb.Empty, (a, i) => a.Union(boxes[i]));
+                                if (run.Count >= 10 && box.LongestSide >= 0.3)
                                 {
-                                    var box = run.Aggregate(Aabb.Empty, (a, i) => a.Union(boxes[i]));
                                     foreach (int i in run) taken.Add(i);
                                     panels++;
                                     found.Add((part.Key, run.ToList()));

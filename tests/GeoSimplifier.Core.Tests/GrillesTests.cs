@@ -28,6 +28,22 @@ namespace GeoSimplifier.Core.Tests
         }
 
         [Fact]
+        public void Slats_of_a_small_part_are_no_louvre_but_a_radiators_are()
+        {
+            // 20 slats 25 mm long stacked 2 mm apart (a connector's fins), and 20 slats 600 mm long (a louvre).
+            List<Aabb> Slats(double length) => Enumerable.Range(0, 20).Select(i => Box(0, i * 0.003, 0, length, i * 0.003 + 0.001, 0.02)).ToList();
+            foreach (var (length, louvres) in new[] { (0.025, 0), (0.6, 1) })
+            {
+                var boxes = Slats(length);
+                // 200 surfaces make the part big enough to search; the rest are its body, one large surface each.
+                boxes.AddRange(Enumerable.Range(0, 180).Select(_ => Box(0, 0, 0, length, 0.1, 0.02)));
+                var owners = boxes.Select(_ => "part-1").ToList();
+                var found = Grilles.Find(boxes, owners, Enumerable.Range(0, boxes.Count), 200);
+                Assert.Equal(louvres, found.Count);
+            }
+        }
+
+        [Fact]
         public void A_dense_flat_layer_of_small_surfaces_is_one_panel_and_the_frame_stays()
         {
             // A 600 x 600 mm grille of 10 mm squares in the plane x = 0, inside a 2 m frame of four long bars.
