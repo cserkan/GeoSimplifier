@@ -168,6 +168,12 @@ namespace GeoSimplifier.SolidWorks
         /// <summary>How long the solids of a surface model's skin are worked on in all, most visible first.</summary>
         public const double SkinSolidSeconds = 300;
 
+        /// <summary>A seen solid with more faces than this is detailed enough to stand in as its rough outline.</summary>
+        public const int RoughMinFaces = 500;
+
+        /// <summary>How long rough outlines are made in all; the solids left go to hole closing.</summary>
+        public static double RoughSeconds { get; set; } = 900;
+
         /// <summary>
         /// Thin-part groups whose members' median middle/longest box side is below this are cable bundles (TAG3's
         /// bundles 0.42 to 0.63, V12's fan cages 0.98 and 1.0).
@@ -679,6 +685,61 @@ namespace GeoSimplifier.SolidWorks
             // solid knit; a 1.2 GB STEP with 8,500 solids gave 111,000 single-face bodies otherwise).
             int solidFailed = 0, solidsWhole = 0;
             var knitModeler = (IModeler)_swApp.GetModeler();
+            // Detailed solids seen from outside become their rough outline (VisualHull): the most faces first, repeated
+            // parts (same part, same rotation) computed once and moved into place, within a time budget. Where no
+            // outline comes out the solid goes on to hole closing below, as before.
+            if (options.RoughSolids && seenSolidFaces.Count > 0)
+            {
+                var roughWatch = Stopwatch.StartNew();
+                var maker = new VisualHull(_swApp, new BodyOps(_swApp));
+                var math = (IMathUtility)_swApp.GetMathUtility();
+                var roughDone = new Dictionary<string, (double[] t, IBody2 hull)>();
+                var rough = new HashSet<int>();
+                int made = 0, moved = 0, failed = 0, facesBefore = 0, facesAfter = 0;
+                var detailed = seenSolidFaces.Select(f => f.body).Distinct()
+                    .Select(b => (b: b, faces: bodies[b].GetFaceCount())).Where(x => x.faces > RoughMinFaces)
+                    .OrderByDescending(x => x.faces).ToList();
+                foreach (var (b, faces) in detailed)
+                {
+                    if (roughWatch.Elapsed.TotalSeconds > RoughSeconds)
+                        break;
+                    report(made + moved + failed, detailed.Count);
+                    var (key, t) = b < instances.Count ? instances[b] : (null, null);
+                    string k = key == null || t == null || t.Length < 13 ? null
+                        : key + "|" + string.Join(",", t.Take(9).Concat(new[] { t[12] }).Select(v => Math.Round(v, 9).ToString("R")));
+                    IBody2 hull = null;
+                    if (k != null && roughDone.TryGetValue(k, out var d) &&
+                        math.CreateTransform(new double[] { 1, 0, 0, 0, 1, 0, 0, 0, 1, t[9] - d.t[9], t[10] - d.t[10], t[11] - d.t[11], 1, 0, 0, 0 }) is MathTransform shift)
+                    {
+                        hull = (IBody2)d.hull.Copy();
+                        hull.ApplyTransform(shift);
+                        moved++;
+                    }
+                    else
+                    {
+                        try { hull = maker.Make((IBody2)bodies[b].Copy()); }
+                        catch (System.Runtime.InteropServices.COMException) { hull = null; }
+                        if (hull == null)
+                        {
+                            failed++;
+                            if (failed <= 5)
+                                UI.PageLog.Write($"  kaba hat çıkmadı: {owners[b]}, {faces} yüz ({maker.Note}{(maker.Failures.Count > 0 ? "; " + string.Join("; ", maker.Failures) : "")}), delik kapatmayla kalıyor");
+                            maker.Failures.Clear();
+                            continue;
+                        }
+                        made++;
+                        if (k != null) roughDone[k] = (t, (IBody2)hull.Copy());
+                    }
+                    rough.Add(b);
+                    facesBefore += faces;
+                    facesAfter += hull.GetFaceCount();
+                    output.Add((owners[b], hull));
+                }
+                seenSolidFaces = seenSolidFaces.Where(f => !rough.Contains(f.body)).ToList();
+                UI.PageLog.Write($"  kaba hat: {made + moved} katı ({made} hesaplandı, {moved} tekrar eden parçadan taşındı), {facesBefore} yüz yerine {facesAfter}; " +
+                                 $"{failed} tanesi çıkmadı; {detailed.Count - rough.Count - failed} tanesi {RoughSeconds:F0} sn bütçesi dolduğu için delik kapatmaya kaldı; " +
+                                 $"{roughWatch.Elapsed.TotalSeconds:F1} sn");
+            }
             // The solids seen from outside get the solid path's simplification (Serkan: the bolt holes of TAG3's
             // flywheel housing stayed open): holes plugged, threads filled, embossed details flattened; then they go
             // in whole. (Their seen faces did not knit on TAG3 anyway, so they went in whole before too.)

@@ -42,6 +42,12 @@
         /// </summary>
         public bool ForceSingleBody { get; set; }
 
+        /// <summary>
+        /// For an outer skin: solids seen from outside with many faces (an engine block, cylinder heads) stand in as
+        /// their rough outline, as tight as a wrap from outside, instead of only having their holes closed (Serkan).
+        /// </summary>
+        public bool RoughSolids { get; set; } = true;
+
         /// <summary>Fill closed internal cavities so the result is solid inside.</summary>
         public bool FillCavities { get; set; } = true;
 
