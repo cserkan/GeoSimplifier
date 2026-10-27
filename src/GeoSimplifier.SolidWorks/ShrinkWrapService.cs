@@ -1820,6 +1820,24 @@ namespace GeoSimplifier.SolidWorks
                     UI.PageLog.Write($"  UYARI: {outside.Count} sonuç gövdesi modelin kutusunun dışına taşıyor");
                     result.Notes.Add("Uyarı: sonuç modelin dışına taşıyor; lütfen kontrol edin.");
                 }
+                // A solid result has no surface bodies beside its solids (Serkan: MOTOR030220 as one body came with two):
+                // the model's surfaces lying within the solids' box (1 mm) sit on or in them and go. One reaching out
+                // of it is a real open surface of the outside; it stays, and is logged.
+                if (!options.Preview && asIs.Count > 0 && lumps.Count > 0)
+                {
+                    var solidBox = lumps.Aggregate(Core.Geometry.Aabb.Empty, (a, l) => a.Union(BodyOps.AnyBounds(l)));
+                    var within = new Core.Geometry.Aabb(solidBox.Min - new Core.Geometry.Vec3(1e-3, 1e-3, 1e-3), solidBox.Max + new Core.Geometry.Vec3(1e-3, 1e-3, 1e-3));
+                    var stayOut = asIs.Where(s => Outside(BodyOps.AnyBounds(s), within)).ToList();
+                    if (asIs.Count > stayOut.Count)
+                        UI.PageLog.Write($"  yüzey gövdeleri: {asIs.Count - stayOut.Count} tanesi katının kutusu içinde kaldığı için atıldı");
+                    foreach (var s in stayOut)
+                    {
+                        var size = BodyOps.AnyBounds(s).Size;
+                        UI.PageLog.Write($"  yüzey gövdesi katının dışına taşıyor, kaldı: kutu {size.X * 1000:F0}x{size.Y * 1000:F0}x{size.Z * 1000:F0} mm");
+                    }
+                    asIs = stayOut;
+                    result.Sheets = asIs.Count;
+                }
                 result.Bodies = lumps.Concat(asIs).ToList();
                 // The translucent envelope is lifted off the model's faces when MakeOffset works. On installations where
                 // it fails a plain copy is drawn on the faces; it shows streaks, but the envelope stays visible.
