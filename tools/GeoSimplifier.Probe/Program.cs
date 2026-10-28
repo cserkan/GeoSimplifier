@@ -500,34 +500,6 @@ namespace GeoSimplifier.Probe
                         Console.WriteLine($"  {(kind == 0 ? "katı" : "yüzey")}: {((object[])b.GetFaces()).Length} yüz, hacim {((double[])b.GetMassProperties(1))?[3] * 1e9:F0} mm³, kutu {Box((double[])b.GetBodyBox())}");
                 return 0;
             }
-            int visualHull = Array.IndexOf(args, "--visual-hull");
-            if (visualHull >= 0 && visualHull + 3 < args.Length)
-            {
-                // --visual-hull <cells> <sheets|boxes> <out.SLDPRT>: each solid of the active part as its rough outline
-                // (VisualHull), into a new part saved there; faces and time per body.
-                int cells = int.Parse(args[visualHull + 1]);
-                bool sheets = args[visualHull + 2] == "sheets", cuts = args[visualHull + 2] == "cuts";
-                var source = (IPartDoc)swApp.ActiveDoc;
-                var solids = ((object[])source.GetBodies2(0, true) ?? new object[0]).OfType<IBody2>().ToList();
-                var maker = new GeoSimplifier.SolidWorks.Geometry.VisualHull(swApp, new GeoSimplifier.SolidWorks.Geometry.BodyOps(swApp)) { UseSheets = sheets, UseCuts = cuts, Cells = cells };
-                var hulls = new System.Collections.Generic.List<IBody2>();
-                foreach (var b in solids)
-                {
-                    var watch = System.Diagnostics.Stopwatch.StartNew();
-                    IBody2 h = null;
-                    try { h = maker.Make((IBody2)b.Copy()); }
-                    catch (Exception ex) { Console.WriteLine($"  hata: {ex.Message}"); }
-                    Console.WriteLine($"  gövde: {maker.Note}, {watch.Elapsed.TotalSeconds:F1} sn" + (maker.Failures.Count > 0 ? "; " + string.Join("; ", maker.Failures) : ""));
-                    maker.Failures.Clear();
-                    if (h != null) hulls.Add(h);
-                }
-                var target = (IPartDoc)swApp.NewPart();
-                foreach (var h in hulls) target.CreateFeatureFromBody3(h, false, 0);
-                int e = 0, w = 0;
-                bool saved = ((IModelDoc2)target).Extension.SaveAs3(args[visualHull + 3], 0, 1, null, null, ref e, ref w);
-                Console.WriteLine($"Kaba hat: {hulls.Count}/{solids.Count} gövde, kaydedildi {saved} ({e})");
-                return 0;
-            }
             int featureBoxes = Array.IndexOf(args, "--feature-boxes");
             if (featureBoxes >= 0 && featureBoxes + 1 < args.Length)
             {
