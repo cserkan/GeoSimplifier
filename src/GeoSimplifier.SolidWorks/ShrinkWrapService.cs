@@ -177,6 +177,13 @@ namespace GeoSimplifier.SolidWorks
         /// <summary>Whether grilles inside one part get flat lids in a surface skin (a trial; off).</summary>
         public static bool SkinGrilleCaps { get; set; }
 
+        /// <summary>
+        /// In a surface skin's last clean-up, the chosen percentage times these for solids and for surface bodies
+        /// (a trial for Serkan's ~200 + ~200 on TAG3 at 5 %: 1.4 and 2 make it 7 % and 10 %). 1 keeps one percentage.
+        /// </summary>
+        public static double SkinSolidSmallFactor { get; set; } = 1;
+        public static double SkinSheetSmallFactor { get; set; } = 1;
+
         /// <summary>A trial: leave the new part's view as it is instead of zooming to fit.</summary>
         public static bool SkipZoom { get; set; }
 
@@ -1860,7 +1867,9 @@ namespace GeoSimplifier.SolidWorks
             // The skin of a surface model and a solid result get the same last clean-up (Serkan: "Select Bodies By
             // Size" at the same percentage still picked 183 bodies of a TAG3 result).
             if (smallShellPercent > 0 && (result.IsSkin || !surfaceShell) && !result.IsPreview)
-                bodies = DropSmall(bodies, smallShellPercent / 100, result.KeepAlways);
+                bodies = result.IsSkin
+                    ? DropSmall(bodies, smallShellPercent / 100 * SkinSolidSmallFactor, smallShellPercent / 100 * SkinSheetSmallFactor, result.KeepAlways)
+                    : DropSmall(bodies, smallShellPercent / 100, smallShellPercent / 100, result.KeepAlways);
             if (source != null && configurationName != null)
                 return "Tamamlandı: " + result.Summary() + " " +
                        new ConfigurationOutput(_swApp).Create(source, bodies, configurationName, NewPart);
@@ -2028,22 +2037,28 @@ namespace GeoSimplifier.SolidWorks
         /// The result's bodies smaller than <paramref name="fraction"/> of its size (box diagonals, as SOLIDWORKS'
         /// "Select Bodies By Size" measures) are dropped, touching others or not (Serkan: keeping small surfaces
         /// whose boxes met a large one left 3,550 of TAG3's 5,031). The largest body and <paramref name="keep"/>
-        /// (excluded parts, cage and grille boxes) always stay.
+        /// (excluded parts, cage and grille boxes) always stay. Solids are measured against
+        /// <paramref name="solidFraction"/>, surface bodies against <paramref name="sheetFraction"/>.
         /// </summary>
-        private static List<IBody2> DropSmall(List<IBody2> bodies, double fraction, ICollection<IBody2> keep)
+        private static List<IBody2> DropSmall(List<IBody2> bodies, double solidFraction, double sheetFraction, ICollection<IBody2> keep)
         {
             if (bodies.Count < 2)
                 return bodies;
             var watch = Stopwatch.StartNew();
             var boxes = bodies.Select(BodyOps.AnyBounds).ToList();
             var model = boxes.Aggregate(Core.Geometry.Aabb.Empty, (a, b) => a.Union(b));
-            double limit = fraction * (model.Max - model.Min).Length;
+            double size = (model.Max - model.Min).Length;
+            bool IsSolid(int i) => bodies[i].GetType() == (int)swBodyType_e.swSolidBody;
+            double Limit(int i) => (IsSolid(i) ? solidFraction : sheetFraction) * size;
             int largest = Enumerable.Range(0, bodies.Count).OrderByDescending(i => (boxes[i].Max - boxes[i].Min).Length).First();
             var small = new HashSet<int>(Enumerable.Range(0, bodies.Count).Where(i => i != largest && !keep.Contains(bodies[i]) &&
-                !boxes[i].IsEmpty && (boxes[i].Max - boxes[i].Min).Length < limit));
+                !boxes[i].IsEmpty && (boxes[i].Max - boxes[i].Min).Length < Limit(i)));
             var result = Enumerable.Range(0, bodies.Count).Where(i => !small.Contains(i)).Select(i => bodies[i]).ToList();
-            UI.PageLog.Write($"  son temizlik: {bodies.Count} gövde → {result.Count} (%{fraction * 100:0.#} = {limit * 1000:F0} mm altı {small.Count} küçük gövde silindi; " +
-                             $"{watch.Elapsed.TotalSeconds:F1} sn)");
+            string limits = solidFraction == sheetFraction
+                ? $"%{solidFraction * 100:0.#} = {solidFraction * size * 1000:F0} mm"
+                : $"katı %{solidFraction * 100:0.#} = {solidFraction * size * 1000:F0} mm, yüzey %{sheetFraction * 100:0.#} = {sheetFraction * size * 1000:F0} mm";
+            UI.PageLog.Write($"  son temizlik: {bodies.Count} gövde → {result.Count} ({limits} altı {small.Count} küçük gövde silindi: " +
+                             $"{small.Count(IsSolid)} katı, {small.Count(i => !IsSolid(i))} yüzey; {watch.Elapsed.TotalSeconds:F1} sn)");
             return result;
         }
 

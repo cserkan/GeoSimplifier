@@ -175,6 +175,12 @@ namespace GeoSimplifier.SolidWorks
             // "nozoom:" leaves the result's view unfitted (a trial).
             ShrinkWrapService.SkipZoom = limitsMm.Contains("nozoom:");
             limitsMm = limitsMm.Replace("nozoom:", "");
+            // "split<solid>,<sheet>:" multiplies the skin's last clean-up percentage for solids and for surfaces (a trial).
+            var splitMatch = System.Text.RegularExpressions.Regex.Match(limitsMm, @"split([0-9.]+),([0-9.]+):");
+            ShrinkWrapService.SkinSolidSmallFactor = splitMatch.Success ? double.Parse(splitMatch.Groups[1].Value, System.Globalization.CultureInfo.InvariantCulture) : 1;
+            ShrinkWrapService.SkinSheetSmallFactor = splitMatch.Success ? double.Parse(splitMatch.Groups[2].Value, System.Globalization.CultureInfo.InvariantCulture) : 1;
+            if (splitMatch.Success)
+                limitsMm = limitsMm.Remove(splitMatch.Index, splitMatch.Length);
             // "nosmall:" unticks "Bundan küçük parçaları çıkar"; "noholes:" unticks "Delikleri ve boşlukları kapat".
             bool noSmall = limitsMm.Contains("nosmall:");
             limitsMm = limitsMm.Replace("nosmall:", "");
