@@ -459,21 +459,8 @@ namespace GeoSimplifier.SolidWorks
                     tri.AddRange(new[] { (float)p.X, (float)p.Y, (float)p.Z });
                 cageBoxes.Add((cage.group, skin, tri));
             }
-            // Grilles inside one part (a radiator's fin pack imported as thousands of small surfaces) are deleted and
-            // a box stands in their place, on the grille's own bounds (Serkan): dense regions of the part's small
-            // surfaces, so the frame, plates and pipes around it, all large, stay as they are.
-            foreach (var (part, region) in GrilleRegions(boxes, owners, keep.Where(i => i >= solidCount).ToList()))
-            {
-                var gone = new HashSet<int>(region);
-                keep = keep.Where(i => !gone.Contains(i)).ToList();
-                var regionBox = region.Aggregate(Core.Geometry.Aabb.Empty, (a, i) => a.Union(boxes[i]));
-                var skin = BoxSkin(regionBox);
-                if (skin == null) continue;
-                var tri = new List<float>();
-                foreach (var p in BoxTriangles(regionBox))
-                    tri.AddRange(new[] { (float)p.X, (float)p.Y, (float)p.Z });
-                cageBoxes.Add((part, skin, tri));
-            }
+            // (Grilles inside one part, a radiator's fin pack, are left as they are: boxing them did not satisfy
+            // Serkan.)
             if (options.MinPartPercent > 0)
             {
                 double limit = options.MinPartPercent / 100 * (model.Max - model.Min).Length;
@@ -1007,25 +994,6 @@ namespace GeoSimplifier.SolidWorks
                                  $"içinde {inside} başka parça, üye oranı {squat:F2}, orta {(box.Min.X + box.Max.X) * 500:F0},{(box.Min.Y + box.Max.Y) * 500:F0},{(box.Min.Z + box.Max.Z) * 500:F0}");
             }
             return cages;
-        }
-
-        /// <summary>
-        /// Grilles inside one part (<see cref="Core.Geometry.Grilles.Find"/>), logged to the page log. With
-        /// GEOSIMPLIFIER_DUMP set (tests only) the surfaces' boxes of each big part are written there first, to tune
-        /// grille finding without SOLIDWORKS.
-        /// </summary>
-        private static List<(string part, List<int> bodies)> GrilleRegions(List<Core.Geometry.Aabb> boxes, List<string> owners, List<int> sheets)
-        {
-            if (System.Environment.GetEnvironmentVariable("GEOSIMPLIFIER_DUMP") is string dump && dump != "")
-                foreach (var part in sheets.Where(i => !string.IsNullOrEmpty(owners[i]) && !boxes[i].IsEmpty).GroupBy(i => owners[i]).Where(g => g.Count() >= 5000))
-                    try
-                    {
-                        System.IO.File.WriteAllLines(System.IO.Path.Combine(dump, $"grille_{Math.Abs(part.Key.GetHashCode())}.csv"),
-                            new[] { "# " + part.Key }.Concat(part.Select(i => string.Join(",", new[] { boxes[i].Min.X, boxes[i].Min.Y, boxes[i].Min.Z, boxes[i].Max.X, boxes[i].Max.Y, boxes[i].Max.Z }
-                                .Select(v => v.ToString("R", System.Globalization.CultureInfo.InvariantCulture))))));
-                    }
-                    catch (System.IO.IOException) { }
-            return Core.Geometry.Grilles.Find(boxes, owners, sheets, GrillePartSurfaces, UI.PageLog.Write);
         }
 
         // A wire of a harness: thinner than a pipe, longer than a bolt or clip.
