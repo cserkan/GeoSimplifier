@@ -1,4 +1,4 @@
-using System;
+﻿using System;
 using System.Runtime.InteropServices;
 using GeoSimplifier.SolidWorks.UI;
 using Microsoft.Win32;
@@ -183,9 +183,6 @@ namespace GeoSimplifier.SolidWorks
             // "hlshow:" runs the timed highlight sequence instead of the simulation.
             bool highlightShow = limitsMm.Contains("hlshow:");
             limitsMm = limitsMm.Replace("hlshow:", "");
-            // "norough:" unticks "Ayrıntılı katıları kaba hatlarla göster" (for before/after comparisons).
-            bool noRough = limitsMm.Contains("norough:");
-            limitsMm = limitsMm.Replace("norough:", "");
             // "pageshots:" steps through the two pages slowly, for screenshots, and cancels.
             bool pageShots = limitsMm.Contains("pageshots:");
             limitsMm = limitsMm.Replace("pageshots:", "");
@@ -231,8 +228,6 @@ namespace GeoSimplifier.SolidWorks
                 _page.KindForTest(shell);
                 if (single)
                     _page.SingleBodyForTest();
-                if (noRough)
-                    _page.NoRoughForTest();
                 if (small > 0)
                     _page.SmallPartsForTest(small);
                 if (emboss >= 0)

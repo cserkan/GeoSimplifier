@@ -58,16 +58,9 @@ namespace GeoSimplifier.SolidWorks.Geometry
             }
             double longest = box.LongestSide;
             IBody2 hull = null;
-            // Along a long body (an engine block) the outline seen from its end is taken slice by slice: seen whole,
-            // the block's end covers the valley between its banks; the slices in between show it.
-            var order = Enumerable.Range(0, 3).OrderBy(a => box.Size[a]).ToArray();
-            int lengthAxis = order[2];
-            int slices = box.Size[lengthAxis] > 2 * box.Size[order[1]] ? Slices : 1;
             for (int axis = 0; axis < 3; axis++)
             {
-                var prism = axis == lengthAxis && slices > 1
-                    ? SlicedPrism(triangles, axis, box, longest, slices)
-                    : Prism(triangles, axis, box, longest);
+                var prism = Prism(triangles, axis, box, longest);
                 if (prism == null)
                 {
                     Note = $"{"XYZ"[axis]} yönünde siluet yapılamadı";
@@ -88,11 +81,10 @@ namespace GeoSimplifier.SolidWorks.Geometry
         }
 
         /// <summary>The body's outline along <paramref name="axis"/>, extruded a little past the box on both ends.</summary>
-        private IBody2 Prism(List<Vec3> triangles, int axis, Aabb box, double longest, bool exact = false)
+        private IBody2 Prism(List<Vec3> triangles, int axis, Aabb box, double longest)
         {
             int ua = (axis + 1) % 3, va = (axis + 2) % 3;
-            // A slice's prism ends at the slice (its neighbours continue it); a whole body's reaches a little past.
-            double margin = exact ? 0 : 0.02 * longest, from = box.Min[axis] - margin, length = box.Size[axis] + 2 * margin;
+            double margin = 0.02 * longest, from = box.Min[axis] - margin, length = box.Size[axis] + 2 * margin;
             Vec3 Point(double u, double v, double w)
             {
                 var p = new double[3];
@@ -187,43 +179,6 @@ namespace GeoSimplifier.SolidWorks.Geometry
             else
                 return PrismOfBoxes(triangles, axis, from, length, Point);
             return UnionAll(parts);
-        }
-
-        /// <summary>Slices along a long body's length, each with the outline of its own part of the body.</summary>
-        public int Slices { get; set; } = 8;
-
-        /// <summary>
-        /// The prism along <paramref name="axis"/> slice by slice: the triangles reaching into each slice give that
-        /// slice's outline, extruded through the slice only; the slices are joined.
-        /// </summary>
-        private IBody2 SlicedPrism(List<Vec3> triangles, int axis, Aabb box, double longest, int slices)
-        {
-            double step = box.Size[axis] / slices;
-            var parts = new List<IBody2>();
-            for (int k = 0; k < slices; k++)
-            {
-                double lo = box.Min[axis] + k * step, hi = lo + step;
-                var inSlice = new List<Vec3>();
-                for (int t = 0; t + 2 < triangles.Count; t += 3)
-                {
-                    double a = triangles[t][axis], b = triangles[t + 1][axis], c = triangles[t + 2][axis];
-                    if (Math.Max(a, Math.Max(b, c)) < lo || Math.Min(a, Math.Min(b, c)) > hi) continue;
-                    inSlice.Add(triangles[t]); inSlice.Add(triangles[t + 1]); inSlice.Add(triangles[t + 2]);
-                }
-                if (inSlice.Count < 3) continue;
-                var sliceBox = new Aabb(SetAxis(box.Min, axis, lo - (k == 0 ? 0.02 * longest : 0)),
-                                        SetAxis(box.Max, axis, hi + (k == slices - 1 ? 0.02 * longest : 0)));
-                var part = Prism(inSlice, axis, sliceBox, longest, exact: true);
-                if (part != null) parts.Add(part);
-            }
-            return UnionAll(parts);
-        }
-
-        private static Vec3 SetAxis(Vec3 p, int axis, double value)
-        {
-            var c = new[] { p.X, p.Y, p.Z };
-            c[axis] = value;
-            return new Vec3(c[0], c[1], c[2]);
         }
 
         /// <summary>The outline's prism from boxes, one per rectangle of its grid.</summary>

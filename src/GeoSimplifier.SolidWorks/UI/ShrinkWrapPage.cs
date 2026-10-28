@@ -42,7 +42,6 @@ namespace GeoSimplifier.SolidWorks.UI
         private const int SuggestLabelId = 27;
         private const int NextButtonId = 28;
         private const int BackButtonId = 29;
-        private const int RoughSolidsId = 30;
 
         // Above this many components the outer skin is suggested (TAG3 9,116; an electric motor a few dozen).
         private const int ShellSuggestComponents = 1000;
@@ -63,7 +62,6 @@ namespace GeoSimplifier.SolidWorks.UI
         // çıkar' (Serkan merged the two options); none when that box is unticked.
         private static double SmallShellPercent => _removeSmallParts ? _smallParts : 0;
         private static bool _forceSingleBody;
-        private static bool _roughSolids = true;
 
         private readonly ISldWorks _swApp;
         private readonly ShrinkWrapService _service;
@@ -100,7 +98,6 @@ namespace GeoSimplifier.SolidWorks.UI
         private bool _shellOutput;
         private int _step = 1;
         private IPropertyManagerPageCheckbox _singleBodyBox;
-        private IPropertyManagerPageCheckbox _roughBox;
         private bool _ok;
         private IModelDoc2 _source;
         private WrapResult _preview;
@@ -214,11 +211,6 @@ namespace GeoSimplifier.SolidWorks.UI
                 "Tek gövdeye zorla",
                 "İşaretliyse bütün gövdeler birleştirilip tek gövde yapılmaya çalışılır (büyük montajlarda uzun sürer). İşaretsizse her gövde kendi delikleri ve iç dolgusuyla kalır, birbiriyle birleştirilmez: çok gövdeli ama çok daha hızlı.");
             _singleBodyBox.Checked = _forceSingleBody;
-
-            _roughBox = (IPropertyManagerPageCheckbox)AddControl(group, RoughSolidsId, swPropertyManagerPageControlType_e.swControlType_Checkbox,
-                "Ayrıntılı katıları kaba hatlarla göster",
-                "Dışarıdan görünen, çok yüzlü katılar (motor bloğu, silindir kapakları gibi) yalnız genel hatlarıyla gösterilir: delikler, cıvatalar, kanatçıklar ve yazılar gider. İşaretsizse yalnız delikleri kapatılır.");
-            _roughBox.Checked = _roughSolids;
 
             _excludeGroup = (IPropertyManagerPageGroup)_page.AddGroupBox(ExcludeGroupId, "Hariç tut",
                 (int)(swAddGroupBoxOptions_e.swGroupBoxOptions_Visible | swAddGroupBoxOptions_e.swGroupBoxOptions_Expanded));
@@ -367,8 +359,6 @@ namespace GeoSimplifier.SolidWorks.UI
             _group.Caption = _shellOutput ? "Ayarlar: yüzey kabuk" : "Ayarlar: katı";
             // "Tek gövdeye zorla" belongs to the solid result only (Serkan): a skin's imported surfaces do not knit.
             ((IPropertyManagerPageControl)_singleBodyBox).Visible = !_shellOutput;
-            // Rough outlines of detailed solids are for the skin only.
-            ((IPropertyManagerPageControl)_roughBox).Visible = _shellOutput;
         }
 
         private static object AddControl(IPropertyManagerPageGroup group, int id, swPropertyManagerPageControlType_e type, string caption, string tip)
@@ -442,7 +432,6 @@ namespace GeoSimplifier.SolidWorks.UI
             MaxEmbossHeight = _embossValue,
             MinPartPercent = _smallPartsCheck.Checked ? _smallPartsValue : 0,
             ForceSingleBody = !_shellOutput && _singleBodyBox.Checked,
-            RoughSolids = _shellOutput && _roughBox.Checked,
             SurfaceShell = _shellOutput,
         };
 
@@ -688,7 +677,6 @@ namespace GeoSimplifier.SolidWorks.UI
             _smallParts = _smallPartsValue;
             _removeSmallParts = _smallPartsCheck.Checked;
             _forceSingleBody = _singleBodyBox.Checked;
-            _roughSolids = _roughBox.Checked;
             // The preview is only a quick, rough result; OK computes the real one.
             _preview = null;
         }
@@ -725,7 +713,6 @@ namespace GeoSimplifier.SolidWorks.UI
             MaxEmbossHeight = _embossHeight,
             MinPartPercent = _removeSmallParts ? _smallParts : 0,
             ForceSingleBody = !_surfaceShell && _forceSingleBody,
-            RoughSolids = _surfaceShell && _roughSolids,
             SurfaceShell = _surfaceShell,
         };
 
@@ -830,9 +817,6 @@ namespace GeoSimplifier.SolidWorks.UI
 
         /// <summary>Test hook: ticks "Tek gövdeye zorla".</summary>
         public void SingleBodyForTest() => _singleBodyBox.Checked = true;
-
-        /// <summary>Test hook: unticks "Ayrıntılı katıları kaba hatlarla göster".</summary>
-        public void NoRoughForTest() => _roughBox.Checked = false;
 
         /// <summary>Test hook: sets "Bundan küçük parçaları çıkar (%)".</summary>
         public void SmallPartsForTest(double size)
