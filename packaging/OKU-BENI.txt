@@ -1,0 +1,77 @@
+GeoSimplifier - SOLIDWORKS Shrink Wrap eklentisi
+Kurulum seti - 26.10.2026 (kaynak kod surumu: 36bf3e4)
+=======================================================
+
+GEREKENLER
+----------
+- 64-bit Windows 10/11
+- SOLIDWORKS 2026 (Design Premium ile test edildi, SP4.1)
+- .NET Framework 4.8 (Windows 10/11'de hazir gelir, ayri kurulum gerekmez)
+- Kurulum icin yonetici (admin) yetkisi
+- Yeni bilgisayarda .NET SDK, Visual Studio vb. GEREKMEZ. Derlenmis
+  dosyalar bu setin icinde.
+
+KURULUM (3 adim)
+----------------
+1) Zip'i kalici bir klasore cikarin, ornegin:
+      C:\GeoSimplifier-Eklenti
+   (Masaustu/Indirilenler yerine kalici bir yer secin; eklenti dogrudan
+   bu klasordeki DLL'den calisir.)
+
+2) SOLIDWORKS kapaliyken KUR.cmd dosyasini cift tiklayin.
+   Yonetici izni soracak, "Evet" deyin. "TAMAM. Kurulum bitti."
+   yazisini gormeniz gerekir.
+
+3) SOLIDWORKS'u acin:
+      Araclar (Tools) > Eklentiler (Add-Ins)
+   listesinde "GeoSimplifier" satirini isaretleyin. Sag kolondaki kutuyu da
+   isaretlerseniz her SOLIDWORKS acilisinda kendiliginden yuklenir.
+
+KULLANIM
+--------
+Bir parca ya da montaj acin. CommandManager'da "GeoSimplifier" sekmesi
+(ya da Araclar menusu) altindaki "Shrink Wrap" komutunu calistirin.
+Sol tarafta ayar sayfasi acilir:
+  - 1. sayfa: sonuc turu - Kati / Yuzey kabuk
+  - 2. sayfa: secime gore ayarlar (derinlik mm, kucuk parca yuzdesi,
+    haric tutulacak parcalar, kabartma yuksekligi, cikti: yeni parca ya da
+    konfigurasyon)
+"Onizleme goster" kutusu kapali gelir; isaretlerseniz sonucu islemeden
+once ekranda gosterir. Yesil tik sonucu olusturur.
+Buyuk montajlarda islem uzun surer (ornek: 1.871 parcalik montajda
+kabuk ~2 dakika, 4.688 bilesenli montajda ~3,5 dakika).
+
+KALDIRMA
+--------
+SOLIDWORKS kapaliyken KALDIR.cmd dosyasini cift tiklayin, sonra klasoru
+silin.
+
+GUNCELLEME
+----------
+Yeni surum geldiginde: SOLIDWORKS'u kapatin, yeni zip'i AYNI klasorun
+uzerine cikarin ve KUR.cmd'yi bir kez daha calistirin.
+
+ICERIK
+------
+bin\GeoSimplifier.SolidWorks.dll   eklentinin kendisi
+bin\GeoSimplifier.Core.dll         geometri yardimcilari
+bin\SolidWorks.Interop.*.dll       SOLIDWORKS API ara katmani
+bin\*.pdb                          hata ayiklama bilgisi (hata olursa log icin)
+KUR.cmd / KALDIR.cmd               kurulum / kaldirma
+OKU-BENI.txt                       bu dosya
+
+SORUN GIDERME
+-------------
+- "GeoSimplifier" Araclar > Eklentiler listesinde gorunmuyor:
+  KUR.cmd'yi SOLIDWORKS tamamen kapaliyken tekrar calistirin. Eger
+  bilgisayarda yonetici olarak BASKA bir kullanici hesabi kullandiysaniz
+  eklenti "otomatik yuklen" kaydini o hesaba yazar; bu durumda listeden
+  elle isaretlemek yeterlidir.
+- "RegAsm : error RA0000" ya da "bulunamiyor": zip tam cikarilmamis
+  olabilir; bin klasorundeki 5 DLL'in de yerinde oldugunu kontrol edin.
+- SOLIDWORKS 2026 dismda bir surum kullanilacaksa (2023, 2024 ...):
+  bu set 2026 API dosyalariyla derlendi. O bilgisayarda calismazsa
+  kaynak kodu o SOLIDWORKS surumune karsi yeniden derlemek gerekir
+  (depo: github.com/cserkan/GeoSimplifier, scripts\paket-yap.cmd).
+- Eklenti yuklenmiyorsa SOLIDWORKS'un 64-bit ve .NET 4.8'in kurulu
+  oldugunu dogrulayin.
