@@ -330,6 +330,34 @@ namespace GeoSimplifier.Probe
                 swApp.Visible = false;
                 return 0;
             }
+            int qualityAt = Array.IndexOf(args, "--quality");
+            if (qualityAt >= 0 && qualityAt + 2 < args.Length)
+            {
+                // --quality <slider|-> <file.SLDPRT>: sets the active document's shaded image quality (Document
+                // Properties > Image Quality; "-" only prints it) and saves it as a new file, for open-time trials.
+                var md = (IModelDoc2)swApp.ActiveDoc;
+                var ext = md.Extension;
+                const int none = (int)global::SolidWorks.Interop.swconst.swUserPreferenceOption_e.swDetailingNoOptionSpecified;
+                int slider = (int)global::SolidWorks.Interop.swconst.swUserPreferenceIntegerValue_e.swImageQualityShaded;
+                int deviation = (int)global::SolidWorks.Interop.swconst.swUserPreferenceDoubleValue_e.swImageQualityShadedDeviation;
+                Console.WriteLine($"Görüntü kalitesi önce: kaydırıcı {ext.GetUserPreferenceInteger(slider, none)}, sapma {ext.GetUserPreferenceDouble(deviation, none) * 1000:F3} mm");
+                if (args[qualityAt + 1] != "-")
+                {
+                    // "d<mm>" sets the deviation itself (the slider does not take a value from the API).
+                    string q = args[qualityAt + 1];
+                    bool set = q.StartsWith("d")
+                        ? ext.SetUserPreferenceDouble(deviation, none, double.Parse(q.Substring(1), CultureInfo.InvariantCulture) / 1000)
+                        : ext.SetUserPreferenceInteger(slider, none, int.Parse(q, CultureInfo.InvariantCulture));
+                    md.ForceRebuild3(false);
+                    md.GraphicsRedraw2();
+                    Console.WriteLine($"Görüntü kalitesi sonra: {set}, kaydırıcı {ext.GetUserPreferenceInteger(slider, none)}, sapma {ext.GetUserPreferenceDouble(deviation, none) * 1000:F3} mm");
+                }
+                int e = 0, w = 0;
+                var watch = System.Diagnostics.Stopwatch.StartNew();
+                bool saved = ext.SaveAs3(args[qualityAt + 2], 0, (int)global::SolidWorks.Interop.swconst.swSaveAsOptions_e.swSaveAsOptions_Copy, null, null, ref e, ref w);
+                Console.WriteLine($"Kaydedildi: {saved} ({args[qualityAt + 2]}, {watch.Elapsed.TotalSeconds:F1} sn, hata {e})");
+                return 0;
+            }
             int closeAt = Array.IndexOf(args, "--close-doc");
             if (closeAt >= 0 && closeAt + 1 < args.Length)
             {

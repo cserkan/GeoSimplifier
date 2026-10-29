@@ -172,15 +172,14 @@ namespace GeoSimplifier.SolidWorks
             // "noskinsolid:" leaves the solids of a surface model's skin as they are (for before/after comparisons).
             ShrinkWrapService.SkinSolidWork = !limitsMm.Contains("noskinsolid:");
             limitsMm = limitsMm.Replace("noskinsolid:", "");
+            // "solidbudget<s>:" sets how long the skin's seen solids are worked on (a trial; 300 s otherwise).
+            var budgetMatch = System.Text.RegularExpressions.Regex.Match(limitsMm, @"solidbudget([0-9.]+):");
+            ShrinkWrapService.SkinSolidSeconds = budgetMatch.Success ? double.Parse(budgetMatch.Groups[1].Value, System.Globalization.CultureInfo.InvariantCulture) : 300;
+            if (budgetMatch.Success)
+                limitsMm = limitsMm.Remove(budgetMatch.Index, budgetMatch.Length);
             // "nozoom:" leaves the result's view unfitted (a trial).
             ShrinkWrapService.SkipZoom = limitsMm.Contains("nozoom:");
             limitsMm = limitsMm.Replace("nozoom:", "");
-            // "split<solid>,<sheet>:" multiplies the skin's last clean-up percentage for solids and for surfaces (a trial).
-            var splitMatch = System.Text.RegularExpressions.Regex.Match(limitsMm, @"split([0-9.]+),([0-9.]+):");
-            ShrinkWrapService.SkinSolidSmallFactor = splitMatch.Success ? double.Parse(splitMatch.Groups[1].Value, System.Globalization.CultureInfo.InvariantCulture) : 1;
-            ShrinkWrapService.SkinSheetSmallFactor = splitMatch.Success ? double.Parse(splitMatch.Groups[2].Value, System.Globalization.CultureInfo.InvariantCulture) : 1;
-            if (splitMatch.Success)
-                limitsMm = limitsMm.Remove(splitMatch.Index, splitMatch.Length);
             // "nosmall:" unticks "Bundan küçük parçaları çıkar"; "noholes:" unticks "Delikleri ve boşlukları kapat".
             bool noSmall = limitsMm.Contains("nosmall:");
             limitsMm = limitsMm.Replace("nosmall:", "");
