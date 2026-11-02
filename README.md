@@ -1,12 +1,12 @@
-# GeoSimplifier
+# 3DWrap
 
-SOLIDWORKS içinde çalışan bir **shrink wrap** eklentisi. Aktif parçayı ya da montajı dışarıdan sarar, içini doldurur ve
+SOLIDWORKS içinde çalışan bir **shrink wrap** eklentisi (kod adı GeoSimplifier). Aktif parçayı ya da montajı dışarıdan sarar, içini doldurur ve
 **tek bir katı gövde** olarak yeni bir parçaya koyar. Voksel ya da mesh kullanılmaz: tüm işlemler SOLIDWORKS'ün
 kendi B-rep geometrisi üzerinde yapılır, bu yüzden kalan yüzeyler orijinal yüzeylerin birebir aynısıdır.
 
 ## Nasıl çalışır
 
-**Shrink Wrap** komutu (CommandManager'daki **GeoSimplifier** sekmesi veya Araçlar menüsü) sol tarafta bir
+**3DWrap** komutu (CommandManager'daki **3DWrap** sekmesi veya Araçlar menüsü) sol tarafta bir
 PropertyManager sayfası açar. Sayfa açıkken sonuç hesaplanır: zarf modelin üzerinde yarı saydam mavi, sarmanın ekleyeceği malzeme (tıpalar, köprüler, doldurulan boşluklar) turuncu gösterilir ve özet sayfanın üstünde yazar. Ayar değiştikçe önizleme yenilenir. Yeşil tik sonucu yeni bir parçaya ekler.
 
 | Ayar | Anlamı |
@@ -46,8 +46,8 @@ gövdeler ayrı bırakılır ve sonuç mesajında belirtilir.
    `dotnet build -p:SolidWorksApiDir="D:\...\api\redist"`
 2. `dotnet build GeoSimplifier.sln`
 3. Yönetici olarak açılmış komut isteminde: `scripts\register.cmd`
-4. SOLIDWORKS'te **Araçlar > Eklentiler** altında **GeoSimplifier**'ı etkinleştirin.
-5. Bir parça ya da montaj açın, CommandManager'daki **GeoSimplifier** sekmesinden **Shrink Wrap** komutunu çalıştırın.
+4. SOLIDWORKS'te **Araçlar > Eklentiler** altında **3DWrap**'i etkinleştirin.
+5. Bir parça ya da montaj açın, CommandManager'daki **3DWrap** sekmesinden **3DWrap** komutunu çalıştırın.
 
 Kaldırmak için: `scripts\unregister.cmd`
 
@@ -63,3 +63,20 @@ Kaldırmak için: `scripts\unregister.cmd`
 ```
 dotnet test tests/GeoSimplifier.Core.Tests
 ```
+
+## Lisans
+
+3DWrap komutu yalnızca bilgisayarın SOLIDWORKS seri numarasına düzenlenmiş geçerli bir `.lic` dosyasıyla çalışır.
+Seri numarası `HKLM\SOFTWARE\SolidWorks\Licenses\Serial Numbers` kaydından okunur. Lisans dosyası RSA-2048 (SHA-256)
+ile imzalıdır; eklentide yalnızca açık anahtar (`src/GeoSimplifier.SolidWorks/Licensing/3DWrap-acik-anahtar.xml`) bulunur.
+Eklenti lisansı DLL'in klasöründe, `%ProgramData%\3DWrap` ve `%AppData%\3DWrap` içinde arar. Lisans yoksa ya da
+geçersizse seri numarasını gösteren (ve panoya kopyalayan) bir mesaj çıkar ve bir `.lic` dosyası seçilebilir.
+
+Lisans üretmek (yalnızca sağlayıcı):
+
+1. Bir kez: `scripts\lisans-anahtar-olustur.cmd`. Özel anahtar `%USERPROFILE%\3DWrap-Lisans\3DWrap-ozel-anahtar.xml`
+   dosyasına yazılır: **yedekleyin, kimseyle paylaşmayın, depoya eklemeyin** (`.gitignore` engeller). Açık anahtar
+   depoya eklenir ve eklentiye gömülür, sonra eklenti yeniden derlenir.
+2. Her müşteri için: `scripts\lisans-uret.cmd --firma "ABC Makina A.Ş." --seri "9000 0000 1111 2222 ABCD EFGH" --bitis 2027-12-31`
+   (`--bitis` verilmezse süresiz; birden çok `--seri` verilebilir). Dosya `%USERPROFILE%\3DWrap-Lisans\Lisanslar\` altına yazılır.
+3. Kontrol: `3DWrap-Lisans kontrol ABC.lic --seri "9000 ..."`; bu bilgisayarın seri numarası: `3DWrap-Lisans seri`.

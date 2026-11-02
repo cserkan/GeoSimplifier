@@ -1289,7 +1289,7 @@ namespace GeoSimplifier.SolidWorks
                 last = now;
             }
 
-            var progress = new Progress(_swApp, "Shrink wrap: gövdeler toplanıyor");
+            var progress = new Progress(_swApp, "3DWrap: gövdeler toplanıyor");
             // Progress within a long step, from one percentage to the next: once per body, which costs nothing next
             // to the booleans.
             int reports = 0;
@@ -1310,7 +1310,7 @@ namespace GeoSimplifier.SolidWorks
                     GC.WaitForPendingFinalizers();
                 }
                 progress.UpdateProgress(from + (to - from) * done / Math.Max(1, total));
-                progress.UpdateTitle($"Shrink wrap: {title} ({done}/{total})");
+                progress.UpdateTitle($"3DWrap: {title} ({done}/{total})");
             }
             try
             {
@@ -1541,7 +1541,7 @@ namespace GeoSimplifier.SolidWorks
                 bool bagOnly = options.Preview && options.Bag;
                 if (options.MaxEmbossHeight > 0 && !bagOnly)
                 {
-                    progress.UpdateTitle("Shrink wrap: kabartmalar düzleniyor");
+                    progress.UpdateTitle("3DWrap: kabartmalar düzleniyor");
                     progress.UpdateProgress(5);
                     for (int i = 0; i < bodies.Count; i++)
                     {
@@ -1633,7 +1633,7 @@ namespace GeoSimplifier.SolidWorks
                     Lap("kap içleri");
                 }
 
-                progress.UpdateTitle($"Shrink wrap: {bodies.Count} gövde birleştiriliyor");
+                progress.UpdateTitle($"3DWrap: {bodies.Count} gövde birleştiriliyor");
                 progress.UpdateProgress(30);
                 // A plugs-only preview leaves the bodies unplugged (only flattened), so their union can be reused.
                 List<IBody2> original;
@@ -1673,7 +1673,7 @@ namespace GeoSimplifier.SolidWorks
 
                 if (options.GapWidth > 0 && lumps.Count > 1 && !bagOnly && (options.ForceSingleBody || options.Preview))
                 {
-                    progress.UpdateTitle("Shrink wrap: köprüler kuruluyor");
+                    progress.UpdateTitle("3DWrap: köprüler kuruluyor");
                     progress.UpdateProgress(60);
                     // The offset closing follows the parts' shapes; where SOLIDWORKS cannot offset, the gaps are
                     // spanned with boxes instead, like a bag pulled over the parts.
@@ -1699,7 +1699,7 @@ namespace GeoSimplifier.SolidWorks
                 int triangleCount = 0;
                 if (options.GapWidth > 0 && options.Bag)
                 {
-                    progress.UpdateTitle("Shrink wrap: poşet geçiriliyor");
+                    progress.UpdateTitle("3DWrap: poşet geçiriliyor");
                     progress.UpdateProgress(65);
                     // The surfaces do not depend on the limit, so previews reuse them.
                     string key = $"{source.GetPathName()}|{source.GetTitle()}|{exclusions?.Key}|{bodies.Count}";
@@ -1749,7 +1749,7 @@ namespace GeoSimplifier.SolidWorks
                 }
 
                 // On OK nothing is previewed here: only what was added is listed (the plugs).
-                progress.UpdateTitle(options.Preview ? "Shrink wrap: önizleme hazırlanıyor" : "Shrink wrap: sonuç hazırlanıyor");
+                progress.UpdateTitle(options.Preview ? "3DWrap: önizleme hazırlanıyor" : "3DWrap: sonuç hazırlanıyor");
                 progress.UpdateProgress(85);
                 // Plugs were taken per body; bridges and filled cavities are what the lumps have beyond the union.
                 var changed = lumps.Where(l => !original.Any(o => ReferenceEquals(o, l))).ToList();
@@ -1761,7 +1761,7 @@ namespace GeoSimplifier.SolidWorks
 
                 if (excluded.Count > 0)
                 {
-                    progress.UpdateTitle("Shrink wrap: hariç tutulan gövdeler ekleniyor");
+                    progress.UpdateTitle("3DWrap: hariç tutulan gövdeler ekleniyor");
                     progress.UpdateProgress(90);
                     int before = lumps.Count;
                     lumps = ops.UnionAll(lumps.Concat(excluded), tolerance);
@@ -1948,7 +1948,7 @@ namespace GeoSimplifier.SolidWorks
             var modeler = (IModeler)_swApp.GetModeler();
             var shells = new List<IBody2>();
             var watch = Stopwatch.StartNew();
-            var progress = new Progress(_swApp, "Shrink wrap: dış kabuk çıkarılıyor");
+            var progress = new Progress(_swApp, "3DWrap: dış kabuk çıkarılıyor");
             IModelDoc2 temp = null;
             int kept = 0, total = 0;
             try
@@ -1964,7 +1964,7 @@ namespace GeoSimplifier.SolidWorks
                         shells.Add(body);
                         continue;
                     }
-                    progress.UpdateTitle("Shrink wrap: dış kabuk: görünen yüzler bulunuyor");
+                    progress.UpdateTitle("3DWrap: dış kabuk: görünen yüzler bulunuyor");
                     progress.UpdateProgress(10);
                     var feature = ((IPartDoc)temp).CreateFeatureFromBody3((IBody2)body.Copy(), false, 0) as IFeature;
                     var placed = (((IPartDoc)temp).GetBodies2((int)swBodyType_e.swSolidBody, true) as object[])?.OfType<IBody2>().LastOrDefault();
@@ -1984,7 +1984,7 @@ namespace GeoSimplifier.SolidWorks
                         if (i % 100 == 0)
                         {
                             progress.UpdateProgress(20 + 70 * i / Math.Max(1, faces.Count));
-                            progress.UpdateTitle($"Shrink wrap: dış kabuk ({i}/{faces.Count} yüz)");
+                            progress.UpdateTitle($"3DWrap: dış kabuk ({i}/{faces.Count} yüz)");
                         }
                         if (visible.Contains(i) && faces[i].CreateSheetBody() is IBody2 sheet)
                             sheets.Add(sheet);

@@ -49,7 +49,7 @@ namespace GeoSimplifier.SolidWorks
 
             // The wrap as a part file next to the assembly; an existing file is never overwritten.
             string dir = Path.GetDirectoryName(assemblyPath);
-            string stem = Path.GetFileNameWithoutExtension(assemblyPath) + "_ShrinkWrap";
+            string stem = Path.GetFileNameWithoutExtension(assemblyPath) + "_3DWrap";
             string partPath = Path.Combine(dir, stem + ".SLDPRT");
             for (int i = 2; File.Exists(partPath); i++)
                 partPath = Path.Combine(dir, $"{stem}_{i}.SLDPRT");
@@ -68,7 +68,7 @@ namespace GeoSimplifier.SolidWorks
             var assembly = (IAssemblyDoc)source;
             try
             {
-                source.ConfigurationManager.AddConfiguration2(config, "Shrink wrap", "", 0, "", "", false);
+                source.ConfigurationManager.AddConfiguration2(config, "3DWrap", "", 0, "", "", false);
                 source.ShowConfiguration2(config);
                 foreach (IComponent2 comp in (object[])assembly.GetComponents(true) ?? new object[0])
                     comp.SetSuppression2((int)swComponentSuppressionState_e.swComponentSuppressed);
@@ -113,7 +113,7 @@ namespace GeoSimplifier.SolidWorks
         private string CreateInPart(IModelDoc2 source, IList<IBody2> bodies, string config, List<string> existing)
         {
             {
-                source.ConfigurationManager.AddConfiguration2(config, "Shrink wrap", "", 0, "", "", false);
+                source.ConfigurationManager.AddConfiguration2(config, "3DWrap", "", 0, "", "", false);
                 source.ShowConfiguration2(config);
                 // The part's own features are suppressed in this configuration; reference geometry and folders stay.
                 for (var feature = (IFeature)source.FirstFeature(); feature != null; feature = (IFeature)feature.GetNextFeature())

@@ -1,0 +1,24 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <!--
+    3DWrap license generator (for the vendor only, never shipped to customers). See Program.cs or run without arguments.
+    Builds to 3DWrap-Lisans.exe; needs no SOLIDWORKS.
+  -->
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <TargetFrameworks>net48;net8.0</TargetFrameworks>
+    <LangVersion>latest</LangVersion>
+    <Nullable>disable</Nullable>
+    <AssemblyName>3DWrap-Lisans</AssemblyName>
+    <RootNamespace>GeoSimplifier.LicenseTool</RootNamespace>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <PackageReference Include="Microsoft.NETFramework.ReferenceAssemblies" Version="1.0.3" PrivateAssets="all" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\..\src\GeoSimplifier.Core\GeoSimplifier.Core.csproj" />
+  </ItemGroup>
+
+</Project>

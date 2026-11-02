@@ -38,7 +38,7 @@ namespace GeoSimplifier.SolidWorks.UI
             {
                 _form = new NoActivateForm
                 {
-                    Text = "Shrink Wrap",
+                    Text = "3DWrap",
                     FormBorderStyle = FormBorderStyle.FixedToolWindow,
                     ControlBox = false,
                     ShowInTaskbar = false,

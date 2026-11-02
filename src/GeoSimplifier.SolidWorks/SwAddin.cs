@@ -1,5 +1,6 @@
 ﻿using System;
 using System.Runtime.InteropServices;
+using GeoSimplifier.SolidWorks.Licensing;
 using GeoSimplifier.SolidWorks.UI;
 using Microsoft.Win32;
 using SolidWorks.Interop.sldworks;
@@ -18,8 +19,10 @@ namespace GeoSimplifier.SolidWorks
     public class SwAddin : ISwAddin
     {
         public const string ProgId = "GeoSimplifier.SwAddin";
-        private const string Title = "GeoSimplifier";
-        private const string Description = "Shrink wrap: wraps a part or assembly from the outside into a single simplified solid.";
+        private const string Title = "3DWrap";
+        // The tab name of versions before the rename, removed if SOLIDWORKS still keeps it.
+        private const string LegacyTitle = "GeoSimplifier";
+        private const string Description = "3DWrap: modeli dışarıdan sararak sadeleştirilmiş bir gövde oluşturur.";
 
         private const int MainCommandGroupId = 0x5A11;
         private const int ShrinkWrapCommandId = 1;
@@ -80,20 +83,23 @@ namespace GeoSimplifier.SolidWorks
             group.MainIconList = icons;
 
             int menuToolbar = (int)(swCommandItemType_e.swMenuItem | swCommandItemType_e.swToolbarItem);
-            int index = group.AddCommandItem2("Shrink Wrap", -1, "Modeli dışarıdan sararak tek, basitleştirilmiş bir gövde oluşturur",
-                "Shrink Wrap", 0, nameof(OnShrinkWrap), nameof(OnShrinkWrapEnable), ShrinkWrapCommandId, menuToolbar);
+            int index = group.AddCommandItem2("3DWrap", -1, "Modeli dışarıdan sararak tek, basitleştirilmiş bir gövde oluşturur",
+                "3DWrap", 0, nameof(OnShrinkWrap), nameof(OnShrinkWrapEnable), ShrinkWrapCommandId, menuToolbar);
 
             group.HasToolbar = true;
             group.HasMenu = true;
             group.Activate();
 
-            // A "GeoSimplifier" tab in the CommandManager ribbon for parts and assemblies.
+            // A "3DWrap" tab in the CommandManager ribbon for parts and assemblies.
             int commandId = group.get_CommandID(index);
             foreach (int docType in DocTypes)
             {
-                var existing = _commandManager.GetCommandTab(docType, Title);
-                if (existing != null)
-                    _commandManager.RemoveCommandTab(existing);
+                foreach (string name in new[] { Title, LegacyTitle })
+                {
+                    var existing = _commandManager.GetCommandTab(docType, name);
+                    if (existing != null)
+                        _commandManager.RemoveCommandTab(existing);
+                }
                 var tab = _commandManager.AddCommandTab(docType, Title);
                 var box = tab.AddCommandTabBox();
                 box.AddCommands(new[] { commandId }, new[] { (int)swCommandTabButtonTextDisplay_e.swCommandTabButton_TextBelow });
@@ -118,12 +124,14 @@ namespace GeoSimplifier.SolidWorks
         {
             try
             {
+                if (!LicenseGate.EnsureLicensed(_swApp))
+                    return;
                 _page = new ShrinkWrapPage(_swApp, _service);
                 _page.Show();
             }
             catch (Exception ex)
             {
-                _swApp.SendMsgToUser2("Shrink wrap açılamadı: " + ex.Message,
+                _swApp.SendMsgToUser2("3DWrap açılamadı: " + ex.Message,
                     (int)swMessageBoxIcon_e.swMbStop, (int)swMessageBoxBtn_e.swMbOk);
             }
         }
@@ -152,6 +160,8 @@ namespace GeoSimplifier.SolidWorks
         /// <summary>As <see cref="TestPageExcluding"/>; a non-empty <paramref name="configurationName"/> chooses "Konfigürasyon oluştur".</summary>
         public string TestPageOutput(string limitsMm, bool ok, string excludeNames, string configurationName)
         {
+            if (!LicenseGate.IsLicensedQuiet())
+                return "Lisans yok";
             // A leading "nogc:" runs the steps without forcing garbage collections.
             bool forceGc = !limitsMm.StartsWith("nogc:");
             limitsMm = limitsMm.Replace("nogc:", "");
@@ -312,6 +322,8 @@ namespace GeoSimplifier.SolidWorks
         /// </summary>
         public string TestLocalOps()
         {
+            if (!LicenseGate.IsLicensedQuiet())
+                return "Lisans yok";
             _mainThread.BeginInvoke(new Action(() =>
             {
                 try
