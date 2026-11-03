@@ -40,6 +40,11 @@
     </Reference>
   </ItemGroup>
 
+  <!-- The license public key (made once with tools\GeoSimplifier.LicenseTool "anahtar-olustur"); without it every license is refused. -->
+  <ItemGroup Condition="Exists('Licensing\3DWrap-acik-anahtar.xml')">
+    <EmbeddedResource Include="Licensing\3DWrap-acik-anahtar.xml" LogicalName="GeoSimplifier.SolidWorks.Licensing.3DWrap-acik-anahtar.xml" />
+  </ItemGroup>
+
   <ItemGroup>
     <ProjectReference Include="..\GeoSimplifier.Core\GeoSimplifier.Core.csproj" />
   </ItemGroup>

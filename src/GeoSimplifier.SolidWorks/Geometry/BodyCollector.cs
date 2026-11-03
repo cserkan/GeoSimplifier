@@ -150,7 +150,7 @@ namespace GeoSimplifier.SolidWorks.Geometry
                     break;
 
                 default:
-                    throw new InvalidOperationException("Shrink wrap yalnızca parça ve montajlarda çalışır.");
+                    throw new InvalidOperationException("3DWrap yalnızca parça ve montajlarda çalışır.");
             }
             return copies;
         }

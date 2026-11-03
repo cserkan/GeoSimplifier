@@ -482,3 +482,7 @@ $RECYCLE.BIN/
 
 # Vim temporary swap files
 *.swp
+
+# 3DWrap license private keys: never commit
+*ozel-anahtar*.xml
+dist/

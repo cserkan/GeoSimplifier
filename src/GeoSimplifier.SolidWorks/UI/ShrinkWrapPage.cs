@@ -123,7 +123,7 @@ namespace GeoSimplifier.SolidWorks.UI
             _source = _swApp.IActiveDoc2;
             int options = (int)(swPropertyManagerPageOptions_e.swPropertyManagerOptions_OkayButton |
                                 swPropertyManagerPageOptions_e.swPropertyManagerOptions_CancelButton);
-            _page = (IPropertyManagerPage2)_swApp.CreatePropertyManagerPage("Shrink Wrap", options, this, ref errors);
+            _page = (IPropertyManagerPage2)_swApp.CreatePropertyManagerPage("3DWrap", options, this, ref errors);
             if (_page == null)
                 throw new InvalidOperationException("Could not create the PropertyManager page (error " + errors + ").");
 
@@ -701,7 +701,7 @@ namespace GeoSimplifier.SolidWorks.UI
             catch (Exception ex)
             {
                 PageLog.Write("Tamam hatası: " + ex);
-                _swApp.SendMsgToUser2("Shrink wrap başarısız: " + ex.Message,
+                _swApp.SendMsgToUser2("3DWrap başarısız: " + ex.Message,
                     (int)swMessageBoxIcon_e.swMbStop, (int)swMessageBoxBtn_e.swMbOk);
             }
         }
