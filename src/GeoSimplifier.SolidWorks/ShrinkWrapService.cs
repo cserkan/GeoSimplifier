@@ -1,4 +1,4 @@
-using System;
+﻿using System;
 using System.Collections.Generic;
 using System.Diagnostics;
 using System.Linq;
@@ -1169,7 +1169,7 @@ namespace GeoSimplifier.SolidWorks
         /// So the inside stays solid where they were and the outside does not change. Returns the boxes.
         /// </summary>
         private List<IBody2> HiddenPartsAsBoxes(BodyOps ops, List<IBody2> bodies, List<(string key, double[] transform)> instances,
-                                                Action<int, int> report)
+                                                List<string> owners, Action<int, int> report)
         {
             int solids = instances.Count;
             var triangles = new List<List<Core.Geometry.Vec3>>();
@@ -1179,23 +1179,24 @@ namespace GeoSimplifier.SolidWorks
             var hidden = Enumerable.Range(0, solids).Where(i => !seen.Contains(i)).ToList();
             if (hidden.Count == 0)
                 return new List<IBody2>();
+            // The box check: rays aimed at each box itself (BoxCheckSpacing apart over its outline, from 48
+            // directions) against the parts seen, so a box that shows anywhere, through however narrow a gap, keeps
+            // its part as it is (Serkan: never trade outer fidelity). Rays spread over the whole model (16 mm apart
+            // on the mixer, 32 directions) missed gaps and thin parts: 4 mm bars and 15 mm plates that show from
+            // outside were boxed. The other boxes are left out, so no box hides another.
             var check = new Core.Geometry.OutsideRays();
-            var extent = Core.Geometry.Aabb.Empty;
             foreach (int i in seen)
-            {
                 check.AddBody(i, triangles[i]);
-                extent = extent.Union(BodyOps.Bounds(bodies[i]));
-            }
             var boxes = hidden.Select(i => BodyOps.TightBounds(bodies[i])).ToList();
-            for (int j = 0; j < hidden.Count; j++)
-                check.AddBody(solids + j, BoxTriangles(boxes[j]));
-            var seenBoxes = check.Seen(directions: 32, spacing: Math.Max(extent.LongestSide / 250, 5e-4), maxRaysPerSide: 250);
+            var boxSeen = boxes.Select(b => check.TargetSeen(b, directions: 48, spacing: BoxCheckSpacing)).ToList();
             UI.PageLog.Write($"  iç parçalar: kutu denetimi bitti ({watch.Elapsed.TotalSeconds:F1} sn)");
+            if (System.Environment.GetEnvironmentVariable("GEOSIMPLIFIER_DUMP") is string dumpDir && dumpDir != "")
+                DumpHiddenParts(bodies, owners, triangles, seen, hidden, boxes, boxSeen);
             var proxies = new List<IBody2>();
             var replaced = new List<int>();
             for (int j = 0; j < hidden.Count; j++)
             {
-                if (seenBoxes.Contains(solids + j))
+                if (boxSeen[j])
                     continue;
                 var box = ops.Box(boxes[j]);
                 if (box == null)
@@ -1207,9 +1208,42 @@ namespace GeoSimplifier.SolidWorks
             {
                 bodies.RemoveAt(i);
                 instances.RemoveAt(i);
+                owners?.RemoveAt(i);
             }
             UI.PageLog.Write($"  iç parçalar: {hidden.Count} parça dışarıdan görünmüyor; {proxies.Count} tanesi kutusuyla temsil ediliyor, {hidden.Count - proxies.Count} tanesinin kutusu dışarıdan görüneceği için kendisi kaldı");
             return proxies;
+        }
+
+        /// <summary>How far apart the rays aimed at a hidden part's box are (m).</summary>
+        private const double BoxCheckSpacing = 2.5e-3;
+
+        /// <summary>
+        /// GEOSIMPLIFIER_DUMP (tests only): every part the ray test calls hidden, with its box and whether the box
+        /// check found the box to show, and what the old check (rays over the whole model) said.
+        /// </summary>
+        private static void DumpHiddenParts(List<IBody2> bodies, List<string> owners, List<List<Core.Geometry.Vec3>> triangles,
+                                            HashSet<int> seen, List<int> hidden, List<Core.Geometry.Aabb> boxes, List<bool> boxSeen)
+        {
+            string Name(int i) => owners != null && i < owners.Count ? owners[i] ?? "?" : "?";
+            string Mm(Core.Geometry.Aabb b) => $"{b.Size.X * 1000:F0}x{b.Size.Y * 1000:F0}x{b.Size.Z * 1000:F0} mm " +
+                                               $"({b.Min.X * 1000:F0},{b.Min.Y * 1000:F0},{b.Min.Z * 1000:F0})-({b.Max.X * 1000:F0},{b.Max.Y * 1000:F0},{b.Max.Z * 1000:F0})";
+            int solids = triangles.Count;
+            var old = new Core.Geometry.OutsideRays();
+            var extent = Core.Geometry.Aabb.Empty;
+            foreach (int i in seen)
+            {
+                old.AddBody(i, triangles[i]);
+                extent = extent.Union(BodyOps.Bounds(bodies[i]));
+            }
+            for (int j = 0; j < hidden.Count; j++)
+                old.AddBody(solids + j, BoxTriangles(boxes[j]));
+            var oldSeen = old.Seen(directions: 32, spacing: Math.Max(extent.LongestSide / 250, 5e-4), maxRaysPerSide: 250);
+            for (int j = 0; j < hidden.Count; j++)
+            {
+                int i = hidden[j];
+                UI.PageLog.Write($"  TANI gizli: {Name(i)} #{i}, kutu {Mm(boxes[j])}; kutu {(boxSeen[j] ? "GÖRÜNÜR, parça kaldı" : "gizli, KUTU OLDU")}" +
+                                 $" (eski denetim: {(oldSeen.Contains(solids + j) ? "görünür" : "gizli")})");
+            }
         }
 
         /// <summary>A box grown by a small margin: 0.5 mm or 2 % of its longest side.</summary>
@@ -1281,12 +1315,24 @@ namespace GeoSimplifier.SolidWorks
             var result = new WrapResult();
             var laps = new List<string>();
             double last = 0;
+            // GEOSIMPLIFIER_REGION "x0;y0;z0;x1;y1;z1" (mm, tests only): after each step, the bodies whose box meets
+            // that region, with their faces and volume, to find the step that changes a part there.
+            Func<IEnumerable<IBody2>> regionBodies = null;
+            var region = System.Environment.GetEnvironmentVariable("GEOSIMPLIFIER_REGION") is string rs && rs.Split(';').Length == 6
+                ? rs.Split(';').Select(v => double.Parse(v, System.Globalization.CultureInfo.InvariantCulture) / 1000).ToArray() : null;
             void Lap(string step)
             {
                 double now = watch.Elapsed.TotalSeconds;
                 laps.Add($"{step} {now - last:F2}");
                 UI.PageLog.Write($"  adım: {step} {now - last:F2} sn");
                 last = now;
+                if (region == null || regionBodies == null) return;
+                var near = regionBodies().Where(b => b != null).Select(b => (b, box: BodyOps.AnyBounds(b)))
+                    .Where(x => !x.box.IsEmpty && x.box.Max.X >= region[0] && x.box.Min.X <= region[3] && x.box.Max.Y >= region[1] &&
+                                x.box.Min.Y <= region[4] && x.box.Max.Z >= region[2] && x.box.Min.Z <= region[5]).ToList();
+                UI.PageLog.Write($"  TANI bölge ({step}): {near.Count} gövde, " + string.Join("; ", near.Select(x =>
+                    $"{x.b.GetFaceCount()} yüz {(((double[])x.b.GetMassProperties(1))?[3] ?? 0) * 1e9:F0} mm³ " +
+                    $"{x.box.Size.X * 1000:F0}x{x.box.Size.Y * 1000:F0}x{x.box.Size.Z * 1000:F0}")));
             }
 
             var progress = new Progress(_swApp, "3DWrap: gövdeler toplanıyor");
@@ -1319,6 +1365,7 @@ namespace GeoSimplifier.SolidWorks
                 var bodyOwners = new List<string>();
                 var bodies = BodyCollector.CopyBodies(source, exclusions, out var excluded, instances, bodyOwners);
                 UI.PageLog.Write($"  katı gövdeler toplandı: {bodies.Count} ({watch.Elapsed.TotalSeconds:F1} sn)");
+                regionBodies = () => bodies;
                 var ops = new BodyOps(_swApp) { Trace = System.Environment.GetEnvironmentVariable("GEOSIMPLIFIER_TRACE") == "1" };
 
                 // Surface bodies are wrapped as thin solids (0.1 mm). Knitting those of each component first
@@ -1421,21 +1468,47 @@ namespace GeoSimplifier.SolidWorks
                     // First of all, small parts (screws, nuts, washers, small fittings) are left out, wherever they
                     // are, even on the outside: below MinPartPercent of the model's size (the diagonal of its box,
                     // as for the shell's small surfaces). They get no work at all; holes they sat in close as usual.
-                    // Each body is measured alone here, as before. (Measuring whole parts kept a 974-patch surface
-                    // part of 7300002 that used to drop out, and made its shell 2.7 times slower; the surface path,
-                    // Skin, measures whole parts.)
+                    // Whole parts are measured (a component's bodies together, its solids and surfaces alike), as
+                    // the page's highlight list and the surface path (Skin) do, so what is highlighted is what goes:
+                    // measured body by body, the powder mixer's DN250 butterfly valve (568 mm, bodies of 354-481 mm)
+                    // lost a body at 6 % (389 mm) and 36 large welded parts lost bodies, one of 806 mm all 92 of its
+                    // 152 mm bars. Bodies of no known component (a part document) are measured alone.
                     var boxes = bodies.Select(BodyOps.AnyBounds).ToList();
                     var sheetBoxes = asIs.Select(BodyOps.AnyBounds).ToList();
                     var model = boxes.Concat(sheetBoxes).Aggregate(Core.Geometry.Aabb.Empty, (a, b) => a.Union(b));
                     double limit = options.MinPartPercent / 100 * (model.Max - model.Min).Length;
                     int before = bodies.Count + asIs.Count;
+                    bool ownersKnown = bodyOwners.Count == bodies.Count;
+                    bool sheetOwnersKnown = owners.Count == asIs.Count;
+                    var partBox = new Dictionary<string, Core.Geometry.Aabb>();
+                    void AddToPart(string owner, Core.Geometry.Aabb box)
+                    {
+                        if (string.IsNullOrEmpty(owner) || box.IsEmpty) return;
+                        partBox[owner] = partBox.TryGetValue(owner, out var pb) ? pb.Union(box) : box;
+                    }
+                    if (ownersKnown)
+                        for (int i = 0; i < bodies.Count; i++) AddToPart(bodyOwners[i], boxes[i]);
+                    if (sheetOwnersKnown)
+                        for (int i = 0; i < asIs.Count; i++) AddToPart(owners[i], sheetBoxes[i]);
+                    bool Small(string owner, Core.Geometry.Aabb box)
+                    {
+                        if (box.IsEmpty) return false;
+                        var measured = !string.IsNullOrEmpty(owner) && partBox.TryGetValue(owner, out var pb) ? pb : box;
+                        return (measured.Max - measured.Min).Length < limit;
+                    }
                     for (int i = bodies.Count - 1; i >= 0; i--)
-                        if (!boxes[i].IsEmpty && (boxes[i].Max - boxes[i].Min).Length < limit && bodies.Count > 1)
+                        if (Small(ownersKnown ? bodyOwners[i] : null, boxes[i]) && bodies.Count > 1)
                         {
                             bodies.RemoveAt(i);
                             if (i < instances.Count) instances.RemoveAt(i);
+                            if (ownersKnown) bodyOwners.RemoveAt(i);
                         }
-                    asIs = asIs.Where((s, i) => sheetBoxes[i].IsEmpty || (sheetBoxes[i].Max - sheetBoxes[i].Min).Length >= limit).ToList();
+                    var keptSheets = Enumerable.Range(0, asIs.Count).Where(i => !Small(sheetOwnersKnown ? owners[i] : null, sheetBoxes[i])).ToList();
+                    if (sheetOwnersKnown)
+                        owners = keptSheets.Select(i => owners[i]).ToList();
+                    asIs = keptSheets.Select(i => asIs[i]).ToList();
+                    if (ownersKnown)
+                        UI.PageLog.Write($"  küçük parçalar: {partBox.Count(kv => (kv.Value.Max - kv.Value.Min).Length < limit)}/{partBox.Count} parça küçük");
                     result.SmallPartsRemoved = before - bodies.Count - asIs.Count;
                     UI.PageLog.Write($"  küçük parçalar: {result.SmallPartsRemoved} gövde çıkarıldı (%{options.MinPartPercent:0.#} = {limit * 1000:F0} mm altı)");
                     // The copies of the parts left out are released now: SOLIDWORKS keeps them until their COM
@@ -1482,7 +1555,7 @@ namespace GeoSimplifier.SolidWorks
                 var insideBoxes = new List<IBody2>();
                 if (!options.Preview && !options.SurfaceShell && options.FillCavities && instances.Count > 50)
                 {
-                    insideBoxes = HiddenPartsAsBoxes(ops, bodies, instances, (i, n) => Report("dışarıdan görünmeyen parçalar bulunuyor", 1, 8, i, n));
+                    insideBoxes = HiddenPartsAsBoxes(ops, bodies, instances, bodyOwners.Count == bodies.Count ? bodyOwners : null, (i, n) => Report("dışarıdan görünmeyen parçalar bulunuyor", 1, 8, i, n));
                     result.InsideParts = insideBoxes.Count;
                     Lap("iç parçalar");
                 }
@@ -1665,6 +1738,7 @@ namespace GeoSimplifier.SolidWorks
                     if (unionKey != null) { _unionKey = unionKey; _union = original; }
                 }
                 var lumps = new List<IBody2>(original);
+                regionBodies = () => lumps;
                 Lap("birleştirme");
                 UI.PageLog.Write($"  birleşim: {bodies.Count} gövde → {lumps.Count} parça");
                 // What the bridges and cavity fills add, for the preview to draw; null when it is not known exactly

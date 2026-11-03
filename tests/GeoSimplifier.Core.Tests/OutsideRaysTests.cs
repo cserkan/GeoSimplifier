@@ -27,5 +27,22 @@ namespace GeoSimplifier.Core.Tests
             Assert.DoesNotContain(1, seen);
             Assert.Contains(2, seen);
         }
+
+        [Fact]
+        public void A_box_is_seen_only_where_no_body_covers_it()
+        {
+            // A closed 10 m box shell, and a second shell with a 4 mm slot in its top: coarse rays across the
+            // whole model (far wider than the slot) cannot find it, the rays aimed at the box do.
+            var rays = new OutsideRays();
+            rays.AddBody(0, Cube(new Vec3(0, 0, 0), new Vec3(10, 10, 10)));
+            var slotted = new List<Vec3>();
+            slotted.AddRange(Cube(new Vec3(20, 0, 0), new Vec3(30, 10, 9.9)));
+            slotted.AddRange(Cube(new Vec3(20, 0, 9.9), new Vec3(24.998, 10, 10)));
+            slotted.AddRange(Cube(new Vec3(25.002, 0, 9.9), new Vec3(30, 10, 10)));
+            rays.AddBody(1, slotted);
+            Assert.False(rays.TargetSeen(new Aabb(new Vec3(4, 4, 4), new Vec3(6, 6, 6)), directions: 32, spacing: 0.001));
+            Assert.True(rays.TargetSeen(new Aabb(new Vec3(4, 4, 4), new Vec3(6, 6, 11)), directions: 32, spacing: 0.001));
+            Assert.True(rays.TargetSeen(new Aabb(new Vec3(24.99, 4.9, 9.95), new Vec3(25.01, 5.1, 9.99)), directions: 32, spacing: 0.001));
+        }
     }
 }

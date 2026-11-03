@@ -879,6 +879,22 @@ namespace GeoSimplifier.Probe
                 }
                 return 0;
             }
+            int orientAt = Array.IndexOf(args, "--orient");
+            if (orientAt >= 0 && orientAt + 2 < args.Length)
+            {
+                // --orient <yaw°> <pitch°>: looks at the active document from that direction (Y up), zoomed to fit:
+                // yaw 45/135/225/315 with pitch 35.26 are the four isometric corners.
+                double b = double.Parse(args[orientAt + 1], CultureInfo.InvariantCulture) * Math.PI / 180;
+                double a = double.Parse(args[orientAt + 2], CultureInfo.InvariantCulture) * Math.PI / 180;
+                double cy = Math.Cos(b), sy = Math.Sin(b), cp = Math.Cos(a), sp = Math.Sin(a);
+                var data = new double[] { cy, sp * sy, -cp * sy, 0, cp, sp, sy, -sp * cy, cp * cy, 0, 0, 0, 1, 0, 0, 0 };
+                var mu = (IMathUtility)swApp.GetMathUtility();
+                var mv = (IModelView)doc.ActiveView;
+                mv.Orientation3 = (MathTransform)mu.CreateTransform(data);
+                doc.ViewZoomtofit2();
+                mv.GraphicsRedraw(null);
+                return 0;
+            }
             int viewAt = Array.IndexOf(args, "--view");
             if (viewAt >= 0 && viewAt + 1 < args.Length)
             {

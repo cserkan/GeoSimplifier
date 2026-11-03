@@ -193,6 +193,9 @@ namespace GeoSimplifier.SolidWorks
             // "nosmall:" unticks "Bundan küçük parçaları çıkar"; "noholes:" unticks "Delikleri ve boşlukları kapat".
             bool noSmall = limitsMm.Contains("nosmall:");
             limitsMm = limitsMm.Replace("nosmall:", "");
+            // "nofinal:" unticks "Parça kaydedildikten sonra da küçük gövde temizliği yap".
+            bool noFinal = limitsMm.Contains("nofinal:");
+            limitsMm = limitsMm.Replace("nofinal:", "");
             bool noHoles = limitsMm.Contains("noholes:");
             limitsMm = limitsMm.Replace("noholes:", "");
             // "hlshow:" runs the timed highlight sequence instead of the simulation.
@@ -251,6 +254,8 @@ namespace GeoSimplifier.SolidWorks
                     _page.UntickSmallForTest();
                 if (noHoles)
                     _page.NoHolesForTest();
+                if (noFinal)
+                    _page.NoFinalCleanupForTest();
                 if (wizard)
                 {
                     // Next, Back, the other kind of result, the original kind again and Next, collecting garbage

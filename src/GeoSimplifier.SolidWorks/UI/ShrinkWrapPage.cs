@@ -1,4 +1,4 @@
-using System;
+﻿using System;
 using System.Linq;
 using System.Runtime.InteropServices;
 using System.Windows.Forms;
@@ -42,6 +42,7 @@ namespace GeoSimplifier.SolidWorks.UI
         private const int SuggestLabelId = 27;
         private const int NextButtonId = 28;
         private const int BackButtonId = 29;
+        private const int FinalCleanupId = 30;
 
         // Above this many components the outer skin is suggested (TAG3 9,116; an electric motor a few dozen).
         private const int ShellSuggestComponents = 1000;
@@ -58,9 +59,12 @@ namespace GeoSimplifier.SolidWorks.UI
         private static bool _newConfiguration;
         private static string _configurationName = "Simple";
         private static bool _surfaceShell;
-        // The shell's last clean-up of small surface bodies uses the same percentage as 'Bundan küçük parçaları
-        // çıkar' (Serkan merged the two options); none when that box is unticked.
-        private static double SmallShellPercent => _removeSmallParts ? _smallParts : 0;
+        // The last clean-up of small bodies, after the result is made (shell surfaces and the final 'select bodies by
+        // size' pass), uses the same percentage as 'Bundan küçük parçaları çıkar'; none when that box is unticked, or
+        // when 'Parça kaydedildikten sonra da küçük gövde temizliği yap' is (Serkan 2026-11-03: a flanged ring kept at
+        // the start went in that clean-up).
+        private static bool _finalCleanup = true;
+        private static double SmallShellPercent => _removeSmallParts && _finalCleanup ? _smallParts : 0;
         private static bool _forceSingleBody;
 
         private readonly ISldWorks _swApp;
@@ -98,6 +102,7 @@ namespace GeoSimplifier.SolidWorks.UI
         private bool _shellOutput;
         private int _step = 1;
         private IPropertyManagerPageCheckbox _singleBodyBox;
+        private IPropertyManagerPageCheckbox _finalCleanupBox;
         private bool _ok;
         private IModelDoc2 _source;
         private WrapResult _preview;
@@ -206,6 +211,11 @@ namespace GeoSimplifier.SolidWorks.UI
             _smallListBox.Height = 30;
             _smallListBox.Mark = HighlightMark;
             _smallListBox.SetSelectionFilters(new[] { (int)swSelectType_e.swSelCOMPONENTS });
+
+            _finalCleanupBox = (IPropertyManagerPageCheckbox)AddControl(group, FinalCleanupId, swPropertyManagerPageControlType_e.swControlType_Checkbox,
+                "Parça kaydedildikten sonra da küçük gövde temizliği yap",
+                "İşaretliyse sonuç oluşturulduktan sonra, yukarıdaki yüzdeden küçük kalan gövdeler (dış kabukta görünen küçük yüzey parçaları dahil) bir kez daha silinir. İşaretsizse yalnızca baştaki küçük parça çıkarma yapılır; baştan kalan parçalar sonuçta da kalır.");
+            _finalCleanupBox.Checked = _finalCleanup;
 
             _singleBodyBox = (IPropertyManagerPageCheckbox)AddControl(group, SingleBodyId, swPropertyManagerPageControlType_e.swControlType_Checkbox,
                 "Tek gövdeye zorla",
@@ -377,6 +387,8 @@ namespace GeoSimplifier.SolidWorks.UI
                 ((IPropertyManagerPageControl)_configNameBox).Enabled = _outputNewConfig;
             if (_smallPartsBox != null)
                 ((IPropertyManagerPageControl)_smallPartsBox).Enabled = _smallPartsCheck.Checked;
+            if (_finalCleanupBox != null)
+                ((IPropertyManagerPageControl)_finalCleanupBox).Enabled = _smallPartsCheck.Checked;
         }
 
         // The number box's Value still holds the old number while OnNumberboxChanged runs, so the new one is kept here.
@@ -676,6 +688,7 @@ namespace GeoSimplifier.SolidWorks.UI
             _embossHeight = _embossValue;
             _smallParts = _smallPartsValue;
             _removeSmallParts = _smallPartsCheck.Checked;
+            _finalCleanup = _finalCleanupBox.Checked;
             _forceSingleBody = _singleBodyBox.Checked;
             // The preview is only a quick, rough result; OK computes the real one.
             _preview = null;
@@ -814,6 +827,9 @@ namespace GeoSimplifier.SolidWorks.UI
             OnButtonPress(next ? NextButtonId : BackButtonId);
             PageLog.Write($"Simülasyon: {(next ? "İleri" : "Geri")} → sayfa {_step} (tür grubu {(_typeGroup.Visible ? "görünür" : "gizli")}, ayarlar {(_group.Visible ? "görünür" : "gizli")})");
         }
+
+        /// <summary>Test hook: unticks "Parça kaydedildikten sonra da küçük gövde temizliği yap".</summary>
+        public void NoFinalCleanupForTest() => _finalCleanupBox.Checked = false;
 
         /// <summary>Test hook: ticks "Tek gövdeye zorla".</summary>
         public void SingleBodyForTest() => _singleBodyBox.Checked = true;
