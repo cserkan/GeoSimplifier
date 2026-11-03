@@ -456,17 +456,11 @@ namespace GeoSimplifier.SolidWorks.Geometry
             }
             if (separated == 0)
                 return InterleavedBridge(a, b, ba, bb, min, max, gapWidth, tolerance);
+            // Apart diagonally: not bridged. Spanning both boxes whole filled the air around the bodies too: on the
+            // powder mixer a geared motor and the discharge flap beside it became one 556x513x1354 mm block (and
+            // only in some runs, as the order the lumps are paired in varies).
             if (separated > 1)
-            {
-                // Apart diagonally: the old way, the boxes spanned whole (rare).
-                for (int k = 0; k < 3; k++)
-                    if (Math.Max(ba.Min[k], bb.Min[k]) > Math.Min(ba.Max[k], bb.Max[k]))
-                    {
-                        min[k] = Math.Min(ba.Min[k], bb.Min[k]);
-                        max[k] = Math.Max(ba.Max[k], bb.Max[k]);
-                    }
-                return BridgeIn(a, b, min, max);
-            }
+                return null;
             // Apart along one axis: the air in the band between the boxes, reaching into each body only as deep as
             // needed to meet its facing surface (widened step by step). Spanning both bodies whole filled the air
             // around them too: on a press the motor on top disappeared in a block.
@@ -529,8 +523,11 @@ namespace GeoSimplifier.SolidWorks.Geometry
                 var next = new List<IBody2>();
                 foreach (var p in pieces)
                 {
+                    // A cut that fails bridges nothing: keeping the piece uncut put the whole region in as a solid
+                    // block, over the bodies themselves (a geared motor on the powder mixer).
                     var cut = Subtract(p, body);
-                    if (cut == null) { next.Add(p); continue; }
+                    if (cut == null)
+                        return null;
                     foreach (IBody2 q in cut) next.Add(q);
                 }
                 pieces = next;

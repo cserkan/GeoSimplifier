@@ -80,6 +80,108 @@ namespace GeoSimplifier.Core.Geometry
             return seen;
         }
 
+        /// <summary>
+        /// Whether some ray from outside reaches <paramref name="target"/> (a box that is not one of the bodies)
+        /// before any body. The rays are aimed at the box itself, <paramref name="spacing"/> apart over its outline
+        /// in each direction (spread further when that would be more than <paramref name="maxRaysPerDirection"/>),
+        /// so a narrow gap that shows the box is found however large the model is.
+        /// </summary>
+        public bool TargetSeen(Aabb target, int directions, double spacing, int maxRaysPerDirection = 40000)
+        {
+            if (target.IsEmpty)
+                return false;
+            if (_a.Count == 0)
+                return true;
+            Build();
+            var box = _nodes[0].Box.Union(target);
+            var centre = (box.Min + box.Max) * 0.5;
+            double radius = (box.Max - box.Min).Length / 2 + 1e-6;
+            bool seen = false;
+            Parallel.For(0, directions, (d, state) =>
+            {
+                double z = 1 - 2 * (d + 0.5) / directions, r = Math.Sqrt(1 - z * z), phi = d * Math.PI * (3 - Math.Sqrt(5));
+                var dir = new Vec3(r * Math.Cos(phi), r * Math.Sin(phi), z);
+                var u = Math.Abs(dir.X) < 0.9 ? new Vec3(0, -dir.Z, dir.Y) : new Vec3(dir.Z, 0, -dir.X);
+                u = u * (1 / u.Length);
+                var v = new Vec3(dir.Y * u.Z - dir.Z * u.Y, dir.Z * u.X - dir.X * u.Z, dir.X * u.Y - dir.Y * u.X);
+                // The box's outline seen along dir, in (u, v) about the centre.
+                double s0 = double.MaxValue, s1 = double.MinValue, t0 = double.MaxValue, t1 = double.MinValue;
+                for (int i = 0; i < 8; i++)
+                {
+                    var p = new Vec3((i & 1) == 0 ? target.Min.X : target.Max.X, (i & 2) == 0 ? target.Min.Y : target.Max.Y,
+                                     (i & 4) == 0 ? target.Min.Z : target.Max.Z) - centre;
+                    double s = Dot(p, u), t = Dot(p, v);
+                    s0 = Math.Min(s0, s); s1 = Math.Max(s1, s); t0 = Math.Min(t0, t); t1 = Math.Max(t1, t);
+                }
+                double step = spacing;
+                while (Math.Ceiling((s1 - s0) / step) * Math.Ceiling((t1 - t0) / step) > maxRaysPerDirection)
+                    step *= 1.5;
+                int ns = Math.Max(1, (int)Math.Ceiling((s1 - s0) / step)), nt = Math.Max(1, (int)Math.Ceiling((t1 - t0) / step));
+                var inv = new Vec3(1 / dir.X, 1 / dir.Y, 1 / dir.Z);
+                var stack = new Stack<int>();
+                for (int i = 0; i < ns && !state.IsStopped; i++)
+                    for (int j = 0; j < nt; j++)
+                    {
+                        double s = s0 + (s1 - s0) * (i + 0.5) / ns, t = t0 + (t1 - t0) * (j + 0.5) / nt;
+                        var origin = centre - dir * (radius * 1.01) + u * s + v * t;
+                        double toBox = BoxEntry(target, origin, inv);
+                        if (double.IsPositiveInfinity(toBox))
+                            continue;
+                        if (toBox < FirstHitDistance(origin, dir, stack, toBox))
+                        {
+                            seen = true;
+                            state.Stop();
+                            return;
+                        }
+                    }
+            });
+            return seen;
+        }
+
+        /// <summary>Where the ray enters the box, or infinity.</summary>
+        private static double BoxEntry(Aabb box, Vec3 origin, Vec3 inv)
+        {
+            double t0 = 0, t1 = double.PositiveInfinity;
+            for (int a = 0; a < 3; a++)
+            {
+                double near = (box.Min[a] - origin[a]) * inv[a], far = (box.Max[a] - origin[a]) * inv[a];
+                if (near > far) (near, far) = (far, near);
+                t0 = Math.Max(t0, near);
+                t1 = Math.Min(t1, far);
+                if (t0 > t1) return double.PositiveInfinity;
+            }
+            return t0;
+        }
+
+        /// <summary>The distance to the nearest triangle the ray hits closer than <paramref name="limit"/>, or infinity.</summary>
+        private double FirstHitDistance(Vec3 origin, Vec3 dir, Stack<int> stack, double limit)
+        {
+            stack.Clear();
+            stack.Push(0);
+            var inv = new Vec3(1 / dir.X, 1 / dir.Y, 1 / dir.Z);
+            double best = limit;
+            bool hit = false;
+            while (stack.Count > 0)
+            {
+                var node = _nodes[stack.Pop()];
+                if (!HitsBox(node.Box, origin, inv, best))
+                    continue;
+                if (node.Left < 0)
+                {
+                    for (int i = node.First; i < node.First + node.Count; i++)
+                    {
+                        int t = _order[i];
+                        double d = HitDistance(origin, dir, _a[t], _b[t], _c[t]);
+                        if (d < best) { best = d; hit = true; }
+                    }
+                    continue;
+                }
+                stack.Push(node.Left);
+                stack.Push(node.Right);
+            }
+            return hit ? best : double.PositiveInfinity;
+        }
+
         private int _maxOwner = -1;
         private int MaxOwner()
         {
