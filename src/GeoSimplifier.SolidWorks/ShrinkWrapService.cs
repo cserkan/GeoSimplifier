@@ -2052,13 +2052,14 @@ namespace GeoSimplifier.SolidWorks
 
 
         /// <summary>How many times coarser than SOLIDWORKS' own choice the result part's shaded display is.</summary>
-        public static double DisplayDeviationFactor { get; set; } = 10;
+        public static double DisplayDeviationFactor { get; set; } = 2.12;
 
         /// <summary>
         /// Makes the new part's shaded display (Document Properties > Image Quality) <see cref="DisplayDeviationFactor"/>
-        /// times coarser before it is first drawn; the geometry stays as it is. TAG3 (epak) at 5 %: 4 mm → 40 mm opened
-        /// in 34 s instead of 50 s, 593 MB instead of 871 MB (Serkan chose 40 mm; 60 mm SOLIDWORKS did not take).
-        /// Never coarser than that share of the result's size (40 mm of TAG3's 6.48 m), so a small part stays smooth.
+        /// times coarser before it is first drawn; the geometry stays as it is. Serkan first took 40 mm on TAG3 (epak,
+        /// 10x: opened in 34 s instead of 50 s) but found the slider at "low" too coarse to look at; on 2026-11-03 he
+        /// picked 8.41 mm on the same part (SOLIDWORKS' own 3.97 mm x 2.12). Measured earlier: 4 mm 50 s, 20 mm 40 s.
+        /// Never coarser than that share of the result's size (8.41 mm of TAG3's 6.48 m), so a small part stays smooth.
         /// </summary>
         private static void CoarserDisplay(IModelDoc2 part, double diagonal)
         {
@@ -2068,7 +2069,7 @@ namespace GeoSimplifier.SolidWorks
             const int none = (int)swUserPreferenceOption_e.swDetailingNoOptionSpecified;
             const int deviation = (int)swUserPreferenceDoubleValue_e.swImageQualityShadedDeviation;
             double before = ext.GetUserPreferenceDouble(deviation, none);
-            double wanted = Math.Min(before * DisplayDeviationFactor, 0.04 / 6.48 * diagonal);
+            double wanted = Math.Min(before * DisplayDeviationFactor, 0.00841 / 6.48 * diagonal);
             if (wanted <= before)
                 return;
             bool set = ext.SetUserPreferenceDouble(deviation, none, wanted);
