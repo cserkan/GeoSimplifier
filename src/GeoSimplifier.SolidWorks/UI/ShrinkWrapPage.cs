@@ -47,7 +47,7 @@ namespace GeoSimplifier.SolidWorks.UI
         // Above this many components the outer skin is suggested (TAG3 9,116; an electric motor a few dozen).
         private const int ShellSuggestComponents = 1000;
 
-        // In a part: above this many bodies, or with at least this many surface bodies making up a tenth of the
+        // In a part: with surface bodies only, above this many bodies, or with at least this many surface bodies making up a tenth of the
         // bodies or more, the outer skin is suggested (a motor part has a handful of solids).
         private const int ShellSuggestBodies = 200;
         private const int ShellSuggestSheets = 5;
@@ -170,7 +170,8 @@ namespace GeoSimplifier.SolidWorks.UI
                     sheets = (part.GetBodies2((int)swBodyType_e.swSheetBody, true) as object[])?.Length ?? 0;
                 }
                 int bodies = solids + sheets;
-                suggestShell = bodies > ShellSuggestBodies || (sheets >= ShellSuggestSheets && sheets * 10 >= bodies);
+                suggestShell = (solids == 0 && sheets > 0) || bodies > ShellSuggestBodies ||
+                               (sheets >= ShellSuggestSheets && sheets * 10 >= bodies);
                 counts = bodies > 0 ? $" ({solids} katı, {sheets} yüzey gövde)" : "";
             }
             _suggestLabel = (IPropertyManagerPageLabel)AddControl(_typeGroup, SuggestLabelId, swPropertyManagerPageControlType_e.swControlType_Label,
@@ -849,6 +850,8 @@ namespace GeoSimplifier.SolidWorks.UI
         /// <summary>Test hook: chooses "Yüzey kabuk" or "Katı" on page 1.</summary>
         public void KindForTest(bool shell)
         {
+            // Setting one option from code does not clear the other: both showed filled.
+            (shell ? _solidOption : _shellOption).Checked = false;
             (shell ? _shellOption : _solidOption).Checked = true;
             OnOptionCheck(shell ? ShellOptionId : SolidOptionId);
             PageLog.Write($"Simülasyon: tür {(shell ? "yüzey kabuk" : "katı")}, sayfa {_step}");
