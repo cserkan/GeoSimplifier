@@ -1870,16 +1870,38 @@ namespace GeoSimplifier.SolidWorks
                 // them dropped the whole engine (Serkan, 2026-11-05).
                 if (!options.Preview && asIs.Count > 0 && lumps.Count > 0)
                 {
+                    // A box alone is not enough either: one large solid (a 1.4 m frame) still spans part of the
+                    // engine. A surface within a solid's box goes only when its points really lie in that solid or
+                    // on its faces (1 mm), tested on the tessellation.
                     var pad = new Core.Geometry.Vec3(1e-3, 1e-3, 1e-3);
-                    var solidBoxes = collected.Select(BodyOps.AnyBounds).Where(b => !b.IsEmpty)
-                        .Select(b => new Core.Geometry.Aabb(b.Min - pad, b.Max + pad)).ToList();
-                    var stayOut = asIs.Where(s =>
+                    var solidBoxes = collected.Select(BodyOps.AnyBounds)
+                        .Select(b => b.IsEmpty ? b : new Core.Geometry.Aabb(b.Min - pad, b.Max + pad)).ToList();
+                    var candidates = asIs.Select(sh =>
                     {
-                        var box = BodyOps.AnyBounds(s);
-                        return !solidBoxes.Any(w => !Outside(box, w));
+                        var box = BodyOps.AnyBounds(sh);
+                        return Enumerable.Range(0, solidBoxes.Count).Where(k => !solidBoxes[k].IsEmpty && !Outside(box, solidBoxes[k])).ToList();
                     }).ToList();
+                    var rays = new Core.Geometry.OutsideRays();
+                    foreach (int k in candidates.SelectMany(c => c).Distinct())
+                        rays.AddBody(k, BodyOps.Triangles(new[] { collected[k] }));
+                    var stayOut = new List<IBody2>();
+                    for (int i = 0; i < asIs.Count; i++)
+                    {
+                        bool drop = false;
+                        if (candidates[i].Count > 0)
+                        {
+                            var tri = BodyOps.Triangles(new[] { asIs[i] });
+                            int step = Math.Max(1, tri.Count / 32);
+                            var samples = new List<Core.Geometry.Vec3>();
+                            for (int t = 0; t < tri.Count; t += step) samples.Add(tri[t]);
+                            // No tessellation: nothing to test it on, the box decides as before.
+                            drop = samples.Count == 0 || candidates[i].Any(k =>
+                                samples.Count(pt => rays.InsideOrOn(k, pt, 1e-3)) >= samples.Count * 0.9);
+                        }
+                        if (!drop) stayOut.Add(asIs[i]);
+                    }
                     if (asIs.Count > stayOut.Count)
-                        UI.PageLog.Write($"  yüzey gövdeleri: {asIs.Count - stayOut.Count} tanesi bir katı gövdenin kutusu içinde kaldığı için atıldı");
+                        UI.PageLog.Write($"  yüzey gövdeleri: {asIs.Count - stayOut.Count} tanesi bir katı gövdenin içinde/üstünde kaldığı için atıldı");
                     foreach (var s in stayOut)
                     {
                         var size = BodyOps.AnyBounds(s).Size;
