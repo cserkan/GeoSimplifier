@@ -165,6 +165,19 @@ namespace GeoSimplifier.SolidWorks
         /// <summary>Whether the solids seen in a surface model's skin get holes plugged, threads filled and embossed details flattened.</summary>
         public static bool SkinSolidWork { get; set; } = true;
 
+        /// <summary>
+        /// The outer skin of an assembly comes from SOLIDWORKS' own Save As Part > Exterior faces (Serkan, 2026-11-05):
+        /// on the AKSA generator it gave half the faces of the ray test. False keeps the ray test (for comparisons).
+        /// </summary>
+        public static bool UseExteriorFaces { get; set; } = true;
+        public static bool ExteriorResolve { get; set; }
+
+        /// <summary>Flat lids over small holes of an assembly's exterior faces (SOLIDWORKS does not close them).</summary>
+        public static bool ExteriorLids { get; set; } = true;
+
+        /// <summary>A plate-like part that is only left as very many loose faces (a louvre grille) becomes a flat panel.</summary>
+        public static bool ExteriorFlatGrilles { get; set; }
+
         /// <summary>How long the solids of a surface model's skin are worked on in all, most visible first.</summary>
         public static double SkinSolidSeconds { get; set; } = 300;
 
@@ -841,6 +854,212 @@ namespace GeoSimplifier.SolidWorks
         }
 
         /// <summary>
+        /// The skin of an assembly by SOLIDWORKS' own Exterior faces: saved to a temporary part (the assembly is not
+        /// touched and not saved), and its surface bodies taken from there. Each surface's feature is named after its
+        /// component ("A-1/B-1/C-1-surface12"), so parts the page takes out (small parts, cable bundles, cages, which
+        /// become boxes) are left out afterwards. SOLIDWORKS worked out what is visible with them still in place, so
+        /// nothing behind them is added; the same goes for Serkan's manual route. False when the save fails.
+        /// </summary>
+        private bool ExteriorFaces(WrapResult result, IModelDoc2 source, ShrinkWrapOptions options, List<IBody2> solids, List<string> solidOwners,
+                                   List<IBody2> sheets, List<string> sheetOwners, Exclusions exclusions)
+        {
+            var watch = Stopwatch.StartNew();
+            var bodies = solids.Concat(sheets).ToList();
+            var owners = solidOwners.Take(solids.Count).Concat(Enumerable.Repeat((string)null, Math.Max(0, solids.Count - solidOwners.Count))).Concat(sheetOwners).ToList();
+            var boxes = bodies.Select(BodyOps.AnyBounds).ToList();
+            var model = boxes.Aggregate(Core.Geometry.Aabb.Empty, (a, b) => a.Union(b));
+            var leftOut = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+            var bundles = new List<(string group, List<int> members, Core.Geometry.Aabb box)>();
+            var cages = Cages(boxes, owners, Enumerable.Range(0, bodies.Count), exclusions, bundles);
+            foreach (var group in cages.Concat(bundles))
+                foreach (int i in group.members)
+                    if (!string.IsNullOrEmpty(owners[i]))
+                        leftOut.Add(owners[i]);
+            int smallParts = 0;
+            if (options.MinPartPercent > 0)
+            {
+                double limit = options.MinPartPercent / 100 * (model.Max - model.Min).Length;
+                var partBoxes = new Dictionary<string, Core.Geometry.Aabb>();
+                for (int i = 0; i < bodies.Count; i++)
+                    if (!string.IsNullOrEmpty(owners[i]))
+                        partBoxes[owners[i]] = partBoxes.TryGetValue(owners[i], out var pb) ? pb.Union(boxes[i]) : boxes[i];
+                foreach (var small in partBoxes.Where(kv => (kv.Value.Max - kv.Value.Min).Length < limit).Select(kv => kv.Key))
+                {
+                    leftOut.Add(small);
+                    smallParts++;
+                }
+            }
+            int sourceBodies = bodies.Count;
+            // The copies were only needed for their boxes and owners.
+            solids.Clear();
+            sheets.Clear();
+            bodies = null;
+            GC.Collect();
+            GC.WaitForPendingFinalizers();
+            double prepared = watch.Elapsed.TotalSeconds;
+
+            string temp = System.IO.Path.Combine(System.IO.Path.GetTempPath(), "3DWrap_" + Guid.NewGuid().ToString("N") + ".SLDPRT");
+            IModelDoc2 part = null;
+            try
+            {
+                // Off: inside the add-in, resolving first left 4 surfaces of AKSA 6M31 in the saved part; as opened, 7,534.
+                if (ExteriorResolve) ((IAssemblyDoc)source).ResolveAllLightWeightComponents(false);
+                double resolvedAt = watch.Elapsed.TotalSeconds;
+                // A selection left by the page could limit what is saved.
+                source.ClearSelection2(true);
+                var ext = source.Extension;
+                var advanced = ext.GetAdvancedSaveAsOptions((int)swSaveWithReferencesOptions_e.swSaveWithReferencesOptions_None) as IAdvancedSaveAsOptions;
+                if (advanced == null)
+                {
+                    UI.PageLog.Write("  dış yüzler: kayıt seçenekleri alınamadı");
+                    return false;
+                }
+                advanced.GeometryToSave = (int)swGeometryToSave_e.swGeometryToSave_ExteriorFaces;
+                int errors = 0, warnings = 0;
+                bool saved = ext.SaveAs3(temp, (int)swSaveAsVersion_e.swSaveAsCurrentVersion,
+                    (int)(swSaveAsOptions_e.swSaveAsOptions_Copy | swSaveAsOptions_e.swSaveAsOptions_Silent), null, advanced, ref errors, ref warnings);
+                double savedAt = watch.Elapsed.TotalSeconds;
+                if (!saved || !System.IO.File.Exists(temp))
+                {
+                    UI.PageLog.Write($"  dış yüzler: kayıt başarısız (hata {errors}, uyarı {warnings})");
+                    return false;
+                }
+                _swApp.DocumentVisible(false, (int)swDocumentTypes_e.swDocPART);
+                try { part = _swApp.OpenDoc6(temp, (int)swDocumentTypes_e.swDocPART, (int)swOpenDocOptions_e.swOpenDocOptions_Silent, "", ref errors, ref warnings) as IModelDoc2; }
+                finally { _swApp.DocumentVisible(true, (int)swDocumentTypes_e.swDocPART); }
+                if (part == null)
+                {
+                    UI.PageLog.Write($"  dış yüzler: geçici parça açılamadı (hata {errors}, uyarı {warnings})");
+                    return false;
+                }
+                double openedAt = watch.Elapsed.TotalSeconds;
+                var output = new List<(string owner, IBody2 body)>();
+                int surfaces = 0, leftOutSurfaces = 0, excludedSurfaces = 0;
+                for (var feature = part.FirstFeature() as IFeature; feature != null; feature = feature.GetNextFeature() as IFeature)
+                {
+                    string type = feature.GetTypeName2();
+                    if (type != "RefSurface" && type != "BaseBody")
+                        continue;
+                    var faces = feature.GetFaces() as object[];
+                    if (faces == null || faces.Length == 0)
+                        continue;
+                    surfaces++;
+                    string owner = System.Text.RegularExpressions.Regex.Replace(feature.Name, @"-surface\d+$", "");
+                    if (exclusions != null && exclusions.ContainsName(owner))
+                    {
+                        // Comes in whole with the excluded parts.
+                        excludedSurfaces++;
+                        continue;
+                    }
+                    if (leftOut.Contains(owner))
+                    {
+                        leftOutSurfaces++;
+                        continue;
+                    }
+                    if (((IFace2)faces[0]).GetBody() is IBody2 body && body.Copy() is IBody2 copy)
+                        output.Add((owner, copy));
+                }
+                if (output.Count == 0)
+                {
+                    UI.PageLog.Write($"  dış yüzler: {surfaces} yüzeyden hiçbiri kalmadı");
+                    return false;
+                }
+                // A save that left far too little is a failed one (seen once: 4 surfaces of a 6,307-body model).
+                var kept = output.Select(o => BodyOps.AnyBounds(o.body)).Aggregate(Core.Geometry.Aabb.Empty, (a, b) => a.Union(b));
+                double modelSize = (model.Max - model.Min).Length, keptSize = kept.IsEmpty ? 0 : (kept.Max - kept.Min).Length;
+                if (surfaces < 0.02 * sourceBodies || keptSize < 0.7 * modelSize)
+                {
+                    UI.PageLog.Write($"  dış yüzler: sonuç çok az ({surfaces} yüzey, {sourceBodies} gövdeden; boyut {keptSize * 1000:F0} / {modelSize * 1000:F0} mm), kullanılmadı");
+                    return false;
+                }
+                int flatGrilles = 0, flatSurfaces = 0;
+                if (ExteriorFlatGrilles)
+                    foreach (var group in output.Where(o => !string.IsNullOrEmpty(o.owner)).GroupBy(o => o.owner).Where(g => g.Count() >= 100).ToList())
+                    {
+                        // Many loose faces of a thin plate; a part with real bodies of many faces (a casing) stays.
+                        int groupFaces = group.Sum(o => o.body.GetFaceCount());
+                        var groupBox = group.Select(o => BodyOps.AnyBounds(o.body)).Aggregate(Core.Geometry.Aabb.Empty, (a, b) => a.Union(b));
+                        var size = groupBox.Size;
+                        double thin = Math.Min(size.X, Math.Min(size.Y, size.Z)), wide = Math.Max(size.X, Math.Max(size.Y, size.Z));
+                        bool grille = groupFaces <= 1.5 * group.Count() && thin <= 0.1 * wide;
+                        UI.PageLog.Write($"  çok yüzeyli parça {group.Key}: {group.Count()} yüzey, {groupFaces} yüz, kutu {size.X * 1000:F0}x{size.Y * 1000:F0}x{size.Z * 1000:F0} mm → {(grille ? "düz panel" : "olduğu gibi")}");
+                        if (!grille || !(BoxSkin(groupBox) is IBody2 panel))
+                            continue;
+                        flatSurfaces += group.Count();
+                        flatGrilles++;
+                        var gone = new HashSet<IBody2>(group.Select(o => o.body));
+                        output.RemoveAll(o => gone.Contains(o.body));
+                        output.Add((group.Key, panel));
+                        result.KeepAlways.Add(panel);
+                    }
+                int lidCount = 0, lidFailed = 0;
+                double lidStart = watch.Elapsed.TotalSeconds;
+                if (ExteriorLids && options.GapWidth > 0)
+                {
+                    var closer = new HoleCloser(new BodyOps(_swApp));
+                    double least = options.MinPartPercent / 100 * modelSize;
+                    var lids = new List<(string owner, IBody2 lid)>();
+                    foreach (var (owner, body) in output)
+                    {
+                        if (result.KeepAlways.Contains(body))
+                            continue;
+                        var box = BodyOps.AnyBounds(body);
+                        if ((box.Max - box.Min).Length < least)
+                            continue;
+                        try
+                        {
+                            foreach (var (lid, _, _) in closer.SheetLids(body, options.GapWidth, 0.97))
+                                lids.Add((owner, lid));
+                        }
+                        catch (System.Runtime.InteropServices.COMException) { lidFailed++; }
+                    }
+                    foreach (var (owner, lid) in lids)
+                    {
+                        output.Add((owner, lid));
+                        result.KeepAlways.Add(lid);
+                    }
+                    lidCount = lids.Count;
+                    result.HolesClosed = lidCount;
+                }
+                UI.PageLog.Write($"  dış yüzler: {flatGrilles} ızgara düz panel oldu ({flatSurfaces} yüzey yerine), {lidCount} delik kapağı ({lidFailed} gövdede hata; {watch.Elapsed.TotalSeconds - lidStart:F1} sn)");
+                foreach (var cage in cages)
+                    if (BoxSkin(cage.box) is IBody2 skin)
+                    {
+                        output.Add((cage.group, skin));
+                        result.KeepAlways.Add(skin);
+                    }
+                result.IsSkin = true;
+                result.ManyBodiesWanted = true;
+                result.SourceBodies = sourceBodies;
+                result.SmallPartsRemoved = smallParts;
+                result.BundlesRemoved = bundles.Count;
+                result.Bodies = output.Select(o => o.body).ToList();
+                foreach (var (owner, body) in output)
+                    result.Owners[body] = owner;
+                result.Sheets = output.Count;
+                UI.PageLog.Write($"  dış yüzler (SOLIDWORKS): {surfaces} yüzey, {leftOutSurfaces} tanesi çıkarılan parçalardan ({smallParts} küçük parça, {bundles.Count} kablo demeti, {cages.Count} kafes), " +
+                                 $"{excludedSurfaces} tanesi hariç tutulanlardan, kalan {output.Count} gövde; hazırlık {prepared:F1}, çözme {resolvedAt - prepared:F1}, kayıt {savedAt - resolvedAt:F1}, açma {openedAt - savedAt:F1}, ayıklama {watch.Elapsed.TotalSeconds - openedAt:F1} sn");
+                return true;
+            }
+            catch (System.Runtime.InteropServices.COMException ex)
+            {
+                UI.PageLog.Write("  dış yüzler hatası: " + ex.Message);
+                return false;
+            }
+            finally
+            {
+                if (part != null)
+                    _swApp.CloseDoc(part.GetTitle());
+                part = null;
+                GC.Collect();
+                GC.WaitForPendingFinalizers();
+                try { System.IO.File.Delete(temp); }
+                catch (System.IO.IOException) { }
+                catch (UnauthorizedAccessException) { }
+            }
+        }
+
+        /// <summary>
         /// Cages and cable bundles: sub-assemblies made of many separate thin parts with mostly air between them. Per
         /// sub-assembly (the parts' common parent), it counts when it has at least 20 parts, nearly all thin (their two
         /// smaller sides under 3 % of the group's longest), together filling under 10 % of the group's box, none of
@@ -1389,6 +1608,27 @@ namespace GeoSimplifier.SolidWorks
                         result.Seconds = watch.Elapsed.TotalSeconds;
                         return result;
                     }
+                }
+                if (options.SurfaceShell && !options.Preview && options.ExteriorFaces && UseExteriorFaces && source is IAssemblyDoc)
+                {
+                    if (ExteriorFaces(result, source, options, bodies, bodyOwners, sheets, owners, exclusions))
+                    {
+                        // Excluded parts come through whole, with every face ("Hariç tut": keep these as they are).
+                        result.Bodies.AddRange(excluded.Concat(excludedSheets));
+                        result.KeepAlways.UnionWith(excluded.Concat(excludedSheets));
+                        result.ExcludedBodies = excluded.Count + excludedSheets.Count;
+                        result.Seconds = watch.Elapsed.TotalSeconds;
+                        return result;
+                    }
+                    // Its copies were let go: collected again for the ray test.
+                    result.Notes.Add("SOLIDWORKS dış yüzler kaydı başarısız oldu; kendi dış yüz hesabı kullanıldı.");
+                    bodyOwners.Clear();
+                    owners.Clear();
+                    instances.Clear();
+                    sheetInstances.Clear();
+                    excludedSheets.Clear();
+                    bodies = BodyCollector.CopyBodies(source, exclusions, out excluded, instances, bodyOwners);
+                    sheets = BodyCollector.CopySheets(source, exclusions, owners, excludedSheets, sheetInstances);
                 }
                 if (options.SurfaceShell && !options.Preview && sheets.Count > bodies.Count)
                 {
@@ -2020,7 +2260,7 @@ namespace GeoSimplifier.SolidWorks
                 double inserted = commitWatch.Elapsed.TotalSeconds;
                 partDoc.FeatureManager.EnableFeatureTree = true;
                 double tree = commitWatch.Elapsed.TotalSeconds;
-                CoarserDisplay(partDoc, diagonal);
+                CoarserDisplay(partDoc, diagonal, result.IsSkin);
                 if (view != null) view.EnableGraphicsUpdate = true;
                 UI.PageLog.Write($"  ekleme: yeni parça {newPart:F1}, {total} gövde {inserted - newPart:F1}, ağaç {tree - inserted:F1}, " +
                                  $"görüntü {commitWatch.Elapsed.TotalSeconds - tree:F1} sn");
@@ -2164,7 +2404,7 @@ namespace GeoSimplifier.SolidWorks
         /// picked 8.41 mm on the same part (SOLIDWORKS' own 3.97 mm x 2.12). Measured earlier: 4 mm 50 s, 20 mm 40 s.
         /// Never coarser than that share of the result's size (8.41 mm of TAG3's 6.48 m), so a small part stays smooth.
         /// </summary>
-        private static void CoarserDisplay(IModelDoc2 part, double diagonal)
+        private static void CoarserDisplay(IModelDoc2 part, double diagonal, bool skin)
         {
             if (DisplayDeviationFactor <= 1)
                 return;
@@ -2172,7 +2412,9 @@ namespace GeoSimplifier.SolidWorks
             const int none = (int)swUserPreferenceOption_e.swDetailingNoOptionSpecified;
             const int deviation = (int)swUserPreferenceDoubleValue_e.swImageQualityShadedDeviation;
             double before = ext.GetUserPreferenceDouble(deviation, none);
-            double wanted = Math.Min(before * DisplayDeviationFactor, 0.00841 / 6.48 * diagonal);
+            double wanted = skin
+                ? Math.Min(0.00841, Math.Min(before * 3.09, 0.0019 * diagonal))
+                : Math.Min(before * DisplayDeviationFactor, 0.00841 / 6.48 * diagonal);
             if (wanted <= before)
                 return;
             bool set = ext.SetUserPreferenceDouble(deviation, none, wanted);
