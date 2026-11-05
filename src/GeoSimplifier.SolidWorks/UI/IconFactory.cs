@@ -1,4 +1,4 @@
-using System;
+﻿using System;
 using System.Drawing;
 using System.Drawing.Drawing2D;
 using System.Drawing.Imaging;
@@ -47,7 +47,7 @@ namespace GeoSimplifier.SolidWorks.UI
         public static string CreatePageTitleBitmap()
         {
             string path = Path.Combine(TempFolder(), "3dwrap_title.bmp");
-            WriteBitmap(path, 20, Color.FromArgb(240, 240, 240));
+            WriteBitmap(path, 20, Color.FromArgb(247, 247, 247));
             return path;
         }
 
