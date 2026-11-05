@@ -372,6 +372,16 @@ namespace GeoSimplifier.SolidWorks
                 key.SetValue(null, 0); // 0 = not loaded at startup until the user enables it
                 key.SetValue("Description", Description);
                 key.SetValue("Title", Title);
+                try
+                {
+                    string folder = System.IO.Path.GetDirectoryName(t.Assembly.Location);
+                    key.SetValue("Icon Path", IconFactory.WriteAddinListIcon(folder));
+                }
+                catch (Exception ex)
+                {
+                    // Only the icon in the Add-Ins dialog depends on this; registration goes on without it.
+                    Console.WriteLine("3DWrap: Eklentiler listesi simgesi yazilamadi: " + ex.Message);
+                }
             }
             using (var key = Registry.CurrentUser.CreateSubKey(@"Software\SolidWorks\AddInsStartup\" + guid))
             {

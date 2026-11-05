@@ -41,6 +41,7 @@ namespace GeoSimplifier.SolidWorks.UI
         private const int SmallListId = 26;
         private const int SuggestLabelId = 27;
         private const int NextButtonId = 28;
+        private const int LicenseLabelId = 31;
         private const int BackButtonId = 29;
         private const int FinalCleanupId = 30;
 
@@ -97,6 +98,7 @@ namespace GeoSimplifier.SolidWorks.UI
         private IPropertyManagerPageOption _solidOption;
         private IPropertyManagerPageOption _shellOption;
         private IPropertyManagerPageLabel _suggestLabel;
+        private IPropertyManagerPageLabel _licenseLabel;
         private IPropertyManagerPageButton _nextButton;
         private IPropertyManagerPageButton _backButton;
         private bool _shellOutput;
@@ -131,6 +133,8 @@ namespace GeoSimplifier.SolidWorks.UI
             _page = (IPropertyManagerPage2)_swApp.CreatePropertyManagerPage("3DWrap", options, this, ref errors);
             if (_page == null)
                 throw new InvalidOperationException("Could not create the PropertyManager page (error " + errors + ").");
+            try { _page.SetTitleBitmap2(IconFactory.CreatePageTitleBitmap()); }
+            catch (Exception ex) { PageLog.Write("Sayfa logosu konamadı: " + ex.Message); }
 
             // Page 1: solid or outer skin. The PropertyManager has a single page; a button on each step shows and hides
             // the groups. (With SOLIDWORKS' own page arrows, the arrow that does not apply stayed on the page, greyed out:
@@ -157,6 +161,8 @@ namespace GeoSimplifier.SolidWorks.UI
             (_shellOutput ? _shellOption : _solidOption).Checked = true;
             _nextButton = (IPropertyManagerPageButton)AddControl(_typeGroup, NextButtonId, swPropertyManagerPageControlType_e.swControlType_Button,
                 "Ayarlara geç >", "Seçilen sonuç türünün ayarlarını gösterir.");
+            _licenseLabel = (IPropertyManagerPageLabel)AddControl(_typeGroup, LicenseLabelId, swPropertyManagerPageControlType_e.swControlType_Label,
+                Licensing.LicenseGate.Summary() ?? "Lisans: yok", "Bu bilgisayardaki 3DWrap lisansı.");
 
             var group = _group = (IPropertyManagerPageGroup)_page.AddGroupBox(GroupId, "Ayarlar",
                 (int)(swAddGroupBoxOptions_e.swGroupBoxOptions_Visible | swAddGroupBoxOptions_e.swGroupBoxOptions_Expanded));
