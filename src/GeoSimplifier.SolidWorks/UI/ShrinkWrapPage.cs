@@ -48,6 +48,11 @@ namespace GeoSimplifier.SolidWorks.UI
         // Above this many components the outer skin is suggested (TAG3 9,116; an electric motor a few dozen).
         private const int ShellSuggestComponents = 1000;
 
+        // In a part: with surface bodies only, above this many bodies, or with at least this many surface bodies making up a tenth of the
+        // bodies or more, the outer skin is suggested (a motor part has a handful of solids).
+        private const int ShellSuggestBodies = 200;
+        private const int ShellSuggestSheets = 5;
+
         // Selection mark of the exclusion box, so its items are told apart from other selections.
         private const int ExcludeMark = 2;
 
@@ -150,13 +155,34 @@ namespace GeoSimplifier.SolidWorks.UI
             // as an outer skin, an electric motor as a solid). Only the component count is read here: it is instant,
             // and opening the command must stay under a second.
             var watch = System.Diagnostics.Stopwatch.StartNew();
-            int components = _source is IAssemblyDoc assembly ? assembly.GetComponentCount(false) : 0;
-            bool suggestShell = components > ShellSuggestComponents;
+            int components = 0, solids = 0, sheets = 0;
+            bool suggestShell;
+            string counts;
+            if (_source is IAssemblyDoc assembly)
+            {
+                components = assembly.GetComponentCount(false);
+                suggestShell = components > ShellSuggestComponents;
+                counts = components > 0 ? $" ({components} bileşen)" : "";
+            }
+            else
+            {
+                // A part has no components: its bodies are counted instead (also instant). A part made of many bodies
+                // or with many surface bodies (an imported generator set, a STEP model) gets the outer skin.
+                if (_source is IPartDoc part)
+                {
+                    solids = (part.GetBodies2((int)swBodyType_e.swSolidBody, true) as object[])?.Length ?? 0;
+                    sheets = (part.GetBodies2((int)swBodyType_e.swSheetBody, true) as object[])?.Length ?? 0;
+                }
+                int bodies = solids + sheets;
+                suggestShell = (solids == 0 && sheets > 0) || bodies > ShellSuggestBodies ||
+                               (sheets >= ShellSuggestSheets && sheets * 10 >= bodies);
+                counts = bodies > 0 ? $" ({solids} katı, {sheets} yüzey gövde)" : "";
+            }
             _suggestLabel = (IPropertyManagerPageLabel)AddControl(_typeGroup, SuggestLabelId, swPropertyManagerPageControlType_e.swControlType_Label,
-                (suggestShell ? "Önerilen: Yüzey kabuk" : "Önerilen: Katı") + (components > 0 ? $" ({components} bileşen)" : ""),
+                (suggestShell ? "Önerilen: Yüzey kabuk" : "Önerilen: Katı") + counts,
                 "Katı: hacim, kütle, çakışma denetimi ya da kapalı gövde gerektiğinde; küçük ve orta montajlar (bir elektrik motoru gibi). " +
-                "Yüzey kabuk: görsel model; çok büyük montajlar, hızlı hesaplanır ve hızlı açılır.");
-            PageLog.Write($"Öneri: {components} bileşen → {(suggestShell ? "yüzey kabuk" : "katı")} ({watch.Elapsed.TotalMilliseconds:F0} ms)");
+                "Yüzey kabuk: görsel model; çok büyük montajlar ve çok gövdeli ya da yüzeyli parçalar, hızlı hesaplanır ve hızlı açılır.");
+            PageLog.Write($"Öneri: {components} bileşen, {solids} katı + {sheets} yüzey gövde → {(suggestShell ? "yüzey kabuk" : "katı")} ({watch.Elapsed.TotalMilliseconds:F0} ms)");
             _shellOutput = suggestShell;
             (_shellOutput ? _shellOption : _solidOption).Checked = true;
             _nextButton = (IPropertyManagerPageButton)AddControl(_typeGroup, NextButtonId, swPropertyManagerPageControlType_e.swControlType_Button,
@@ -374,7 +400,15 @@ namespace GeoSimplifier.SolidWorks.UI
             _outputGroup.Visible = settings;
             _group.Caption = _shellOutput ? "Ayarlar: yüzey kabuk" : "Ayarlar: katı";
             // "Tek gövdeye zorla" belongs to the solid result only (Serkan): a skin's imported surfaces do not knit.
-            ((IPropertyManagerPageControl)_singleBodyBox).Visible = !_shellOutput;
+            // Set only while its group is shown, and flipped through "shown" first: a control hidden while its group was
+            // hidden came back when the group was shown, and setting the same value again did nothing (part, 2026-11-04).
+            var single = (IPropertyManagerPageControl)_singleBodyBox;
+            if (settings)
+            {
+                single.Visible = true;
+                single.Visible = !_shellOutput;
+            }
+            single.Enabled = !_shellOutput;
         }
 
         private static object AddControl(IPropertyManagerPageGroup group, int id, swPropertyManagerPageControlType_e type, string caption, string tip)
@@ -822,6 +856,8 @@ namespace GeoSimplifier.SolidWorks.UI
         /// <summary>Test hook: chooses "Yüzey kabuk" or "Katı" on page 1.</summary>
         public void KindForTest(bool shell)
         {
+            // Setting one option from code does not clear the other: both showed filled.
+            (shell ? _solidOption : _shellOption).Checked = false;
             (shell ? _shellOption : _solidOption).Checked = true;
             OnOptionCheck(shell ? ShellOptionId : SolidOptionId);
             PageLog.Write($"Simülasyon: tür {(shell ? "yüzey kabuk" : "katı")}, sayfa {_step}");
