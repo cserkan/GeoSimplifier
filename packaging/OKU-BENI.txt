@@ -53,8 +53,14 @@ Sol tarafta ayar sayfasi acilir:
     konfigurasyon)
 "Onizleme goster" kutusu kapali gelir; isaretlerseniz sonucu islemeden
 once ekranda gosterir. Yesil tik sonucu olusturur.
-Buyuk montajlarda islem uzun surer (ornek: 1.871 parcalik montajda
-kabuk ~2 dakika, 4.688 bilesenli montajda ~3,5 dakika).
+Buyuk montajlarda islem uzun surer (ornek: 2.470 bilesenli montajda
+kabuk ~2 dakika).
+
+Montajda "Yuzey kabuk": dis yuzler SOLIDWORKS'un kendi "Dis yuzler"
+kaydiyla alinir; kucuk parcalar ve kablo demetleri cikarilir, kucuk
+delikler (yuvarlak ve dikdortgen) duz kapakla kapatilir. Montajiniz
+kaydedilmez. Sonuc kaydedilmemis yeni bir parca olarak acilir; kaydetmeyi
+unutmayin.
 
 KALDIRMA
 --------
