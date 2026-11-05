@@ -56,7 +56,13 @@ namespace GeoSimplifier.SolidWorks.Geometry
         }
 
         /// <summary>Surface triangles of the bodies (three points each), from SOLIDWORKS' tessellation.</summary>
-        public static List<Vec3> Triangles(IEnumerable<IBody2> bodies)
+        public static List<Vec3> Triangles(IEnumerable<IBody2> bodies) => Triangles(bodies, explicitTessellation: true);
+
+        /// <summary>
+        /// Surface triangles; with <paramref name="explicitTessellation"/> false only the display tessellation is
+        /// read and a body without one gives nothing (ITessellation on some temporary bodies crashed SOLIDWORKS).
+        /// </summary>
+        public static List<Vec3> Triangles(IEnumerable<IBody2> bodies, bool explicitTessellation)
         {
             var points = new List<Vec3>();
             foreach (var body in bodies)
@@ -72,7 +78,7 @@ namespace GeoSimplifier.SolidWorks.Geometry
                         points.Add(new Vec3(t[i + 6], t[i + 7], t[i + 8]));
                     }
                 }
-                if (points.Count > 0)
+                if (points.Count > 0 || !explicitTessellation)
                     continue;
                 // Temporary bodies may have no display tessellation; tessellate them explicitly.
                 var tess = (ITessellation)body.GetTessellation(body.GetFaces());
@@ -92,6 +98,31 @@ namespace GeoSimplifier.SolidWorks.Geometry
                         points.Add(new Vec3(p[0], p[1], p[2]));
                     }
                 }
+            }
+            return points;
+        }
+
+        /// <summary>
+        /// Points on a body without tessellating it: its vertices, and for each face the point of the face nearest
+        /// its box centre. At most <paramref name="max"/> points.
+        /// </summary>
+        public static List<Vec3> SamplePoints(IBody2 body, int max = 48)
+        {
+            var points = new List<Vec3>();
+            var vertices = (object[])body.GetVertices() ?? new object[0];
+            int step = Math.Max(1, vertices.Length / (max / 2));
+            for (int i = 0; i < vertices.Length; i += step)
+                if (((IVertex)vertices[i]).GetPoint() is double[] p && p.Length >= 3)
+                    points.Add(new Vec3(p[0], p[1], p[2]));
+            var faces = (object[])body.GetFaces() ?? new object[0];
+            int fstep = Math.Max(1, faces.Length / (max / 2));
+            for (int i = 0; i < faces.Length; i += fstep)
+            {
+                var face = (IFace2)faces[i];
+                if (!(face.GetBox() is double[] b) || b.Length < 6)
+                    continue;
+                if (face.GetClosestPointOn((b[0] + b[3]) / 2, (b[1] + b[4]) / 2, (b[2] + b[5]) / 2) is double[] q && q.Length >= 3)
+                    points.Add(new Vec3(q[0], q[1], q[2]));
             }
             return points;
         }

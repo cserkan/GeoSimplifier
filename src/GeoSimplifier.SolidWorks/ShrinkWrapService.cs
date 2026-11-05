@@ -1883,19 +1883,18 @@ namespace GeoSimplifier.SolidWorks
                     }).ToList();
                     var rays = new Core.Geometry.OutsideRays();
                     foreach (int k in candidates.SelectMany(c => c).Distinct())
-                        rays.AddBody(k, BodyOps.Triangles(new[] { collected[k] }));
+                        rays.AddBody(k, BodyOps.Triangles(new[] { collected[k] }, explicitTessellation: false));
                     var stayOut = new List<IBody2>();
                     for (int i = 0; i < asIs.Count; i++)
                     {
                         bool drop = false;
                         if (candidates[i].Count > 0)
                         {
-                            var tri = BodyOps.Triangles(new[] { asIs[i] });
-                            int step = Math.Max(1, tri.Count / 32);
-                            var samples = new List<Core.Geometry.Vec3>();
-                            for (int t = 0; t < tri.Count; t += step) samples.Add(tri[t]);
-                            // No tessellation: nothing to test it on, the box decides as before.
-                            drop = samples.Count == 0 || candidates[i].Any(k =>
+                            // Vertices and face points, not the tessellation: tessellating these temporary
+                            // surface bodies crashed SOLIDWORKS. A solid without display tessellation has no
+                            // triangles here, so nothing is inside it and its surfaces stay (never lose outer detail).
+                            var samples = BodyOps.SamplePoints(asIs[i]);
+                            drop = samples.Count > 0 && candidates[i].Any(k =>
                                 samples.Count(pt => rays.InsideOrOn(k, pt, 1e-3)) >= samples.Count * 0.9);
                         }
                         if (!drop) stayOut.Add(asIs[i]);
