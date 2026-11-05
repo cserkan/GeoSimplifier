@@ -22,6 +22,7 @@ namespace GeoSimplifier.SolidWorks.Licensing
 
         // A license found valid once is trusted for the rest of the SOLIDWORKS session.
         private static string _validFor;
+        private static LicenseFile _valid;
 
         public static string AddinFolder => Path.GetDirectoryName(typeof(LicenseGate).Assembly.Location);
         public static string ProgramDataFolder => Path.Combine(System.Environment.GetFolderPath(System.Environment.SpecialFolder.CommonApplicationData), "3DWrap");
@@ -81,13 +82,24 @@ namespace GeoSimplifier.SolidWorks.Licensing
             {
                 var serials = MachineSerials();
                 var key = PublicKey();
-                return key != null && serials.Count > 0 && FindProblem(key, serials, out _) == null;
+                if (key == null || serials.Count == 0 || FindProblem(key, serials, out var found) != null)
+                    return false;
+                _valid = found;
+                return true;
             }
             catch (Exception ex)
             {
                 PageLog.Write("Lisans kontrolü başarısız: " + ex.Message);
                 return false;
             }
+        }
+
+        /// <summary>One line for the page saying whose license this is and until when; null without a valid license.</summary>
+        public static string Summary()
+        {
+            if (_valid == null && !IsLicensedQuiet())
+                return null;
+            return $"Lisans: {_valid.Company}, " + (_valid.Expires.HasValue ? $"bitiş {_valid.Expires.Value:dd.MM.yyyy}" : "süresiz");
         }
 
         /// <summary>True when a valid license is present; otherwise explains why in Turkish and offers to pick a .lic file.</summary>
@@ -120,6 +132,7 @@ namespace GeoSimplifier.SolidWorks.Licensing
             if (problem == null)
             {
                 _validFor = serialKey;
+                _valid = found;
                 PageLog.Write($"Lisans geçerli: {found.Company}, bitiş {(found.Expires.HasValue ? found.Expires.Value.ToString("yyyy-MM-dd") : "süresiz")}");
                 return true;
             }
@@ -226,6 +239,7 @@ namespace GeoSimplifier.SolidWorks.Licensing
                         File.Copy(picked, target, true);
                     PageLog.Write("Lisans yüklendi: " + target);
                     _validFor = serialKey;
+                    _valid = lic;
                     Show(swApp, $"3DWrap lisansı yüklendi.\n\nFirma: {lic.Company}\nBitiş: {(lic.Expires.HasValue ? lic.Expires.Value.ToString("dd.MM.yyyy") : "süresiz")}",
                         swMessageBoxIcon_e.swMbInformation, swMessageBoxBtn_e.swMbOk);
                     return true;

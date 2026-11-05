@@ -45,6 +45,11 @@
     <EmbeddedResource Include="Licensing\3DWrap-acik-anahtar.xml" LogicalName="GeoSimplifier.SolidWorks.Licensing.3DWrap-acik-anahtar.xml" />
   </ItemGroup>
 
+  <!-- The logo (Resources\Logo\*.svg is its source). -->
+  <ItemGroup>
+    <EmbeddedResource Include="Resources\Logo\3dwrap_*.png" LogicalName="GeoSimplifier.SolidWorks.Logo.%(Filename)%(Extension)" />
+  </ItemGroup>
+
   <ItemGroup>
     <ProjectReference Include="..\GeoSimplifier.Core\GeoSimplifier.Core.csproj" />
   </ItemGroup>
