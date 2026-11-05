@@ -146,7 +146,7 @@ namespace GeoSimplifier.SolidWorks.Geometry
                 var q = flat[(i + 1) % flat.Count];
                 area += Vec3.Dot(p, u) * Vec3.Dot(q, v) - Vec3.Dot(q, u) * Vec3.Dot(p, v);
             }
-            if (Math.Abs(area) / 2 < minRectangleFill * (u1 - u0) * (v1 - v0))
+            if (Math.Abs(area) / 2 < 0.6 * (u1 - u0) * (v1 - v0))
             {
                 SkippedCaps++;
                 return null;
