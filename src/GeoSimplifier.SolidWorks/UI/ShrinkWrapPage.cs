@@ -59,6 +59,7 @@ namespace GeoSimplifier.SolidWorks.UI
         private static bool _newConfiguration;
         private static string _configurationName = "Simple";
         private static bool _surfaceShell;
+        private static bool _exteriorFaces;
         // The last clean-up of small bodies, after the result is made (shell surfaces and the final 'select bodies by
         // size' pass), uses the same percentage as 'Bundan küçük parçaları çıkar'; none when that box is unticked, or
         // when 'Parça kaydedildikten sonra da küçük gövde temizliği yap' is (Serkan 2026-11-03: a flanged ring kept at
@@ -683,6 +684,7 @@ namespace GeoSimplifier.SolidWorks.UI
             _closeHoles = _closeHolesBox.Checked;
             _newConfiguration = _outputNewConfig;
             _surfaceShell = _shellOutput;
+            _exteriorFaces = _shellOutput && !_outputNewConfig;
             _configurationName = string.IsNullOrWhiteSpace(_outputName) ? "Simple" : _outputName.Trim();
             _gapWidth = _gapValue;
             _embossHeight = _embossValue;
@@ -727,6 +729,7 @@ namespace GeoSimplifier.SolidWorks.UI
             MinPartPercent = _removeSmallParts ? _smallParts : 0,
             ForceSingleBody = !_surfaceShell && _forceSingleBody,
             SurfaceShell = _surfaceShell,
+            ExteriorFaces = _exteriorFaces,
         };
 
         public void OnCheckboxCheck(int Id, bool Checked)

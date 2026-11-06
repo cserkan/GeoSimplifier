@@ -1,4 +1,4 @@
-using System;
+﻿using System;
 using System.Collections.Generic;
 using System.Linq;
 using SolidWorks.Interop.sldworks;
@@ -54,6 +54,10 @@ namespace GeoSimplifier.SolidWorks.Geometry
             string name = component.Name2;
             return _components.Contains(name) || _components.Any(c => name.StartsWith(c + "/", StringComparison.OrdinalIgnoreCase));
         }
+
+        /// <summary>As <see cref="Contains(IComponent2)"/>, by the component's Name2.</summary>
+        public bool ContainsName(string name) =>
+            _components.Contains(name) || _components.Any(c => name.StartsWith(c + "/", StringComparison.OrdinalIgnoreCase));
 
         /// <summary>True when an excluded component or body lies under the sub-assembly named <paramref name="parent"/>.</summary>
         public bool AnyUnder(string parent) =>
