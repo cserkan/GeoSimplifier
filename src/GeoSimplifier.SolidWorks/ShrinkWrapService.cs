@@ -170,6 +170,12 @@ namespace GeoSimplifier.SolidWorks
         /// on the AKSA generator it gave half the faces of the ray test. False keeps the ray test (for comparisons).
         /// </summary>
         public static bool UseExteriorFaces { get; set; } = true;
+        /// <summary>
+        /// Above this many faces in the model the ray test is used: SOLIDWORKS' save cannot be interrupted, and on TAG3 it was still
+        /// running after 45 minutes on one core (962 bodies but very many faces; AKSA 6M31: 48 s).
+        /// </summary>
+        public static long ExteriorMaxFaces { get; set; } = 150000;
+
         public static bool ExteriorResolve { get; set; }
 
         /// <summary>Flat lids over small holes of an assembly's exterior faces (SOLIDWORKS does not close them).</summary>
@@ -1609,7 +1615,11 @@ namespace GeoSimplifier.SolidWorks
                         return result;
                     }
                 }
-                if (options.SurfaceShell && !options.Preview && options.ExteriorFaces && UseExteriorFaces && source is IAssemblyDoc)
+                long sourceFaces = options.SurfaceShell && !options.Preview ? bodies.Concat(sheets).Sum(b => (long)b.GetFaceCount()) : 0;
+                bool tooManyForExterior = sourceFaces > ExteriorMaxFaces;
+                if (options.SurfaceShell && !options.Preview && options.ExteriorFaces && UseExteriorFaces && tooManyForExterior)
+                    UI.PageLog.Write($"  dış yüzler: {sourceFaces} yüz, SOLIDWORKS kaydı yerine kendi hesabı kullanılıyor (sınır {ExteriorMaxFaces})");
+                if (options.SurfaceShell && !options.Preview && options.ExteriorFaces && UseExteriorFaces && !tooManyForExterior && source is IAssemblyDoc)
                 {
                     if (ExteriorFaces(result, source, options, bodies, bodyOwners, sheets, owners, exclusions))
                     {
