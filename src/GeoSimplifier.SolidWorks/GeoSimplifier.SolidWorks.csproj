@@ -45,6 +45,11 @@
     <EmbeddedResource Include="Licensing\3DWrap-acik-anahtar.xml" LogicalName="GeoSimplifier.SolidWorks.Licensing.3DWrap-acik-anahtar.xml" />
   </ItemGroup>
 
+  <!-- TekyazPlus bu eklentiyi modül olarak barındırır ve lisans kontrolünü (LicenseGate) aynen kullanır. -->
+  <ItemGroup>
+    <InternalsVisibleTo Include="TekyazPlus" />
+  </ItemGroup>
+
   <ItemGroup>
     <ProjectReference Include="..\GeoSimplifier.Core\GeoSimplifier.Core.csproj" />
   </ItemGroup>
