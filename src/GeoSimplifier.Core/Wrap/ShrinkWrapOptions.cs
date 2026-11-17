@@ -36,6 +36,9 @@
         /// </summary>
         public bool SurfaceShell { get; set; }
 
+        /// <summary>With <see cref="SurfaceShell"/>: an assembly's skin comes from SOLIDWORKS' own Exterior faces (new part output only).</summary>
+        public bool ExteriorFaces { get; set; }
+
         /// <summary>
         /// Unite all bodies into as few as possible (and bridge the gaps between them). Off, each body keeps its own
         /// plugs and filled insides but is not united with the others: many bodies, much faster.

@@ -179,6 +179,16 @@ namespace GeoSimplifier.SolidWorks
             ShrinkWrapService.MaxSheetsPerPart = maxSheets.Success ? int.Parse(maxSheets.Groups[1].Value) : 150;
             if (maxSheets.Success)
                 limitsMm = limitsMm.Remove(maxSheets.Index, maxSheets.Length);
+            // "oldskin:" uses the ray test for an assembly's skin instead of SOLIDWORKS' Exterior faces (for comparisons).
+            ShrinkWrapService.UseExteriorFaces = !limitsMm.Contains("oldskin:");
+            limitsMm = limitsMm.Replace("oldskin:", "");
+            ShrinkWrapService.ExteriorResolve = limitsMm.Contains("resolve:");
+            limitsMm = limitsMm.Replace("resolve:", "");
+            // "nolids:" leaves out the exterior faces' hole lids; "grille:" turns on flat grille panels (a trial).
+            ShrinkWrapService.ExteriorLids = !limitsMm.Contains("nolids:");
+            limitsMm = limitsMm.Replace("nolids:", "");
+            ShrinkWrapService.ExteriorFlatGrilles = limitsMm.Contains("grille:");
+            limitsMm = limitsMm.Replace("grille:", "");
             // "noskinsolid:" leaves the solids of a surface model's skin as they are (for before/after comparisons).
             ShrinkWrapService.SkinSolidWork = !limitsMm.Contains("noskinsolid:");
             limitsMm = limitsMm.Replace("noskinsolid:", "");

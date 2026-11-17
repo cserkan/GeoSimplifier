@@ -171,7 +171,7 @@ namespace GeoSimplifier.SolidWorks.Geometry
         /// triangles. Imported surface models have no solid to plug, so the hole's walls stay as they are; they
         /// are hidden behind the lid.
         /// </summary>
-        public List<(IBody2 lid, List<Vec3> outline, Vec3 normal)> SheetLids(IBody2 sheet, double maxWidth)
+        public List<(IBody2 lid, List<Vec3> outline, Vec3 normal)> SheetLids(IBody2 sheet, double maxWidth, double minRectangleFill = 0.6)
         {
             var lids = new List<(IBody2 lid, List<Vec3> outline, Vec3 normal)>();
             var modeler = (IModeler)_ops.Modeler;
@@ -230,7 +230,7 @@ namespace GeoSimplifier.SolidWorks.Geometry
                             var q1 = points[(i + 1) % points.Count] - centre;
                             area += Vec3.Dot(q0, u) * Vec3.Dot(q1, v) - Vec3.Dot(q1, u) * Vec3.Dot(q0, v);
                         }
-                        if (Math.Abs(area) / 2 < 0.6 * (u1 - u0) * (v1 - v0))
+                        if (Math.Abs(area) / 2 < minRectangleFill * (u1 - u0) * (v1 - v0))
                         {
                             SkippedCaps++;
                             continue;
