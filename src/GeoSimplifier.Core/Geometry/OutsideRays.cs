@@ -138,6 +138,78 @@ namespace GeoSimplifier.Core.Geometry
             return seen;
         }
 
+        private static readonly Vec3[] ParityDirections =
+        {
+            new Vec3(0.5773, 0.5774, 0.5775).Normalized(),
+            new Vec3(-0.6234, 0.4123, 0.6643).Normalized(),
+            new Vec3(0.3311, -0.7219, 0.6075).Normalized(),
+        };
+
+        private static readonly Vec3[] NearDirections =
+        {
+            new Vec3(1, 0.013, 0.007).Normalized(), new Vec3(-1, -0.011, 0.009).Normalized(),
+            new Vec3(0.009, 1, 0.012).Normalized(), new Vec3(-0.012, -1, 0.008).Normalized(),
+            new Vec3(0.011, 0.007, 1).Normalized(), new Vec3(-0.008, 0.013, -1).Normalized(),
+        };
+
+        /// <summary>
+        /// Whether <paramref name="p"/> lies inside the closed body <paramref name="owner"/>, or within
+        /// <paramref name="tolerance"/> of its surface along one of the six axis directions. Inside is decided by
+        /// counting where rays in three skew directions cross the body's triangles; the majority wins, so a ray that
+        /// grazes an edge of the tessellation does not decide alone.
+        /// </summary>
+        public bool InsideOrOn(int owner, Vec3 p, double tolerance)
+        {
+            Build();
+            if (_nodes.Length == 0)
+                return false;
+            var stack = new Stack<int>();
+            foreach (var d in NearDirections)
+                if (HitDistance(owner, p, d, stack, tolerance, out _) <= tolerance)
+                    return true;
+            int inside = 0;
+            foreach (var d in ParityDirections)
+            {
+                HitDistance(owner, p, d, stack, double.PositiveInfinity, out int crossings);
+                if ((crossings & 1) == 1) inside++;
+            }
+            return inside >= 2;
+        }
+
+        /// <summary>The nearest hit on <paramref name="owner"/>'s triangles closer than <paramref name="limit"/>, and how many of them the whole ray crosses.</summary>
+        private double HitDistance(int owner, Vec3 origin, Vec3 dir, Stack<int> stack, double limit, out int crossings)
+        {
+            stack.Clear();
+            stack.Push(0);
+            var inv = new Vec3(1 / dir.X, 1 / dir.Y, 1 / dir.Z);
+            double best = double.PositiveInfinity;
+            crossings = 0;
+            while (stack.Count > 0)
+            {
+                var node = _nodes[stack.Pop()];
+                if (!HitsBox(node.Box, origin, inv, limit))
+                    continue;
+                if (node.Left < 0)
+                {
+                    for (int i = node.First; i < node.First + node.Count; i++)
+                    {
+                        int t = _order[i];
+                        if (_owner[t] != owner)
+                            continue;
+                        double d = HitDistance(origin, dir, _a[t], _b[t], _c[t]);
+                        if (d > limit)
+                            continue;
+                        crossings++;
+                        if (d < best) best = d;
+                    }
+                    continue;
+                }
+                stack.Push(node.Left);
+                stack.Push(node.Right);
+            }
+            return best;
+        }
+
         /// <summary>Where the ray enters the box, or infinity.</summary>
         private static double BoxEntry(Aabb box, Vec3 origin, Vec3 inv)
         {

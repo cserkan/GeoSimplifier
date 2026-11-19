@@ -1863,15 +1863,44 @@ namespace GeoSimplifier.SolidWorks
                     result.Notes.Add("Uyarı: sonuç modelin dışına taşıyor; lütfen kontrol edin.");
                 }
                 // A solid result has no surface bodies beside its solids (Serkan: MOTOR030220 as one body came with two):
-                // the model's surfaces lying within the solids' box (1 mm) sit on or in them and go. One reaching out
-                // of it is a real open surface of the outside; it stays, and is logged.
+                // a surface lying within the box (1 mm) of one of the model's solid bodies sits on or in that body and
+                // goes. One reaching out of every such box is a real open surface of the outside; it stays, and is logged.
+                // The box of each source solid is used, never the box around all solids: on a generator set whose
+                // engine is all surfaces, the radiator and the two air filters span the engine, and the box around
+                // them dropped the whole engine (Serkan, 2026-11-05).
                 if (!options.Preview && asIs.Count > 0 && lumps.Count > 0)
                 {
-                    var solidBox = lumps.Aggregate(Core.Geometry.Aabb.Empty, (a, l) => a.Union(BodyOps.AnyBounds(l)));
-                    var within = new Core.Geometry.Aabb(solidBox.Min - new Core.Geometry.Vec3(1e-3, 1e-3, 1e-3), solidBox.Max + new Core.Geometry.Vec3(1e-3, 1e-3, 1e-3));
-                    var stayOut = asIs.Where(s => Outside(BodyOps.AnyBounds(s), within)).ToList();
+                    // A box alone is not enough either: one large solid (a 1.4 m frame) still spans part of the
+                    // engine. A surface within a solid's box goes only when its points really lie in that solid or
+                    // on its faces (1 mm), tested on the tessellation.
+                    var pad = new Core.Geometry.Vec3(1e-3, 1e-3, 1e-3);
+                    var solidBoxes = collected.Select(BodyOps.AnyBounds)
+                        .Select(b => b.IsEmpty ? b : new Core.Geometry.Aabb(b.Min - pad, b.Max + pad)).ToList();
+                    var candidates = asIs.Select(sh =>
+                    {
+                        var box = BodyOps.AnyBounds(sh);
+                        return Enumerable.Range(0, solidBoxes.Count).Where(k => !solidBoxes[k].IsEmpty && !Outside(box, solidBoxes[k])).ToList();
+                    }).ToList();
+                    var rays = new Core.Geometry.OutsideRays();
+                    foreach (int k in candidates.SelectMany(c => c).Distinct())
+                        rays.AddBody(k, BodyOps.Triangles(new[] { collected[k] }, explicitTessellation: false));
+                    var stayOut = new List<IBody2>();
+                    for (int i = 0; i < asIs.Count; i++)
+                    {
+                        bool drop = false;
+                        if (candidates[i].Count > 0)
+                        {
+                            // Vertices and face points, not the tessellation: tessellating these temporary
+                            // surface bodies crashed SOLIDWORKS. A solid without display tessellation has no
+                            // triangles here, so nothing is inside it and its surfaces stay (never lose outer detail).
+                            var samples = BodyOps.SamplePoints(asIs[i]);
+                            drop = samples.Count > 0 && candidates[i].Any(k =>
+                                samples.Count(pt => rays.InsideOrOn(k, pt, 1e-3)) >= samples.Count * 0.9);
+                        }
+                        if (!drop) stayOut.Add(asIs[i]);
+                    }
                     if (asIs.Count > stayOut.Count)
-                        UI.PageLog.Write($"  yüzey gövdeleri: {asIs.Count - stayOut.Count} tanesi katının kutusu içinde kaldığı için atıldı");
+                        UI.PageLog.Write($"  yüzey gövdeleri: {asIs.Count - stayOut.Count} tanesi bir katı gövdenin içinde/üstünde kaldığı için atıldı");
                     foreach (var s in stayOut)
                     {
                         var size = BodyOps.AnyBounds(s).Size;
