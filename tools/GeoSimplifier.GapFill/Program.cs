@@ -67,17 +67,15 @@ namespace GeoSimplifier.GapFill
                 Log($"kopya: {work}");
             }
 
-            Process proc = null;
-            ISldWorks sw = null;
+            _work = work;
+            _trace = Path.Combine(outDir, baseName + "_iz.txt");
             try
             {
-                (sw, proc) = StartSolidWorks();
-                int err = 0, warn = 0;
-                if (assembly && !AssemblyToPart(sw, input, work)) return 1;
-                var md = (IModelDoc2)sw.OpenDoc6(work, 1, 1, "", ref err, ref warn);
-                if (md == null) { Log($"HATA: açılamadı err={err} warn={warn}"); return 1; }
-                Log($"açıldı err={err} warn={warn}");
-                Run(sw, md, outDir, baseName);
+                (_sw, _proc) = StartSolidWorks();
+                if (assembly && !AssemblyToPart(_sw, input, work)) return 1;
+                var md = OpenWork();
+                if (md == null) return 1;
+                Run(md, outDir, baseName);
                 return 0;
             }
             catch (Exception ex)
@@ -87,8 +85,7 @@ namespace GeoSimplifier.GapFill
             }
             finally
             {
-                try { sw?.CloseAllDocuments(true); sw?.ExitApp(); } catch { }
-                if (proc != null && !proc.WaitForExit(30000)) { try { proc.Kill(); Log("SW kapatılamadı, sonlandırıldı"); } catch { } }
+                StopSolidWorks();
                 Log("bitti");
             }
         }
@@ -98,6 +95,46 @@ namespace GeoSimplifier.GapFill
         /// ile TÜM bileşenlerin geometrisi (dış yüzler değil) yeni bir parçaya kopyalanır ve montaj kaydedilmeden
         /// kapatılır. Serkan'ın dosyalarına yazılmaz.
         /// </summary>
+        private static ISldWorks _sw;
+        private static Process _proc;
+        private static string _work, _trace;
+        private static int _restarts;
+
+        private static IModelDoc2 OpenWork()
+        {
+            int err = 0, warn = 0;
+            var md = (IModelDoc2)_sw.OpenDoc6(_work, 1, 1, "", ref err, ref warn);
+            Log(md == null ? $"HATA: açılamadı err={err} warn={warn}" : $"açıldı err={err} warn={warn}");
+            return md;
+        }
+
+        private static void StopSolidWorks()
+        {
+            try { _sw?.CloseAllDocuments(true); _sw?.ExitApp(); } catch { }
+            if (_proc != null && !_proc.WaitForExit(30000)) { try { _proc.Kill(); Log("SW kapatılamadı, sonlandırıldı"); } catch { } }
+            _sw = null; _proc = null;
+        }
+
+        /// <summary>SOLIDWORKS process gone (it crashed on some geometry): start a new one and reopen the work file.</summary>
+        private static bool Disconnected(Exception ex)
+        {
+            if (!(ex is COMException c)) return ex is InvalidComObjectException;
+            uint h = (uint)c.HResult;
+            return h == 0x80010108 || h == 0x800706BA || h == 0x800706BE || h == 0x80010007;
+        }
+
+        private static IModelDoc2 Restart(string why)
+        {
+            if (++_restarts > 8) throw new InvalidOperationException("SOLIDWORKS çok kez çöktü");
+            Log($"SW bağlantısı koptu ({why}); yeniden başlatılıyor ({_restarts}. kez)");
+            try { if (_proc != null && !_proc.HasExited) _proc.Kill(); } catch { }
+            _sw = null; _proc = null;
+            (_sw, _proc) = StartSolidWorks();
+            var md = OpenWork();
+            if (md == null) throw new InvalidOperationException("çalışma dosyası yeniden açılamadı");
+            return md;
+        }
+
         private static bool AssemblyToPart(ISldWorks sw, string asm, string part)
         {
             int err = 0, warn = 0;
@@ -125,6 +162,7 @@ namespace GeoSimplifier.GapFill
             public bool Closed;
             public string FaceKey;
             public string EndKey;
+            public int Index;            // position in the body's GetEdges(), to find the edge again after a restart
         }
 
         private sealed class Loop
@@ -141,9 +179,10 @@ namespace GeoSimplifier.GapFill
             public string Class = "", Action = "", Result = "";
             public double Ms;
             public List<byte[]> Refs;
+            public bool Saved;
         }
 
-        private static void Run(ISldWorks sw, IModelDoc2 md, string outDir, string baseName)
+        private static void Run(IModelDoc2 md, string outDir, string baseName)
         {
             var part = (IPartDoc)md;
             var view = md.ActiveView as IModelView;
@@ -170,58 +209,24 @@ namespace GeoSimplifier.GapFill
             var loops = new List<Loop>();
             int freeEdges = 0, allEdges = 0;
             var stepWatch = Stopwatch.StartNew();
+            var crashed = new List<int>();
             for (int b = 0; b < bodies.Count; b++)
             {
                 if (b % 100 == 0) Log($"  gövde {b}/{bodies.Count}, serbest kenar {freeEdges}, döngü {loops.Count}, {stepWatch.Elapsed.TotalSeconds:F0} sn");
-                var body = bodies[b];
-                var bb = (double[])body.GetBodyBox();
-                double bodySize = new V(bb[3] - bb[0], bb[4] - bb[1], bb[5] - bb[2]).Len;
-
-                var free = new List<FreeEdge>();
-                var freeFaces = new Dictionary<string, IFace2>();
-                foreach (IEdge e in (object[])body.GetEdges() ?? new object[0])
+                try { File.WriteAllText(_trace, $"gövde {b}"); } catch { }
+                try { BodyLoops(b, bodies[b], loops, ref freeEdges, ref allEdges); }
+                catch (Exception ex) when (Disconnected(ex))
                 {
-                    allEdges++;
-                    var adj = (object[])e.GetTwoAdjacentFaces2() ?? new object[0];
-                    IFace2 only = null; int nf = 0;
-                    foreach (var o in adj) if (o != null) { nf++; only = (IFace2)o; }
-                    if (nf != 1) continue;
-                    var fe = Sample(e);
-                    if (fe == null) continue;
-                    string fk = FaceKey(only);
-                    fe.FaceKey = fk;
-                    freeFaces[fk] = only;
-                    free.Add(fe);
-                }
-                if (free.Count == 0) continue;
-                freeEdges += free.Count;
-
-                // edge keys of the inner loops of the faces that have free edges
-                var innerKeys = new Dictionary<string, int>();
-                int innerSerial = 0;
-                foreach (var face in freeFaces.Values)
-                    foreach (ILoop2 lp in (object[])face.GetLoops() ?? new object[0])
-                    {
-                        if (lp.IsOuter()) continue;
-                        innerSerial++;
-                        foreach (IEdge e in (object[])lp.GetEdges() ?? new object[0])
-                            if (e.GetCurveParams2() is double[] cp && cp.Length >= 6)
-                                innerKeys[EndKey(cp)] = innerSerial;
-                    }
-
-                foreach (var lp in Chain(free))
-                {
-                    lp.Body = b;
-                    lp.BodySize = bodySize;
-                    lp.Id = loops.Count + 1;
-                    var serials = lp.Edges.Select(x => innerKeys.TryGetValue(x.EndKey, out int s) ? s : -1).Distinct().ToList();
-                    lp.Inner = serials.Count == 1 && serials[0] > 0;
-                    lp.Faces = lp.Edges.Select(x => x.FaceKey).Distinct().Count();
-                    Measure(lp);
-                    loops.Add(lp);
+                    crashed.Add(b);
+                    Log($"  SW gövde {b} üzerinde çöktü ({ex.GetType().Name}); bu gövde atlanıyor");
+                    loops.RemoveAll(l => l.Body == b);
+                    md = Restart("gövde " + b);
+                    part = (IPartDoc)md;
+                    view = md.ActiveView as IModelView;
+                    bodies = ((object[])part.GetBodies2(1, true) ?? new object[0]).Cast<IBody2>().ToList();
                 }
             }
-            Log($"kenar: {allEdges}, serbest: {freeEdges}, döngü: {loops.Count}");
+            Log($"kenar: {allEdges}, serbest: {freeEdges}, döngü: {loops.Count}, SW çöktüğü için atlanan gövde: {crashed.Count} [{string.Join(",", crashed)}]");
 
             // 3) Guess: which loops to close and how.
             foreach (var lp in loops) Classify(lp, grid);
@@ -235,9 +240,18 @@ namespace GeoSimplifier.GapFill
 
             if (!_analyseOnly && chosen.Count > 0)
             {
-                // persistent references first: features added later may invalidate the edge pointers
-                foreach (var lp in chosen)
-                    lp.Refs = lp.Edges.Select(e => (byte[])md.Extension.GetPersistReference3(e.Edge)).ToList();
+                // persistent references first, from the edges as they are now (the session may have been
+                // restarted since the loops were found): features added later may invalidate edge pointers.
+                foreach (var grp in chosen.GroupBy(l => l.Body))
+                {
+                    var be = (object[])bodies[grp.Key].GetEdges() ?? new object[0];
+                    foreach (var lp in grp)
+                        lp.Refs = lp.Edges.Select(e => e.Index < be.Length ? (byte[])md.Extension.GetPersistReference3(be[e.Index]) : null).ToList();
+                }
+                {
+                    int ez = 0, wz = 0;
+                    md.Save3(1, ref ez, ref wz);   // so a restart during filling reopens a file whose references resolve
+                }
 
                 md.FeatureManager.EnableFeatureTree = false;
                 if (view != null) view.EnableGraphicsUpdate = false;
@@ -246,8 +260,26 @@ namespace GeoSimplifier.GapFill
                 foreach (var lp in chosen)
                 {
                     var w = Stopwatch.StartNew();
+                    try { File.WriteAllText(_trace, $"doldurma döngü {lp.Id}"); } catch { }
                     try { lp.Result = Fill(md, lp); }
+                    catch (Exception ex) when (Disconnected(ex))
+                    {
+                        lp.Result = "sw-coktu";
+                        Log($"  SW döngü {lp.Id} doldurulurken çöktü; son kayıttan devam");
+                        md = Restart("döngü " + lp.Id);
+                        view = md.ActiveView as IModelView;
+                        md.FeatureManager.EnableFeatureTree = false;
+                        if (view != null) view.EnableGraphicsUpdate = false;
+                        // fills since the last save are lost
+                        foreach (var x in chosen.Take(done).Where(x => x.Result.StartsWith("tamam") && !x.Saved)) x.Result = "kayboldu";
+                    }
                     catch (Exception ex) { lp.Result = "hata:" + ex.GetType().Name; }
+                    if (done % 100 == 99)
+                    {
+                        int ez = 0, wz = 0;
+                        md.Save3(1, ref ez, ref wz);
+                        foreach (var x in chosen.Take(done + 1)) x.Saved = true;
+                    }
                     lp.Ms = w.Elapsed.TotalMilliseconds;
                     if (++done % 25 == 0)
                         Log($"  {done}/{chosen.Count} doldurma, {fillWatch.Elapsed.TotalSeconds:F0} sn, başarılı {chosen.Take(done).Count(l => l.Result.StartsWith("tamam"))}");
@@ -278,6 +310,60 @@ namespace GeoSimplifier.GapFill
         }
 
         // ---------------------------------------------------------------- free edges and loops
+
+        private static void BodyLoops(int b, IBody2 body, List<Loop> loops, ref int freeEdges, ref int allEdges)
+        {
+                var bb = (double[])body.GetBodyBox();
+                double bodySize = new V(bb[3] - bb[0], bb[4] - bb[1], bb[5] - bb[2]).Len;
+
+                var free = new List<FreeEdge>();
+                var freeFaces = new Dictionary<string, IFace2>();
+                var bodyEdges = (object[])body.GetEdges() ?? new object[0];
+                for (int ei = 0; ei < bodyEdges.Length; ei++)
+                {
+                    var e = (IEdge)bodyEdges[ei];
+                    allEdges++;
+                    var adj = (object[])e.GetTwoAdjacentFaces2() ?? new object[0];
+                    IFace2 only = null; int nf = 0;
+                    foreach (var o in adj) if (o != null) { nf++; only = (IFace2)o; }
+                    if (nf != 1) continue;
+                    var fe = Sample(e);
+                    if (fe == null) continue;
+                    string fk = FaceKey(only);
+                    fe.FaceKey = fk;
+                    fe.Index = ei;
+                    freeFaces[fk] = only;
+                    free.Add(fe);
+                }
+                if (free.Count == 0) return;
+                freeEdges += free.Count;
+
+                // edge keys of the inner loops of the faces that have free edges
+                var innerKeys = new Dictionary<string, int>();
+                int innerSerial = 0;
+                foreach (var face in freeFaces.Values)
+                    foreach (ILoop2 lp in (object[])face.GetLoops() ?? new object[0])
+                    {
+                        if (lp.IsOuter()) continue;
+                        innerSerial++;
+                        foreach (IEdge e in (object[])lp.GetEdges() ?? new object[0])
+                            if (e.GetCurveParams2() is double[] cp && cp.Length >= 6)
+                                innerKeys[EndKey(cp)] = innerSerial;
+                    }
+
+                foreach (var lp in Chain(free))
+                {
+                    lp.Body = b;
+                    lp.BodySize = bodySize;
+                    lp.Id = loops.Count + 1;
+                    var serials = lp.Edges.Select(x => innerKeys.TryGetValue(x.EndKey, out int s) ? s : -1).Distinct().ToList();
+                    lp.Inner = serials.Count == 1 && serials[0] > 0;
+                    lp.Faces = lp.Edges.Select(x => x.FaceKey).Distinct().Count();
+                    Measure(lp);
+                    loops.Add(lp);
+                }
+        }
+
 
         private static string Key(V p, double q) =>
             $"{Math.Round(p.X / q)}|{Math.Round(p.Y / q)}|{Math.Round(p.Z / q)}";
@@ -465,6 +551,7 @@ namespace GeoSimplifier.GapFill
             var edges = new List<IEdge>();
             foreach (var r in lp.Refs)
             {
+                if (r == null) return "kenar-yok";
                 int err;
                 var o = md.Extension.GetObjectByPersistReference3(r, out err) as IEdge;
                 if (o == null) return "kenar-yok";
