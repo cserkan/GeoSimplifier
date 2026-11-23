@@ -271,6 +271,9 @@ namespace GeoSimplifier.GapFill
             foreach (var g in loops.GroupBy(l => l.Class).OrderByDescending(g => g.Count()))
                 Log($"  sınıf {g.Key}: {g.Count()}");
 
+            try { WriteDump(Path.Combine(outDir, baseName + "_dongu_verisi.jsonl"), loops, bodyTris); }
+            catch (Exception ex) { Log("döküm: " + ex.Message); }
+
             var chosen = loops.Where(l => l.Action != "")
                 .OrderBy(l => l.Action == "duz" ? 0 : 1).ThenBy(l => l.Size)
                 .Take(_max).ToList();
@@ -771,6 +774,40 @@ namespace GeoSimplifier.GapFill
             }
             File.WriteAllText(path, sb.ToString(), new UTF8Encoding(true));
             Log($"csv: {path}");
+        }
+
+        /// <summary>
+        /// Boşluk döngülerinin noktaları ve çevresindeki kendi gövde üçgenleri (grafik veride doldurma ve yüzey
+        /// oturtma denemeleri için). Satır başına bir döngü, metre.
+        /// </summary>
+        private static void WriteDump(string path, List<Loop> loops, List<float[]> bodyTris)
+        {
+            int n = 0;
+            using (var w = new StreamWriter(path, false, new UTF8Encoding(false)))
+                foreach (var l in loops)
+                {
+                    if (l.Open || l.Size > 0.3 || l.Class == "komsu-kapali" || l.Class == "acik-zincir") continue;
+                    double r = Math.Max(0.005, 0.3 * l.Size);
+                    double x0 = l.Pts.Min(p => p.X) - r, x1 = l.Pts.Max(p => p.X) + r, y0 = l.Pts.Min(p => p.Y) - r, y1 = l.Pts.Max(p => p.Y) + r, z0 = l.Pts.Min(p => p.Z) - r, z1 = l.Pts.Max(p => p.Z) + r;
+                    var t = bodyTris[l.Body];
+                    var ring = new StringBuilder();
+                    int nt = 0;
+                    for (int k = 0; k + 8 < t.Length && nt < 4000; k += 9)
+                    {
+                        bool any = false;
+                        for (int j = 0; j < 9 && !any; j += 3)
+                            any = t[k + j] >= x0 && t[k + j] <= x1 && t[k + j + 1] >= y0 && t[k + j + 1] <= y1 && t[k + j + 2] >= z0 && t[k + j + 2] <= z1;
+                        if (!any) continue;
+                        if (nt++ > 0) ring.Append(',');
+                        ring.Append(string.Join(",", Enumerable.Range(0, 9).Select(j => t[k + j].ToString("R", Inv))));
+                    }
+                    w.Write("{\"id\":" + l.Id + ",\"govde\":" + l.Body + ",\"sinif\":\"" + l.Class + "\",\"ic\":" + (l.Inner ? 1 : 0) +
+                            ",\"boyut\":" + F(l.Size * 1000) + ",\"govde_boyut\":" + F(l.BodySize * 1000) + ",\"komsu\":" + F(l.NeighbourFrac) + ",\"pts\":[");
+                    w.Write(string.Join(",", l.Pts.Select(p => $"{p.X.ToString("R", Inv)},{p.Y.ToString("R", Inv)},{p.Z.ToString("R", Inv)}")));
+                    w.Write("],\"tri\":[" + ring + "]}\n");
+                    n++;
+                }
+            Log($"döküm: {n} döngü → {path} ({new FileInfo(path).Length / 1048576.0:F1} MB)");
         }
 
         private static string F(double v) => v.ToString("0.###", Inv);
