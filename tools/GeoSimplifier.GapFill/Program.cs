@@ -472,8 +472,12 @@ namespace GeoSimplifier.GapFill
             if (!ok || after == null || (before != null && after.GetID() == before.GetID()))
                 return "olmadi";
             var colour = how == "duz" ? Orange : Magenta;
-            if (!after.SetMaterialPropertyValues2(colour, 2, null))
+            // SetMaterialPropertyValues2 returns void in the SW 2026 interop: fall back to face colours on exception
+            try { after.SetMaterialPropertyValues2(colour, 2, null); }
+            catch
+            {
                 foreach (IFace2 f in (object[])after.GetFaces() ?? new object[0]) f.MaterialPropertyValues = colour;
+            }
             return "tamam:" + how;
         }
 

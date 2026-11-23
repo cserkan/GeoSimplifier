@@ -5,7 +5,8 @@
     kapanacağını tahmin eder ve SOLIDWORKS'ün kendi yüzey komutlarıyla (Düzlemsel yüzey / Dolgu yüzey) kapatır.
     Eklentiye (GeoSimplifier.SolidWorks) bağlı değildir: kayıtlı eklenti DLL'ine dokunmadan derlenir ve
     kendi başlattığı gizli SOLIDWORKS 2026 oturumunda çalışır.
-      dotnet run -c Release -- <girdi.SLDPRT> <çıktı klasörü> [--analiz] [--max N] [--sinir-mm 150]
+      dotnet run -c Release (araya iki tire) girdi.SLDPRT cikti_klasoru [analiz] [max N] [sinir-mm 150]
+      (XML yorumunda çift tire olamaz; seçenekler Program.cs içinde)
   -->
   <PropertyGroup>
     <OutputType>Exe</OutputType>
