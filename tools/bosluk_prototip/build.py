@@ -29,14 +29,15 @@ for body,idx,cl,lid,size in todo:
     if cl!='dolgu':
         p['kind']='plane'
         cx,cy,r,rr=patch.circle_fit(p2)
-        p['circle']=(cx,cy,r) if len(X)>=8 and rr<max(0.005*r,2e-5) else None
+        sz=size/1000
+        p['circle']=(cx,cy,r) if len(X)>=8 and rr<max(0.005*r,2e-5) and 0.3*sz<r<0.6*sz and patch.inside(p2,np.array([[cx,cy]]))[0] else None
     else:
         p['kind']='coons'
         best=None
         for nn in (6,9,12,16):
             r_=clean.coons(X,n=nn)
-            if r_ is None: break
-            best=r_
+            if r_ is None: continue
+            if best is None or r_[2]<best[2]: best=r_
             if r_[2]<5e-5: break
         if best is None: fail[cl]+=1; continue
         p['coons']=(best[0],best[1]); p['bdev']=best[2]; devs.append((best[2],best[2]))

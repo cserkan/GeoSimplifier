@@ -150,7 +150,7 @@ def fit_curve(pts,n,deg=3):
     C=np.zeros((n,3)); C[0]=pts[0]; C[-1]=pts[-1]
     if n>2:
         A=B[:,1:-1]; rhs=pts-np.outer(B[:,0],pts[0])-np.outer(B[:,-1],pts[-1])
-        lam=1e-6; R=np.diff(np.eye(n-2),2,axis=0) if n>4 else np.zeros((0,n-2))
+        lam=1e-4*len(pts); R=np.diff(np.eye(n-2),2,axis=0) if n>4 else np.zeros((0,n-2))
         M=np.vstack([A,np.sqrt(lam)*R]); C[1:-1]=np.linalg.lstsq(M,np.vstack([rhs,np.zeros((len(R),3))]),rcond=None)[0]
     err=np.linalg.norm(B@C-pts,axis=1).max()
     return C,k,err
@@ -169,9 +169,11 @@ def coons(X,verts=None,n=8):
         if len(s)>=6: return s
         t=np.linspace(0,1,8); idx=np.linspace(0,len(s)-1,len(s))
         return np.column_stack([np.interp(t*(len(s)-1),idx,s[:,k]) for k in range(3)])
+    sides=[dens(s) for s in sides]
+    n=min(n,max(4,min(len(s) for s in sides)-1))
     C=[];E=0
     for s in sides:
-        c,k,e=fit_curve(dens(s),n); C.append(c); E=max(E,e)
+        c,k,e=fit_curve(s,n); C.append(c); E=max(E,e)
     S1=C[0]; S2=C[1]; S3=C[2][::-1]; S4=C[3][::-1]   # bottom(u), right(v), top(u), left(v)
     P=np.zeros((n,n,3))
     P[:,0]=S1; P[-1,:]=S2; P[:,-1]=S3; P[0,:]=S4
@@ -180,4 +182,6 @@ def coons(X,verts=None,n=8):
         for j in range(1,n-1):
             u,v=s[i],s[j]
             P[i,j]=(1-v)*S1[i]+v*S3[i]+(1-u)*S4[j]+u*S2[j]-((1-u)*(1-v)*P[0,0]+u*(1-v)*P[-1,0]+(1-u)*v*P[0,-1]+u*v*P[-1,-1])
+    ext=np.ptp(P.reshape(-1,3),0).max(); size=np.ptp(X,0).max()
+    if ext>1.3*size+1e-4: return None
     return P,clamped_knots(n),E
