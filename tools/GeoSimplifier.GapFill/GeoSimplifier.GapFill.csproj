@@ -1,0 +1,34 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <!--
+    Deneme aracı: yüzey modellerindeki açıklıkları (serbest kenar döngüleri) bulur, hangisinin nasıl
+    kapanacağını tahmin eder ve SOLIDWORKS'ün kendi yüzey komutlarıyla (Düzlemsel yüzey / Dolgu yüzey) kapatır.
+    Eklentiye (GeoSimplifier.SolidWorks) bağlı değildir: kayıtlı eklenti DLL'ine dokunmadan derlenir ve
+    kendi başlattığı gizli SOLIDWORKS 2026 oturumunda çalışır.
+      dotnet run -c Release -- <girdi.SLDPRT> <çıktı klasörü> [--analiz] [--max N] [--sinir-mm 150]
+  -->
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <TargetFramework>net48</TargetFramework>
+    <LangVersion>latest</LangVersion>
+    <PlatformTarget>x64</PlatformTarget>
+    <SolidWorksApiDir Condition="'$(SolidWorksApiDir)' == ''">C:\Program Files\SOLIDWORKS Corp\SOLIDWORKS\api\redist</SolidWorksApiDir>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <PackageReference Include="Microsoft.NETFramework.ReferenceAssemblies" Version="1.0.3" PrivateAssets="all" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <Reference Include="System.Drawing" />
+    <Reference Include="SolidWorks.Interop.sldworks">
+      <HintPath>$(SolidWorksApiDir)\SolidWorks.Interop.sldworks.dll</HintPath>
+      <EmbedInteropTypes>false</EmbedInteropTypes>
+    </Reference>
+    <Reference Include="SolidWorks.Interop.swconst">
+      <HintPath>$(SolidWorksApiDir)\SolidWorks.Interop.swconst.dll</HintPath>
+      <EmbedInteropTypes>false</EmbedInteropTypes>
+    </Reference>
+  </ItemGroup>
+
+</Project>
