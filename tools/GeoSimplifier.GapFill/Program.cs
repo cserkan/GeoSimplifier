@@ -30,6 +30,7 @@ namespace GeoSimplifier.GapFill
         private static double _coincideTol = 0.0005; // kapak noktası mevcut yüzeye bu kadar yakınsa "çakışık"
         private static int _max = 600;
         private static bool _analyseOnly;
+        private static bool _edgeMode;   // --kenar: eski yol, her serbest kenar API ile okunur (yavaş)
         private static string _exe = @"C:\Program Files\SOLIDWORKS Corp\SOLIDWORKS (4)\SLDWORKS.exe";
         private static string _tag = "deneme";
 
@@ -46,6 +47,7 @@ namespace GeoSimplifier.GapFill
                 string a = args[i];
                 string Next() => i + 1 < args.Length ? args[++i] : throw new ArgumentException(a + " değer bekliyor");
                 if (a == "--analiz") _analyseOnly = true;
+                else if (a == "--kenar") _edgeMode = true;
                 else if (a == "--max") _max = int.Parse(Next(), Inv);
                 else if (a == "--sinir-mm") _maxSize = double.Parse(Next(), Inv) / 1000;
                 else if (a == "--komsu-mm") _neighbourTol = double.Parse(Next(), Inv) / 1000;
@@ -178,6 +180,7 @@ namespace GeoSimplifier.GapFill
             public string Class = "", Action = "", Result = "";
             public double Ms;
             public List<byte[]> Refs;
+            public int EdgeCount;
             public bool Saved;
         }
 
@@ -193,19 +196,51 @@ namespace GeoSimplifier.GapFill
 
             // 1) Display triangles of every body, for the neighbour / coincidence tests.
             var grid = new TriGrid(0.02);
+            var bodyTris = new List<float[]>();
             for (int b = 0; b < bodies.Count; b++)
             {
+                if (b % 25 == 0) { GC.Collect(); GC.WaitForPendingFinalizers(); }
+                if (b % 500 == 0) Log($"  grafik veri gövde {b}/{bodies.Count}");
                 var tris = new List<float>();
                 foreach (IFace2 f in (object[])bodies[b].GetFaces() ?? new object[0])
                     if (f.GetTessTriangles(true) is float[] t) tris.AddRange(t);
-                grid.AddBody(b, tris.ToArray());
+                var arr = tris.ToArray();
+                bodyTris.Add(arr);
+                grid.AddBody(b, arr);
             }
             Log($"üçgen ağı: {grid.Triangles} üçgen");
+
+            var loops = new List<Loop>();
+            if (!_edgeMode)
+            {
+                // 2) GRAFİK VERİ YOLU: açık kenarlar SW'ye sorulmadan, her gövdenin kendi üçgen ağında bulunur.
+                //    Aynı gövdedeki iki yüzün ortak kenarı iki üçgende geçer; yalnız bir üçgende geçen kenar açıktır.
+                var mw = Stopwatch.StartNew();
+                for (int b = 0; b < bodies.Count; b++)
+                {
+                    var mine = MeshLoops(bodyTris[b]);
+                    if (mine.Count == 0) continue;
+                    var bb = (double[])bodies[b].GetBodyBox();
+                    foreach (var lp in mine)
+                    {
+                        lp.Body = b;
+                        lp.BodySize = new V(bb[3] - bb[0], bb[4] - bb[1], bb[5] - bb[2]).Len;
+                        lp.Id = loops.Count + 1;
+                        Measure(lp);
+                        loops.Add(lp);
+                    }
+                    // a hole of a face, not the sheet's outline: every loop of the body but the longest
+                    var longest = mine.OrderByDescending(l => l.Length).First();
+                    foreach (var l in mine) l.Inner = mine.Count > 1 && l != longest;
+                }
+                Log($"grafik veriden döngü: {loops.Count} (açık zincir {loops.Count(l => l.Open)}), toplam döngü noktası {loops.Sum(l => l.Pts.Count)}, {mw.Elapsed.TotalSeconds:F1} sn");
+            }
+            else
+            {
 
             // 2) Free edges of each body, chained into loops. The tool runs out of process, so every COM call
             //    costs; per free edge only GetCurve + GetCurveParams2 + GetTessPts, and loops of a face are read
             //    only for faces that have free edges (faces told apart by their box).
-            var loops = new List<Loop>();
             int freeEdges = 0, allEdges = 0;
             var stepWatch = Stopwatch.StartNew();
             var crashed = new List<int>();
@@ -229,6 +264,7 @@ namespace GeoSimplifier.GapFill
                 }
             }
             Log($"kenar: {allEdges}, serbest: {freeEdges}, döngü: {loops.Count}, SW çöktüğü için atlanan gövde: {crashed.Count} [{string.Join(",", crashed)}]");
+            }
 
             // 3) Guess: which loops to close and how.
             foreach (var lp in loops) Classify(lp, grid);
@@ -244,12 +280,37 @@ namespace GeoSimplifier.GapFill
             {
                 // persistent references first, from the edges as they are now (the session may have been
                 // restarted since the loops were found): features added later may invalidate edge pointers.
+                var mapWatch = Stopwatch.StartNew();
                 foreach (var grp in chosen.GroupBy(l => l.Body))
                 {
                     var be = (object[])bodies[grp.Key].GetEdges() ?? new object[0];
+                    if (_edgeMode)
+                    {
+                        foreach (var lp in grp)
+                            lp.Refs = lp.Edges.Select(e => e.Index < be.Length ? (byte[])md.Extension.GetPersistReference3(be[e.Index]) : null).ToList();
+                        continue;
+                    }
+                    // graphics loops: find the body's free edges that lie on each loop (only bodies with chosen loops)
+                    var free = new List<(IEdge e, V a, V m, V z)>();
+                    foreach (IEdge e in be)
+                    {
+                        int nf = ((object[])e.GetTwoAdjacentFaces2() ?? new object[0]).Count(o => o != null);
+                        if (nf != 1) continue;
+                        var cp = e.GetCurveParams2() as double[];
+                        var curve = e.GetCurve() as ICurve;
+                        if (cp == null || cp.Length < 8 || curve == null) continue;
+                        var mp = (double[])curve.Evaluate2((cp[6] + cp[7]) / 2, 0);
+                        free.Add((e, new V(cp[0], cp[1], cp[2]), new V(mp[0], mp[1], mp[2]), new V(cp[3], cp[4], cp[5])));
+                    }
                     foreach (var lp in grp)
-                        lp.Refs = lp.Edges.Select(e => e.Index < be.Length ? (byte[])md.Extension.GetPersistReference3(be[e.Index]) : null).ToList();
+                    {
+                        double tol = Math.Max(1e-4, 0.01 * lp.Size);
+                        var mine = free.Where(f => OnLoop(lp, f.a, tol) && OnLoop(lp, f.m, tol) && OnLoop(lp, f.z, tol)).ToList();
+                        lp.EdgeCount = mine.Count;
+                        lp.Refs = mine.Count == 0 ? new List<byte[]> { null } : mine.Select(f => (byte[])md.Extension.GetPersistReference3(f.e)).ToList();
+                    }
                 }
+                Log($"kenar eşleme {mapWatch.Elapsed.TotalSeconds:F1} sn, kenarı bulunamayan döngü {chosen.Count(l => l.Refs.Any(r => r == null))}");
                 {
                     int ez = 0, wz = 0;
                     md.Save3(1, ref ez, ref wz);   // so a restart during filling reopens a file whose references resolve
@@ -312,6 +373,79 @@ namespace GeoSimplifier.GapFill
         }
 
         // ---------------------------------------------------------------- free edges and loops
+
+        /// <summary>Open boundary loops of one body's display mesh (vertices welded by position).</summary>
+        private static List<Loop> MeshLoops(float[] t)
+        {
+            var result = new List<Loop>();
+            if (t == null || t.Length < 9) return result;
+            var ids = new Dictionary<(long, long, long), int>();
+            var pos = new List<V>();
+            int Vid(int k)
+            {
+                const double q = 2e-6;
+                var key = ((long)Math.Round(t[k] / q), (long)Math.Round(t[k + 1] / q), (long)Math.Round(t[k + 2] / q));
+                if (!ids.TryGetValue(key, out int id)) { id = pos.Count; ids[key] = id; pos.Add(new V(t[k], t[k + 1], t[k + 2])); }
+                return id;
+            }
+            var count = new Dictionary<long, int>();
+            long EKey(int a, int b) => a < b ? ((long)a << 32) | (uint)b : ((long)b << 32) | (uint)a;
+            for (int k = 0; k + 8 < t.Length; k += 9)
+            {
+                int a = Vid(k), b = Vid(k + 3), c = Vid(k + 6);
+                if (a == b || b == c || a == c) continue;
+                foreach (var e in new[] { EKey(a, b), EKey(b, c), EKey(c, a) })
+                    count[e] = count.TryGetValue(e, out int n) ? n + 1 : 1;
+            }
+            var adj = new Dictionary<int, List<int>>();
+            var open = new List<(int a, int b)>();
+            foreach (var kv in count)
+            {
+                if (kv.Value != 1) continue;
+                int a = (int)(kv.Key >> 32), b = (int)(kv.Key & 0xFFFFFFFF);
+                int id = open.Count;
+                open.Add((a, b));
+                if (!adj.TryGetValue(a, out var la)) adj[a] = la = new List<int>();
+                if (!adj.TryGetValue(b, out var lb)) adj[b] = lb = new List<int>();
+                la.Add(id); lb.Add(id);
+            }
+            var used = new bool[open.Count];
+            for (int s = 0; s < open.Count; s++)
+            {
+                if (used[s]) continue;
+                used[s] = true;
+                var lp = new Loop();
+                int start = open[s].a, cur = open[s].b;
+                lp.Pts.Add(pos[start]);
+                bool closed = false;
+                for (int guard = 0; guard < open.Count + 1; guard++)
+                {
+                    if (cur == start) { closed = true; break; }
+                    lp.Pts.Add(pos[cur]);
+                    int next = -1;
+                    foreach (int e in adj[cur]) if (!used[e]) { next = e; break; }
+                    if (next < 0) break;
+                    used[next] = true;
+                    cur = open[next].a == cur ? open[next].b : open[next].a;
+                }
+                lp.Open = !closed;
+                result.Add(lp);
+            }
+            return result;
+        }
+
+        private static bool OnLoop(Loop lp, V p, double tol)
+        {
+            for (int i = 0; i < lp.Pts.Count; i++)
+            {
+                V a = lp.Pts[i], b = lp.Pts[(i + 1) % lp.Pts.Count], ab = b - a;
+                double l2 = ab.Dot(ab);
+                double u = l2 > 0 ? Math.Max(0, Math.Min(1, (p - a).Dot(ab) / l2)) : 0;
+                if ((a + ab * u - p).Len <= tol) return true;
+            }
+            return false;
+        }
+
 
         private static void BodyLoops(int b, IBody2 body, List<Loop> loops, ref int freeEdges, ref int allEdges)
         {
@@ -466,7 +600,7 @@ namespace GeoSimplifier.GapFill
 
         private static void Measure(Loop lp)
         {
-            lp.Length = lp.Edges.Sum(e => e.Length);
+            lp.Length = lp.Edges.Count > 0 ? lp.Edges.Sum(e => e.Length) : Enumerable.Range(0, lp.Pts.Count).Sum(i => (lp.Pts[(i + 1) % lp.Pts.Count] - lp.Pts[i]).Len);
             double x0 = lp.Pts.Min(p => p.X), x1 = lp.Pts.Max(p => p.X), y0 = lp.Pts.Min(p => p.Y), y1 = lp.Pts.Max(p => p.Y), z0 = lp.Pts.Min(p => p.Z), z1 = lp.Pts.Max(p => p.Z);
             lp.Size = new V(x1 - x0, y1 - y0, z1 - z0).Len;
             var (c, n) = Shape.FitPlane(lp.Pts);
@@ -630,7 +764,7 @@ namespace GeoSimplifier.GapFill
                 try { name = bodies[l.Body].Name; } catch { }
                 sb.AppendLine(string.Join(";", new object[]
                 {
-                    l.Id, l.Body, name, l.Edges.Count, l.Faces, F(l.Length * 1000), F(l.Size * 1000), F(l.BodySize * 1000),
+                    l.Id, l.Body, name, l.Edges.Count > 0 ? l.Edges.Count : l.EdgeCount, l.Faces, F(l.Length * 1000), F(l.Size * 1000), F(l.BodySize * 1000),
                     F(l.PlanarDev * 1000), F(l.Area * 1e6), F(l.Compact), l.Inner ? 1 : 0, F(l.NeighbourFrac), F(l.CoincideFrac),
                     l.Class, l.Action, l.Result, F(l.Ms), l.Centre.ToString()
                 }));
