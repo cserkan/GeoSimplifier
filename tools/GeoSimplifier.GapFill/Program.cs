@@ -1,4 +1,4 @@
-using System;
+﻿using System;
 using System.Collections.Generic;
 using System.Diagnostics;
 using System.Globalization;
@@ -94,9 +94,8 @@ namespace GeoSimplifier.GapFill
             public List<V> Pts;          // start -> end
             public double Length;
             public bool Closed;
-            public int FaceId;           // index into the body's face list
-            public string MidKey;
-            public bool Line;
+            public string FaceKey;
+            public string EndKey;
         }
 
         private sealed class Loop
@@ -136,54 +135,59 @@ namespace GeoSimplifier.GapFill
             }
             Log($"üçgen ağı: {grid.Triangles} üçgen");
 
-            // 2) Free edges of each body, chained into loops.
+            // 2) Free edges of each body, chained into loops. The tool runs out of process, so every COM call
+            //    costs; per free edge only GetCurve + GetCurveParams2 + GetTessPts, and loops of a face are read
+            //    only for faces that have free edges (faces told apart by their box).
             var loops = new List<Loop>();
             int freeEdges = 0, allEdges = 0;
+            var stepWatch = Stopwatch.StartNew();
             for (int b = 0; b < bodies.Count; b++)
             {
+                if (b % 100 == 0) Log($"  gövde {b}/{bodies.Count}, serbest kenar {freeEdges}, döngü {loops.Count}, {stepWatch.Elapsed.TotalSeconds:F0} sn");
                 var body = bodies[b];
-                var faces = ((object[])body.GetFaces() ?? new object[0]).Cast<IFace2>().ToList();
                 var bb = (double[])body.GetBodyBox();
                 double bodySize = new V(bb[3] - bb[0], bb[4] - bb[1], bb[5] - bb[2]).Len;
 
-                // edge midpoints of every inner loop, per face
-                var innerKeys = new Dictionary<string, int>();   // midkey -> inner loop serial
-                int innerSerial = 0;
-                for (int fi = 0; fi < faces.Count; fi++)
-                {
-                    foreach (ILoop2 lp in (object[])faces[fi].GetLoops() ?? new object[0])
-                    {
-                        if (lp.IsOuter()) continue;
-                        innerSerial++;
-                        foreach (IEdge e in (object[])lp.GetEdges() ?? new object[0])
-                        {
-                            var k = MidKey(e);
-                            if (k != null) innerKeys[k] = innerSerial;
-                        }
-                    }
-                }
-
                 var free = new List<FreeEdge>();
+                var freeFaces = new Dictionary<string, IFace2>();
                 foreach (IEdge e in (object[])body.GetEdges() ?? new object[0])
                 {
                     allEdges++;
                     var adj = (object[])e.GetTwoAdjacentFaces2() ?? new object[0];
-                    var faceList = adj.Where(o => o != null).Cast<IFace2>().ToList();
-                    if (faceList.Count != 1) continue;
+                    IFace2 only = null; int nf = 0;
+                    foreach (var o in adj) if (o != null) { nf++; only = (IFace2)o; }
+                    if (nf != 1) continue;
                     var fe = Sample(e);
                     if (fe == null) continue;
-                    fe.FaceId = faces.FindIndex(f => f == faceList[0]);
+                    string fk = FaceKey(only);
+                    fe.FaceKey = fk;
+                    freeFaces[fk] = only;
                     free.Add(fe);
                 }
+                if (free.Count == 0) continue;
                 freeEdges += free.Count;
+
+                // edge keys of the inner loops of the faces that have free edges
+                var innerKeys = new Dictionary<string, int>();
+                int innerSerial = 0;
+                foreach (var face in freeFaces.Values)
+                    foreach (ILoop2 lp in (object[])face.GetLoops() ?? new object[0])
+                    {
+                        if (lp.IsOuter()) continue;
+                        innerSerial++;
+                        foreach (IEdge e in (object[])lp.GetEdges() ?? new object[0])
+                            if (e.GetCurveParams2() is double[] cp && cp.Length >= 6)
+                                innerKeys[EndKey(cp)] = innerSerial;
+                    }
+
                 foreach (var lp in Chain(free))
                 {
                     lp.Body = b;
                     lp.BodySize = bodySize;
                     lp.Id = loops.Count + 1;
-                    var serials = lp.Edges.Select(x => x.MidKey != null && innerKeys.TryGetValue(x.MidKey, out int s) ? s : -1).Distinct().ToList();
+                    var serials = lp.Edges.Select(x => innerKeys.TryGetValue(x.EndKey, out int s) ? s : -1).Distinct().ToList();
                     lp.Inner = serials.Count == 1 && serials[0] > 0;
-                    lp.Faces = lp.Edges.Select(x => x.FaceId).Distinct().Count();
+                    lp.Faces = lp.Edges.Select(x => x.FaceKey).Distinct().Count();
                     Measure(lp);
                     loops.Add(lp);
                 }
@@ -246,52 +250,40 @@ namespace GeoSimplifier.GapFill
 
         // ---------------------------------------------------------------- free edges and loops
 
-        private static string MidKey(IEdge e)
-        {
-            try
-            {
-                var curve = (ICurve)e.GetCurve();
-                var range = e.GetCurveParams3();
-                if (curve == null || range == null) return null;
-                var p = (double[])curve.Evaluate2((range.UMinValue + range.UMaxValue) / 2, 0);
-                return Key(new V(p[0], p[1], p[2]), 1e-5);
-            }
-            catch { return null; }
-        }
-
         private static string Key(V p, double q) =>
             $"{Math.Round(p.X / q)}|{Math.Round(p.Y / q)}|{Math.Round(p.Z / q)}";
+
+        private static string FaceKey(IFace2 f)
+        {
+            var b = (double[])f.GetBox();
+            return b == null ? "?" : string.Join("|", b.Select(x => Math.Round(x * 1e5).ToString(Inv)));
+        }
+
+        /// <summary>Key of an edge from its start and end points (GetCurveParams2: start xyz, end xyz, ...).</summary>
+        private static string EndKey(double[] cp)
+        {
+            // order-independent
+            string a = Key(new V(cp[0], cp[1], cp[2]), 1e-5), b = Key(new V(cp[3], cp[4], cp[5]), 1e-5);
+            return string.CompareOrdinal(a, b) < 0 ? a + "/" + b : b + "/" + a;
+        }
 
         private static FreeEdge Sample(IEdge e)
         {
             var curve = (ICurve)e.GetCurve();
-            var range = e.GetCurveParams3();
-            if (curve == null || range == null) return null;
-            double t0 = range.UMinValue, t1 = range.UMaxValue;
-            double len = curve.GetLength3(t0, t1);
-            bool line = curve.IsLine();
-            int n = line ? 1 : Math.Max(6, Math.Min(32, (int)(len / 0.004)));
-            var pts = new List<V>(n + 1);
-            for (int i = 0; i <= n; i++)
-            {
-                var p = (double[])curve.Evaluate2(t0 + (t1 - t0) * i / n, 0);
-                pts.Add(new V(p[0], p[1], p[2]));
-            }
-            // the edge may run against its curve
-            var sv = e.GetStartVertex() as IVertex;
-            if (sv != null)
-            {
-                var s = (double[])sv.GetPoint();
-                var sp = new V(s[0], s[1], s[2]);
-                if ((pts[pts.Count - 1] - sp).Len < (pts[0] - sp).Len) pts.Reverse();
-            }
-            var mid = (double[])curve.Evaluate2((t0 + t1) / 2, 0);
-            return new FreeEdge
-            {
-                Edge = e, Pts = pts, Length = len, Line = line,
-                Closed = sv == null || (pts[0] - pts[pts.Count - 1]).Len < 1e-6,
-                MidKey = Key(new V(mid[0], mid[1], mid[2]), 1e-5)
-            };
+            var cp = e.GetCurveParams2() as double[];
+            if (curve == null || cp == null || cp.Length < 8) return null;
+            var start = new V(cp[0], cp[1], cp[2]);
+            var end = new V(cp[3], cp[4], cp[5]);
+            var pts = new List<V>();
+            if (curve.GetTessPts(0.0005, 0.004, new[] { cp[0], cp[1], cp[2] }, new[] { cp[3], cp[4], cp[5] }) is double[] t)
+                for (int i = 0; i + 2 < t.Length; i += 3) pts.Add(new V(t[i], t[i + 1], t[i + 2]));
+            if (pts.Count == 0 || (pts[0] - start).Len > 1e-7) pts.Insert(0, start);
+            if ((pts[pts.Count - 1] - end).Len > 1e-7 || pts.Count == 1) pts.Add(end);
+            double len = 0;
+            for (int i = 1; i < pts.Count; i++) len += (pts[i] - pts[i - 1]).Len;
+            bool closed = (start - end).Len < 1e-6;
+            if (closed && pts.Count < 4) return null; // closed edge but no tessellation: cannot measure
+            return new FreeEdge { Edge = e, Pts = pts, Length = len, Closed = closed, EndKey = EndKey(cp) };
         }
 
         private static IEnumerable<Loop> Chain(List<FreeEdge> edges)
