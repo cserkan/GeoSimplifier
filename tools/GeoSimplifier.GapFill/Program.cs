@@ -271,6 +271,8 @@ namespace GeoSimplifier.GapFill
             foreach (var g in loops.GroupBy(l => l.Class).OrderByDescending(g => g.Count()))
                 Log($"  sınıf {g.Key}: {g.Count()}");
 
+            try { WriteStl(Path.Combine(outDir, baseName + "_grafik.stl"), bodyTris); }
+            catch (Exception ex) { Log("stl: " + ex.Message); }
             try { WriteDump(Path.Combine(outDir, baseName + "_dongu_verisi.jsonl"), loops, bodyTris); }
             catch (Exception ex) { Log("döküm: " + ex.Message); }
 
@@ -808,6 +810,28 @@ namespace GeoSimplifier.GapFill
                     n++;
                 }
             Log($"döküm: {n} döngü → {path} ({new FileInfo(path).Length / 1048576.0:F1} MB)");
+        }
+
+        /// <summary>All bodies' display triangles as one binary STL (attribute = body index, low 16 bits).</summary>
+        private static void WriteStl(string path, List<float[]> bodyTris)
+        {
+            long n = bodyTris.Sum(t => (long)(t.Length / 9));
+            using (var w = new BinaryWriter(File.Create(path)))
+            {
+                w.Write(new byte[80]);
+                w.Write((uint)n);
+                for (int b = 0; b < bodyTris.Count; b++)
+                {
+                    var t = bodyTris[b];
+                    for (int k = 0; k + 8 < t.Length; k += 9)
+                    {
+                        w.Write(0f); w.Write(0f); w.Write(0f);
+                        for (int j = 0; j < 9; j++) w.Write(t[k + j]);
+                        w.Write((ushort)(b & 0xFFFF));
+                    }
+                }
+            }
+            Log($"stl: {n} üçgen → {path} ({new FileInfo(path).Length / 1048576.0:F1} MB)");
         }
 
         private static string F(double v) => v.ToString("0.###", Inv);
