@@ -156,7 +156,6 @@ namespace GeoSimplifier.GapFill
 
         private sealed class FreeEdge
         {
-            public IEdge Edge;
             public List<V> Pts;          // start -> end
             public double Length;
             public bool Closed;
@@ -212,6 +211,9 @@ namespace GeoSimplifier.GapFill
             var crashed = new List<int>();
             for (int b = 0; b < bodies.Count; b++)
             {
+                // SOLIDWORKS keeps every object it handed out alive until the client releases it; ~100k edges
+                // pile up and SW died after ~15 min (t2, t3). Release them regularly.
+                if (b % 25 == 0) { GC.Collect(); GC.WaitForPendingFinalizers(); }
                 if (b % 100 == 0) Log($"  gövde {b}/{bodies.Count}, serbest kenar {freeEdges}, döngü {loops.Count}, {stepWatch.Elapsed.TotalSeconds:F0} sn");
                 try { File.WriteAllText(_trace, $"gövde {b}"); } catch { }
                 try { BodyLoops(b, bodies[b], loops, ref freeEdges, ref allEdges); }
@@ -398,7 +400,7 @@ namespace GeoSimplifier.GapFill
             for (int i = 1; i < pts.Count; i++) len += (pts[i] - pts[i - 1]).Len;
             bool closed = (start - end).Len < 1e-6;
             if (closed && pts.Count < 4) return null; // closed edge but no tessellation: cannot measure
-            return new FreeEdge { Edge = e, Pts = pts, Length = len, Closed = closed, EndKey = EndKey(cp) };
+            return new FreeEdge { Pts = pts, Length = len, Closed = closed, EndKey = EndKey(cp) };
         }
 
         private static IEnumerable<Loop> Chain(List<FreeEdge> edges)
