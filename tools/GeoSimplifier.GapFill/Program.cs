@@ -60,8 +60,12 @@ namespace GeoSimplifier.GapFill
             string work = Path.Combine(outDir, baseName + ".SLDPRT");
             if (Path.GetFullPath(work).Equals(Path.GetFullPath(input), StringComparison.OrdinalIgnoreCase))
                 throw new InvalidOperationException("Çıktı girdinin üzerine yazılamaz.");
-            File.Copy(input, work, true);
-            Log($"kopya: {work}");
+            bool assembly = input.EndsWith(".sldasm", StringComparison.OrdinalIgnoreCase);
+            if (!assembly)
+            {
+                File.Copy(input, work, true);
+                Log($"kopya: {work}");
+            }
 
             Process proc = null;
             ISldWorks sw = null;
@@ -69,6 +73,7 @@ namespace GeoSimplifier.GapFill
             {
                 (sw, proc) = StartSolidWorks();
                 int err = 0, warn = 0;
+                if (assembly && !AssemblyToPart(sw, input, work)) return 1;
                 var md = (IModelDoc2)sw.OpenDoc6(work, 1, 1, "", ref err, ref warn);
                 if (md == null) { Log($"HATA: açılamadı err={err} warn={warn}"); return 1; }
                 Log($"açıldı err={err} warn={warn}");
@@ -86,6 +91,30 @@ namespace GeoSimplifier.GapFill
                 if (proc != null && !proc.WaitForExit(30000)) { try { proc.Kill(); Log("SW kapatılamadı, sonlandırıldı"); } catch { } }
                 Log("bitti");
             }
+        }
+
+        /// <summary>
+        /// Ana montaj girdisi: montaj açılır (eksik referans uyarısı sessizce geçilir), "Parça olarak kaydet"
+        /// ile TÜM bileşenlerin geometrisi (dış yüzler değil) yeni bir parçaya kopyalanır ve montaj kaydedilmeden
+        /// kapatılır. Serkan'ın dosyalarına yazılmaz.
+        /// </summary>
+        private static bool AssemblyToPart(ISldWorks sw, string asm, string part)
+        {
+            int err = 0, warn = 0;
+            var w = Stopwatch.StartNew();
+            var md = (IModelDoc2)sw.OpenDoc6(asm, 2, 1, "", ref err, ref warn);
+            if (md == null) { Log($"HATA: montaj açılamadı err={err} warn={warn}"); return false; }
+            Log($"montaj açıldı {w.Elapsed.TotalSeconds:F1} sn err={err} warn={warn}, bileşen {((IAssemblyDoc)md).GetComponentCount(false)}");
+            md.ClearSelection2(true);
+            var adv = md.Extension.GetAdvancedSaveAsOptions(0) as IAdvancedSaveAsOptions;
+            if (adv == null) { Log("HATA: kayıt seçenekleri alınamadı"); return false; }
+            adv.GeometryToSave = 0; // swGeometryToSave_AllComponents
+            int e2 = 0, w2 = 0;
+            bool ok = md.Extension.SaveAs3(part, 0, 2 | 1, null, adv, ref e2, ref w2);
+            Log($"montaj parça olarak kaydedildi={ok} {w.Elapsed.TotalSeconds:F1} sn err={e2} warn={w2} " +
+                (File.Exists(part) ? $"{new FileInfo(part).Length / 1048576.0:F1} MB" : "dosya yok"));
+            sw.CloseDoc(md.GetTitle());
+            return ok && File.Exists(part);
         }
 
         private sealed class FreeEdge
